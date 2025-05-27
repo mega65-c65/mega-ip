@@ -13,3 +13,19 @@ DMA_COPY    .macro   src_hi, src, dest_hi, dest, length
     .byte $00                                   ; command high byte
     .word $0000                                 ; modulo (ignored)
 .endm
+
+FAR_PEEK   .macro hi, address
+
+    lda #<\address
+    sta $45
+    lda #>\address
+    sta $46
+    lda #`\address
+    sta $47
+    lda #\hi
+    sta $48
+
+    ldz #$00
+    lda [$45],z
+
+.endm

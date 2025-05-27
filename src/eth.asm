@@ -1,5 +1,7 @@
 
+.include "macros.asm"
 .include "mega65.asm"
+
 
 .cpu "45gs02"
 
@@ -263,34 +265,26 @@ _accept_packet:
     ; get the length of bytes in incoming RX buffer
     ; using full 32 bit access method
 
-    lda #$00        ; byte 0 LSB of length
+    ;lda #$00        ; byte 0 LSB of length
+    ;sta $45
+    ;lda #$e8
+    ;sta $46
+    ;lda #$0d 
+    ;sta $47
+    ;lda #$ff
+    ;sta $48
+
+    ;ldz #$00
+    ;lda [$45],z
+
+    #FAR_PEEK $ff, $0de800
+    sta _len_lsb                ; store lsb in our inline dma command
+
+    lda #$01                    ; byte 1 MSB of length (first 4 bits)
     sta $45
-    lda #$e8
-    sta $46
-    lda #$0d 
-    sta $47
-    lda #$ff
-    sta $48
-
-    ldz #$00
-    lda [$45],z
-    sta _len_lsb    ; store lsb in our inline dma command
-
-    lda #$01        ; byte 1 MSB of length (first 4 bits)
-    sta $45
-
-;    ldz #$00
-;    lda [$45],z
-;    and #$40        ; test bit 6 (mac address is ours)
-;    bne _its_ours
-
-;_its_not_ours:
-;    rts             ; its not our mac address, so ignore it
-
-_its_ours:
-    lda [$45],z     ; peek it again
-    and #$0f        ; strip upper 4 bits
-    sta _len_msb    ; store msb in our inline dma command
+    lda [$45],z                 ; peek it again
+    and #$0f                    ; strip upper 4 bits
+    sta _len_msb                ; store msb in our inline dma command
 
     ; inline DMA to copy ethernet buffer to RX buffer
     sta $D707
@@ -307,7 +301,9 @@ _len_msb:
     .byte $00                   ; command high byte
     .word $0000                 ; modulo (ignored)
 
-    ; stop here so we can examine it
+    ; confirm if this packet is for us
+    jsr ETH_IS_PACKET_FOR_US
+    beq _unknown_packet
 
     lda ETH_RX_TYPE
     cmp #$08                    ; is packet $08xx?
@@ -325,7 +321,36 @@ _is_tcp_packet:
 _unknown_packet:
     rts
 
+ETH_IS_PACKET_FOR_US:
 
+    ; check if packet intended for us
+
+    ldx #$06                            ; count = 6
+_lp_mac_compare:
+    dex
+    lda ETH_TX_FRAME_SRC_MAC,x          ; local MAC byte
+    cmp ETH_RX_FRAME_DEST_MAC,x
+    bne _check_broadcast
+    cpx #$00
+    bne _lp_mac_compare
+    lda #$01                            ; A=1 (Yes, dest mac is us)
+    rts
+
+_check_broadcast:
+    ldx #$06
+    lda #$ff
+_lp_bcast:
+    dex
+    cmp ETH_RX_FRAME_DEST_MAC,x
+    bne _not_ours
+    cpx #$00
+    bne _lp_bcast
+    lda #$02                            ; A=2 (Yes, broadcast packet)    
+    rts                        
+
+_not_ours:
+    lda #$00                            ; A=0 (no, packet not for us)
+    rts
 
 
 ; Ethernet frame structures
