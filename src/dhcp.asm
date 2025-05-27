@@ -1,66 +1,66 @@
 DHCPDICOVER_BUILD_REQUEST:
 
-        ; destination broadcast
-        lda #$ff
-        sta ETH_TX_FRAME_DEST_MAC
-        sta ETH_TX_FRAME_DEST_MAC+1
-        sta ETH_TX_FRAME_DEST_MAC+2
-        sta ETH_TX_FRAME_DEST_MAC+3
-        sta ETH_TX_FRAME_DEST_MAC+4
-        sta ETH_TX_FRAME_DEST_MAC+5
+    ; destination broadcast
+    lda #$ff
+    sta ETH_TX_FRAME_DEST_MAC
+    sta ETH_TX_FRAME_DEST_MAC+1
+    sta ETH_TX_FRAME_DEST_MAC+2
+    sta ETH_TX_FRAME_DEST_MAC+3
+    sta ETH_TX_FRAME_DEST_MAC+4
+    sta ETH_TX_FRAME_DEST_MAC+5
 
-        ; ETH_TYPE = $0800
-        lda #$08
-        sta ETH_TX_TYPE
-        lda #$00
-        sta ETH_TX_TYPE + 1
+    ; ETH_TYPE = $0800
+    lda #$08
+    sta ETH_TX_TYPE
+    lda #$00
+    sta ETH_TX_TYPE + 1
 
-        ; build IPv4 header
+    ; build IPv4 header
+    
+    lda #$45
+    sta ETH_TX_FRAME_PAYLOAD+0     ; Version/IHL
 
-        lda #$45
-        sta ETH_TX_FRAME_PAYLOAD+0     ; Version/IHL
+    lda #$00                   
+    sta ETH_TX_FRAME_PAYLOAD+1     ; DSCP/ECN
 
-        lda #$00                   
-        sta ETH_TX_FRAME_PAYLOAD+1     ; DSCP/ECN
+    lda #$01
+    sta ETH_TX_FRAME_PAYLOAD+2     ; total length (328 bytes)
+    lda #$48
+    sta ETH_TX_FRAME_PAYLOAD+3
 
-        lda #$01
-        sta ETH_TX_FRAME_PAYLOAD+2     ; total length (328 bytes)
-        lda #$48
-        sta ETH_TX_FRAME_PAYLOAD+3
+    lda #$a1
+    sta ETH_TX_FRAME_PAYLOAD+4     ; Identification
+    lda #$b2
+    sta ETH_TX_FRAME_PAYLOAD+5
 
-        lda #$a1
-        sta ETH_TX_FRAME_PAYLOAD+4     ; Identification
-        lda #$b2
-        sta ETH_TX_FRAME_PAYLOAD+5
+    lda #$00
+    sta ETH_TX_FRAME_PAYLOAD+6     ; flags/frag offset
+    lda #$00
+    sta ETH_TX_FRAME_PAYLOAD+7
+    
+    lda #$80                    ; TTL (128 hops)
+    sta ETH_TX_FRAME_PAYLOAD+8
 
-        lda #$00
-        sta ETH_TX_FRAME_PAYLOAD+6     ; flags/frag offset
-        lda #$00
-        sta ETH_TX_FRAME_PAYLOAD+7
+    lda #$11                    ; Protocol (UDP 17)
+    sta ETH_TX_FRAME_PAYLOAD+9
+
+    lda #$c3                    ; header checksum (1st 20 bytes)
+    sta ETH_TX_FRAME_PAYLOAD+10
+    lda #$d4
+    sta ETH_TX_FRAME_PAYLOAD+11
+
+    lda #$00                    ; source IP (0.0.0.0 for dhcp)
+    sta ETH_TX_FRAME_PAYLOAD+12
+    sta ETH_TX_FRAME_PAYLOAD+13
+    sta ETH_TX_FRAME_PAYLOAD+14
+    sta ETH_TX_FRAME_PAYLOAD+15
+
+    lda #$ff                    ; dest IP (255.255.255.255)
+    sta ETH_TX_FRAME_PAYLOAD+16
+    sta ETH_TX_FRAME_PAYLOAD+17
+    sta ETH_TX_FRAME_PAYLOAD+18
+    sta ETH_TX_FRAME_PAYLOAD+19
         
-        lda #$80                    ; TTL (128 hops)
-        sta ETH_TX_FRAME_PAYLOAD+8
-
-        lda #$11                    ; Protocol (UDP 17)
-        sta ETH_TX_FRAME_PAYLOAD+9
-
-        lda #$c3                    ; header checksum (1st 20 bytes)
-        sta ETH_TX_FRAME_PAYLOAD+10
-        lda #$d4
-        sta ETH_TX_FRAME_PAYLOAD+11
-
-        lda #$00                    ; source IP (0.0.0.0 for dhcp)
-        sta ETH_TX_FRAME_PAYLOAD+12
-        sta ETH_TX_FRAME_PAYLOAD+13
-        sta ETH_TX_FRAME_PAYLOAD+14
-        sta ETH_TX_FRAME_PAYLOAD+15
-
-        lda #$ff                    ; dest IP (255.255.255.255)
-        sta ETH_TX_FRAME_PAYLOAD+16
-        sta ETH_TX_FRAME_PAYLOAD+17
-        sta ETH_TX_FRAME_PAYLOAD+18
-        sta ETH_TX_FRAME_PAYLOAD+19
-
         ; UDP Header
 
         lda #$00                    ; source port (68 DHCP client)
