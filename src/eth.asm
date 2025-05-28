@@ -225,22 +225,25 @@ _wait_outer
 tmp_raster: .byte 0
 
 
-ETH_RECEIVE:
+BUILD_IPV4_HEADER:
 
-    lda #%10000000              ; RXEN bit 7
-    ora MEGA65_ETH_CTRL1
-    sta MEGA65_ETH_CTRL1
+ipv4_header_struct    .struct
+ihl         .byte $45
+dscp        .byte $00
+length      .word $0148
+ident       .word $a1b2
+flags       .word $0000
+ttl         .byte $80
+protocol    .byte $11
+checksum    .word $0000
+src_ip      .byte $00, $00, $00, $00
+dest_ip     .byte $00, $00, $00, $00
+.endstruct
 
-    ; dequeue the next frame
-    lda #$01
-    sta MEGA65_ETH_CTRL2        ; advance to next buffer
-    lda #$03
-    sta MEGA65_ETH_CTRL2        ; reset queue state
+IPV4_HDR    .dstruct ipv4_header_struct
 
-    ; access the RX buffer at $DFDE800 or mapped into $d800 range
-    ; $00 - $01 : length (low/high with flags)
-    ; $02 - $07ff : frame data
-    ; $07fc - $07ff : crc32 (optiona, based on frame length)
+    lda #$00
+    sta IPV4_HDR.ihl
 
     rts
 
