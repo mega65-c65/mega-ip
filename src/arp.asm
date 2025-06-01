@@ -1,5 +1,12 @@
+; This code will send a broadcast packet requesting a MAC address
+; ie WHO HAS IP 192.168.1.1? (ARP_REQUEST_IP)
+; it then updates ETH_STATE to ARP_WAITING.  The calling routine should
+; loop until a reply comes in, or timeout.
 
-ARP_BUILD_REQUEST:
+ARP_REQUEST_IP:
+    .byte $00, $00, $00, $00
+
+ARP_REQUEST:
 
     ; destination broadcast
     lda #$ff
@@ -44,11 +51,11 @@ ARP_BUILD_REQUEST:
     sta ETH_TX_FRAME_PAYLOAD+9
     lda ETH_TX_FRAME_SRC_MAC+2
     sta ETH_TX_FRAME_PAYLOAD+10
-    lda ETH_TX_FRAME_PAYLOAD+3
+    lda ETH_TX_FRAME_SRC_MAC+3
     sta ETH_TX_FRAME_PAYLOAD+11
-    lda ETH_TX_FRAME_PAYLOAD+4
+    lda ETH_TX_FRAME_SRC_MAC+4
     sta ETH_TX_FRAME_PAYLOAD+12
-    lda ETH_TX_FRAME_PAYLOAD+5
+    lda ETH_TX_FRAME_SRC_MAC+5
     sta ETH_TX_FRAME_PAYLOAD+13
 
     lda LOCAL_IP+0                  ; SPA - src IP address
@@ -60,7 +67,7 @@ ARP_BUILD_REQUEST:
     lda LOCAL_IP+3
     sta ETH_TX_FRAME_PAYLOAD+17
 
-    lda #$00                        ; THA - target mac address
+    lda #$00                        ; THA - target mac address (we dont know it yet!)
     sta ETH_TX_FRAME_PAYLOAD+18
     sta ETH_TX_FRAME_PAYLOAD+19
     sta ETH_TX_FRAME_PAYLOAD+20
@@ -69,48 +76,30 @@ ARP_BUILD_REQUEST:
     sta ETH_TX_FRAME_PAYLOAD+23
 
 
-    lda REMOTE_IP+0                 ; TPA - target IP address
+    lda ARP_REQUEST_IP+0                 ; TPA - target IP address
     sta ETH_TX_FRAME_PAYLOAD+24
-    lda REMOTE_IP+1
+    lda ARP_REQUEST_IP+1
     sta ETH_TX_FRAME_PAYLOAD+25
-    lda REMOTE_IP+2
+    lda ARP_REQUEST_IP+2
     sta ETH_TX_FRAME_PAYLOAD+26
-    lda REMOTE_IP+3
+    lda ARP_REQUEST_IP+3
     sta ETH_TX_FRAME_PAYLOAD+27
 
-    lda #$2a                    ; 42 ($2a) byte packet length
+    lda #$2a                    ; 14+28 = 42 ($2a) byte total packet length
     sta ETH_TX_LEN_LSB
     lda #$00
     sta ETH_TX_LEN_MSB
 
+    jsr ETH_PACKET_SEND
+    lda #$01                    ; set state to ARP_WAITING
+    sta ETH_STATE
+
     rts
-;==============================================================================
-ARP_RESPONSE_HANDLER:
 
-    ldx #$06                            ; count = 6
-_loop_compare:
-    dex
-    lda ETH_TX_FRAME_SRC_MAC,x          ; local MAC byte
-    cmp ETH_RX_FRAME_DEST_MAC,x
-    bne _check_broadcast
-    cpx #$00
-    bne _loop_compare
-    jmp _do_reply
+; This routine will send a reply to ARP requests made by other machines 
+; on the local network.
 
-_check_broadcast:
-    ldx #$06
-    lda #$ff
-_loop_bcast:
-    dex
-    cmp ETH_RX_FRAME_DEST_MAC,x
-    bne _not_ours
-    cpx #$00
-    bne _loop_bcast
-
-    jmp _check_target_ip
-
-_not_ours:
-    rts
+ARP_REPLY:
 
 _check_target_ip:
     ldx #$04                            ; count = 4
@@ -121,9 +110,11 @@ _loop_compare2:
     bne _not_ours
     cpx #$00
     bne _loop_compare2
-    jmp _do_reply
+    jmp _build_reply
+_not_ours:
+    rts
 
-_do_reply:
+_build_reply:
     ; destination broadcast (pull from src in RX buffer)
     lda ETH_RX_FRAME_SRC_MAC+0
     sta ETH_TX_FRAME_DEST_MAC+0
@@ -172,11 +163,11 @@ _do_reply:
     sta ETH_TX_FRAME_PAYLOAD+9
     lda ETH_TX_FRAME_SRC_MAC+2
     sta ETH_TX_FRAME_PAYLOAD+10
-    lda ETH_TX_FRAME_PAYLOAD+3
+    lda ETH_TX_FRAME_SRC_MAC+3
     sta ETH_TX_FRAME_PAYLOAD+11
-    lda ETH_TX_FRAME_PAYLOAD+4
+    lda ETH_TX_FRAME_SRC_MAC+4
     sta ETH_TX_FRAME_PAYLOAD+12
-    lda ETH_TX_FRAME_PAYLOAD+5
+    lda ETH_TX_FRAME_SRC_MAC+5
     sta ETH_TX_FRAME_PAYLOAD+13
 
     lda LOCAL_IP+0                  ; SPA - src IP address  192.168.1.77
@@ -202,7 +193,7 @@ _do_reply:
     sta ETH_TX_FRAME_PAYLOAD+23
 
 
-    lda REMOTE_IP+0                 ; TPA - target IP address 192.168.1.1
+    lda REMOTE_IP+0                 ; TPA - target IP address
     sta ETH_TX_FRAME_PAYLOAD+24
     lda REMOTE_IP+1
     sta ETH_TX_FRAME_PAYLOAD+25
@@ -219,3 +210,175 @@ _do_reply:
     jmp ETH_PACKET_SEND
 
     rts
+
+
+; This routine will update the ARP cache and flip ETH_STATE back to IDLE
+; This is when my machine does a WHO HAS IP 192.168.1.100?
+ARP_UPDATE_CACHE:
+
+    ; find available slot
+    ldx #$00
+_loop1
+    lda ARP_CACHE, x
+    beq _found_slot
+    txa
+    clc
+    adc #$0b                        ; jump 11 bytes ahead to ttl byte
+    cmp #$58                        ; > 8 entries... just use slot 0
+    beq _use_slot_zero
+    tax
+    jmp _loop1
+    
+_use_slot_zero
+    ldx #$00                        ; slot 0 will be used
+
+_found_slot:
+    lda #$ff                        ; set slot TTL
+    sta ARP_CACHE+0, x
+
+    ; save the IP address
+    lda ETH_RX_FRAME_PAYLOAD+14
+    sta ARP_CACHE+1, x
+    lda ETH_RX_FRAME_PAYLOAD+15
+    sta ARP_CACHE+2, x
+    lda ETH_RX_FRAME_PAYLOAD+16
+    sta ARP_CACHE+3, x
+    lda ETH_RX_FRAME_PAYLOAD+17
+    sta ARP_CACHE+4, x
+
+    ; save the mac address
+    lda ETH_RX_FRAME_PAYLOAD+8
+    sta ARP_CACHE+5, x
+    lda ETH_RX_FRAME_PAYLOAD+9
+    sta ARP_CACHE+6, x
+    lda ETH_RX_FRAME_PAYLOAD+10
+    sta ARP_CACHE+7, x
+    lda ETH_RX_FRAME_PAYLOAD+11
+    sta ARP_CACHE+8, x
+    lda ETH_RX_FRAME_PAYLOAD+12
+    sta ARP_CACHE+9, x
+    lda ETH_RX_FRAME_PAYLOAD+13
+    sta ARP_CACHE+10, x
+
+    lda #$00                            ; set state back to IDLE
+    sta ETH_STATE
+
+    rts
+
+; This routine is called to query the cache for ARP_QUERY_IP address, 
+; and retrieve the mac address if its there.
+; It will place the mac in the TX MAC DEST fields and A=1
+; if not found, it will put zeros in TX MAC DEST fields and A=0
+
+ARP_QUERY_IP:
+    .byte $00, $00, $00, $00
+
+ARP_QUERY_CACHE:
+
+    ldx #$00
+_loop1
+    lda ARP_CACHE+0, x                  ; if this slot is empty or expired, skip it
+    beq _next_cache
+    lda ARP_CACHE+1, x
+    cmp ARP_QUERY_IP+0
+    bne _next_cache
+    lda ARP_CACHE+2, x
+    cmp ARP_QUERY_IP+1
+    bne _next_cache
+    lda ARP_CACHE+3, x
+    cmp ARP_QUERY_IP+2
+    bne _next_cache
+    lda ARP_CACHE+4, x
+    cmp ARP_QUERY_IP+3
+    bne _next_cache
+
+    ; IP address found.  Use associated MAC address
+    lda ARP_CACHE+5, x
+    sta ETH_TX_FRAME_DEST_MAC+0
+    lda ARP_CACHE+6, x
+    sta ETH_TX_FRAME_DEST_MAC+1
+    lda ARP_CACHE+7, x
+    sta ETH_TX_FRAME_DEST_MAC+2
+    lda ARP_CACHE+8, x
+    sta ETH_TX_FRAME_DEST_MAC+3
+    lda ARP_CACHE+9, x
+    sta ETH_TX_FRAME_DEST_MAC+4
+    lda ARP_CACHE+10, x
+    sta ETH_TX_FRAME_DEST_MAC+5
+
+    lda #$ff                        ; retain this cache entry
+    sta ARP_CACHE+0, x
+
+    lda #$01                        ; flag for hit
+    rts
+
+_next_cache:
+    txa
+    clc
+    adc #$0b                        ; jump 11 bytes ahead to ttl byte
+    cmp #$58                        ; have we gone out of bounds?
+    beq _cache_miss
+    tax
+    jmp _loop1
+
+_cache_miss:
+
+    ; IP address NOT found.  clear TX DEST MAC address in TX buffer
+    lda #$00
+    sta ETH_TX_FRAME_DEST_MAC+0
+    sta ETH_TX_FRAME_DEST_MAC+1
+    sta ETH_TX_FRAME_DEST_MAC+2
+    sta ETH_TX_FRAME_DEST_MAC+3
+    sta ETH_TX_FRAME_DEST_MAC+4
+    sta ETH_TX_FRAME_DEST_MAC+5
+
+    lda #$00                        ; flag for miss
+    rts
+
+ARP_PURGE_TICK:
+    .byte $00
+
+; routine called by irq to countdown the first byte of each cache record
+; a zero byte indicates its a free slot
+ARP_CACHE_PURGE:
+    
+    inc ARP_PURGE_TICK
+    lda ARP_PURGE_TICK
+    cmp #60
+    bne _done                       ; only purge once every 60 IRQs (~1 s)
+    lda #$00
+    sta ARP_PURGE_TICK
+
+    ldx #$00
+_loop1
+    lda ARP_CACHE+0, x
+    beq _next_cache                 ; this slot already expired.  skip it
+
+    sec
+    sbc #$01
+    sta ARP_CACHE+0, x
+
+_next_cache:
+    txa
+    clc
+    adc #$0b                        ; jump 11 bytes ahead to ttl byte
+    cmp #$58                        ; have we gone out of bounds?
+    beq _done
+    tax
+    jmp _loop1
+
+_done:
+    rts
+
+
+ARP_CACHE:
+    ;     ttl  ip                  mac
+    .byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+    .byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+    .byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+    .byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+    .byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+    .byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+    .byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+    .byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+    
