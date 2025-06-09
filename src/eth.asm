@@ -18,7 +18,34 @@ ETH_STATE_TCP_SYNACK_RCVD   = $03
 ETH_STATE_TCP_RST_RCVD      = $04
 ETH_STATE_TCP_CONNECTED     = $05
 ETH_STATE_TCP_FINACK_RCVD   = $06
+ETH_FIN_WAIT_1              = $07
 ETH_STATE_ERR               = $FF
+
+; Ethernet states
+ETH_STATE_DOWN              = $00
+ETH_STATE_ARP_WAITING       = $01
+ETH_STATE_ARP_READY         = $02
+ETH_STATE_RX_FRAME          = $03
+ETH_STATE_TX_FRAME          = $04
+
+; IP Layer states
+IP_STATE_IDLE               = $00
+IP_STATE_RX                 = $01
+IP_STATE_DISPATCH_IP        = $02
+IP_STATE_DISPATCH_OTHER     = $03
+
+; TCP states
+TCP_STATE_CLOSED            = $00
+TCP_STATE_LISTEN            = $01
+TCP_STATE_SYN_SENT          = $02
+TCP_STATE_SYN_RECEIVED      = $03
+TCP_STATE_ESTABLISHED       = $04
+TCP_STATE_FIN_WAIT1         = $05
+TCP_STATE_FIN_WAIT2         = $06
+TCP_STATE_CLOSE_WAIT        = $07
+TCP_STATE_CLOSING           = $08
+TCP_STATE_LAST_ACK          = $09
+TCP_STATE_TIME_WAIT         = $0a
 
 EXEC_BANK = $04     ; code is running from $42000
 *=$2000
@@ -60,8 +87,20 @@ REMOTE_ISN:
 LOCAL_ISN:
     .byte $00, $00, $00, $00
 
+; temp values for seq number and ack number calcs
+LOCAL_ISN_TMP:
+    .byte $00
+
+REMOTE_ISN_TMP:
+    .byte $00, $00
+
+; current state of ethernet
 ETH_STATE:
-    .byte $00                   ; $00=idle, $01=arp sent/waiting
+    .byte $00
+IP_STATE:
+    .byte $00
+TCP_STATE:
+    .byte $00
 
 ETH_PROMISCUOUS:
     .byte $00
@@ -251,6 +290,10 @@ ETH_SET_REMOTE_PORT:
 ;=============================================================================
 ETH_TCP_CONNECT:
 
+    ; clear tcp payload size
+    lda #$00
+    sta TCP_DATA_PAYLOAD_SIZE
+
     ; if idle, we can initiate a connection by sending a SYN
     lda ETH_STATE
     cmp #ETH_STATE_IDLE
@@ -273,6 +316,8 @@ ETH_TCP_CONNECT:
     jmp ETH_TCP_CONNECT
 
 _send_SYN:
+    jsr CLEAR_LOCAL_ISN
+    jsr CLEAR_REMOTE_ISN
     lda #TCP_FLAG_SYN
     jsr ETH_BUILD_TCPIP_PACKET
     jsr ETH_PACKET_SEND
@@ -324,6 +369,28 @@ ETH_TCP_DISCONNECT:
 _not_connected:
     rts
 
+
+;=============================================================================
+; Send byte over TCP
+;=============================================================================
+ETH_TCP_SEND:
+
+    lda ETH_STATE
+    cmp #ETH_STATE_TCP_CONNECTED
+    bne _not_connected
+
+    lda #TCP_FLAG_PSH
+    ora #TCP_FLAG_ACK
+    jsr ETH_BUILD_TCPIP_PACKET
+    jsr ETH_PACKET_SEND
+
+    ; clear tcp payload size
+    lda #$00
+    sta TCP_DATA_PAYLOAD_SIZE
+
+
+_not_connected:
+    rts
 
 ;=============================================================================
 ; Ethernet clear to send
@@ -510,6 +577,14 @@ _IP_found_in_cache:
     sta ETH_TX_LEN_LSB
     lda #>(14+20+20)
     sta ETH_TX_LEN_MSB
+
+    lda TCP_DATA_PAYLOAD_SIZE       ; now add any TCP payload size
+    clc
+    adc ETH_TX_LEN_LSB
+    sta ETH_TX_LEN_LSB
+    lda ETH_TX_LEN_MSB
+    adc #$00
+    sta ETH_TX_LEN_MSB
     
     rts
 
@@ -540,10 +615,19 @@ BUILD_IPV4_HEADER:
     lda REMOTE_IP+3
     sta IPV4_HDR_DST_IP+3
 
-    lda #>(20+20)       ; IP header (20) + TCP header (20)
+    lda #>(20+20)               ; IP header (20) + TCP header (20)
     sta IPV4_HDR_LEN
     lda #<(20+20)
     sta IPV4_HDR_LEN+1
+
+    lda TCP_DATA_PAYLOAD_SIZE   ; add the tcp payload data size (big endian)
+    clc
+    adc IPV4_HDR_LEN+1
+    sta IPV4_HDR_LEN+1
+    lda IPV4_HDR_LEN
+    adc #$00
+    sta IPV4_HDR_LEN
+
 
     jsr CALC_IPV4_CHECKSUM
 
@@ -558,11 +642,6 @@ _lp_copy:
     jmp _lp_copy
 
 _lp_done:
-    lda #0
-    sta ETH_TX_FRAME_PAYLOAD_SIZE+1
-    lda #20
-    sta ETH_TX_FRAME_PAYLOAD_SIZE
-
     rts
 
 IPV4_HEADER:
@@ -718,26 +797,16 @@ BUILD_TCP_HEADER:
     lda REMOTE_PORT+1
     sta TCP_HDR_DST_PORT+1
 
-    lda #$04                                    ; set window
+    lda #$00                                    ; set window size to 255 bytes (could be higher)
     sta TCP_HDR_WINDOW
-    lda #$00
+    lda #$ff
     sta TCP_HDR_WINDOW+1
+    
+    ; LOCAL_ISN = LOCAL_ISN + 1 + TCP_DATA_PAYLOAD_SIZE+1
+    jsr CALC_LOCAL_ISN                          
 
-    lda LOCAL_ISN+3                             ; add 1 to local SEQ num
-    clc
-    adc #$01
-    sta LOCAL_ISN+3
-    lda LOCAL_ISN+2
-    adc #$00
-    sta LOCAL_ISN+2
-    lda LOCAL_ISN+1
-    adc #$00
-    sta LOCAL_ISN+1
+    ; copy LOCAL_ISN into TCP Header Sequence Number
     lda LOCAL_ISN+0
-    adc #$00
-    sta LOCAL_ISN+0
-
-    lda LOCAL_ISN+0                             ; write SEQ number
     sta TCP_HDR_SEQ_NUM+0
     lda LOCAL_ISN+1
     sta TCP_HDR_SEQ_NUM+1
@@ -746,21 +815,11 @@ BUILD_TCP_HEADER:
     lda LOCAL_ISN+3
     sta TCP_HDR_SEQ_NUM+3
 
-    lda REMOTE_ISN+3                             ; add 1 to remote ISN
-    clc
-    adc #$01
-    sta REMOTE_ISN+3
-    lda REMOTE_ISN+2
-    adc #$00
-    sta REMOTE_ISN+2
-    lda REMOTE_ISN+1
-    adc #$00
-    sta REMOTE_ISN+1
-    lda REMOTE_ISN+0
-    adc #$00
-    sta REMOTE_ISN+0
+    ; bump REMOTE_ISN by (1 + received_payload_length)
+    jsr CALC_REMOTE_ISN
 
-    lda REMOTE_ISN+0                            ; update acknowledment number
+    ; copy the REMOTE_ISN into the TCP header’s Ack field
+    lda REMOTE_ISN+0
     sta TCP_HDR_ACK_NUM+0
     lda REMOTE_ISN+1
     sta TCP_HDR_ACK_NUM+1
@@ -789,26 +848,40 @@ BUILD_TCP_HEADER:
 
     jsr CALC_TCP_CHECKSUM
     
-    ; copy to buffer
+    ; copy header to buffer
     ldx #$00
 _lp_copy:
     lda TCP_HDR, x
     sta ETH_TX_FRAME_PAYLOAD+20, x
-    cpx #19
+    inx 
+    cpx #20
+    bne _lp_copy
+
+    ; copy data to buffer
+    ldx #$00
+_lp_data_copy:
+    cpx TCP_DATA_PAYLOAD_SIZE
     beq _lp_done
+    lda TCP_DATA_PAYLOAD, x
+    sta ETH_TX_FRAME_PAYLOAD+20+20, x
     inx
-    jmp _lp_copy
+    jmp _lp_data_copy
 
 _lp_done:
     
-    lda #0
-    sta ETH_TX_FRAME_PAYLOAD_SIZE+1
-    lda #20
-    sta ETH_TX_FRAME_PAYLOAD_SIZE
+    ;lda #0
+    ;sta ETH_TX_FRAME_PAYLOAD_SIZE+1
+    ;lda #20
+    ;sta ETH_TX_FRAME_PAYLOAD_SIZE
 
     rts
 
-TCP_DATA_SIZE:
+; we will max our data payload at 235 bytes which is small, but
+; fits well with BASIC string sizes (tcp header = 20 + 235 = 255)
+TCP_DATA_PAYLOAD_SIZE:
+.byte $00
+
+TCP_DATA_PAYLOAD_WORD_COUNT:
 .byte $00
 
 TCP_PSEUDO_HDR:
@@ -823,6 +896,25 @@ TCP_HDR_FLGS_OFFS:  .byte $00, $00
 TCP_HDR_WINDOW:     .byte $00, $00
 TCP_HDR_CHKSM:      .byte $00, $00
 TCP_HDR_URGNT:      .byte $00, $00
+
+; max size of 235 bytes.  fits with basic strings and helps with checksum calculation
+; since tcp header = 20 bytes (with no options) + 235 bytes = 255 bytes
+TCP_DATA_PAYLOAD:
+.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
 
 ;=============================================================================
 CALC_TCP_CHECKSUM:
@@ -860,47 +952,102 @@ CALC_TCP_CHECKSUM:
     sta TCP_PSEUDO_HDR+8
     lda IPV4_HDR_PROTO
     sta TCP_PSEUDO_HDR+9
+
+    ; tcp header size
     lda #$00
     sta TCP_PSEUDO_HDR+10
     lda #20
     sta TCP_PSEUDO_HDR+11
+    
+    ; add size of data payload
+    lda TCP_DATA_PAYLOAD_SIZE
+    clc
+    adc TCP_PSEUDO_HDR+11
+    sta TCP_PSEUDO_HDR+11
+    lda #$00
+    adc TCP_PSEUDO_HDR+10
+    sta TCP_PSEUDO_HDR+10
 
-    ; 3) Sum each word in the pseudo header + data
-    ldx #$00                ; counter as we sum bytes
-    ldy #$00                ; Y = offset into pseudo header (0,2,4,...)
+    ; calculate tcp data word count (word count = byte count / 2)
+    lda TCP_DATA_PAYLOAD_SIZE
+    clc
+    adc #1                          ; A = byte_count + 1
+    lsr                             ; A = (byte_count + 1) >> 1
+    sta TCP_DATA_PAYLOAD_WORD_COUNT ; store the word count in one byte
 
-_sum_word:
-    lda TCP_PSEUDO_HDR,y
-    sta _num1hi
+    ; set starting summation value
+    ldy #$00                        ; Y = offset into pseudo header (0,2,4,...)
+    lda TCP_PSEUDO_HDR,y            ; init summation result
+    sta _reshi
     iny
     lda TCP_PSEUDO_HDR,y
-    sta _num1lo
-    iny
-    lda TCP_PSEUDO_HDR,Y
-    sta _num2hi
-    iny
-    lda TCP_PSEUDO_HDR,Y
-    sta _num2lo
-    jsr _addwords
+    sta _reslo
 
-_loop
-    lda _reslo
+    ; Sum each word in the pseudo header
+    ldx #$05                ; x=5 (countdown of words)
+_loop_pseudo_header
+    lda _reslo              ; store add result back into num1
     sta _num1lo
     lda _reshi
     sta _num1hi
 
     iny
-    lda TCP_PSEUDO_HDR,Y
+    lda TCP_PSEUDO_HDR,Y    ; get hi byte of next value
     sta _num2hi
     iny
-    lda TCP_PSEUDO_HDR,Y
+    lda TCP_PSEUDO_HDR,Y    ; get lo byte of next value
     sta _num2lo
-    jsr _addwords
+    jsr _addwords           ; add them to prev result
 
-    inx
-    cpx #14
-    beq _add_overflow
-    jmp _loop
+    dex                     ; x--
+    bne _loop_pseudo_header ; if x <> 0 then loop again
+
+_sum_tcp_hdr:
+    ; —— now sum the 10 words of the TCP header ——
+    ldx #$0a                ; x = 10 (count of words)
+    ldy #$00                ; y = 0 (each byte)
+
+_loop_tcp_header:
+    lda _reslo              ; store add result back into num1
+    sta _num1lo
+    lda _reshi
+    sta _num1hi
+
+    lda TCP_HDR,y           ; hi
+    sta _num2hi
+    iny
+    lda TCP_HDR,y           ; lo
+    sta _num2lo
+    iny
+    jsr _addwords           ; add to prev result
+
+    dex                     ; x--
+    bne _loop_tcp_header    ; if x<>0 then loop again
+
+_sum_tcp_data:
+
+    lda TCP_DATA_PAYLOAD_WORD_COUNT
+    beq _add_overflow        ; no data to sum, go finish up
+
+    tax                     ; x = word count
+    ldy #$00                ; y = 0 (each byte)
+
+_loop_tcp_data:
+    lda _reslo              ; store add result back into num1
+    sta _num1lo
+    lda _reshi
+    sta _num1hi
+
+    lda TCP_DATA_PAYLOAD,y  ; hi
+    sta _num2hi
+    iny
+    lda TCP_DATA_PAYLOAD,y  ; lo
+    sta _num2lo
+    iny
+    jsr _addwords           ; add to prev result
+
+    dex                     ; x--
+    bne _loop_tcp_data      ; if x <> 0 loop again
 
 _add_overflow:
     lda _reslo               ; add overflow byte 24 back into the result
@@ -966,6 +1113,160 @@ _num2hi: .byte $00
 _reslo: .byte $00
 _reshi: .byte $00
 _resex: .byte $00
+
+CLEAR_LOCAL_ISN:
+    lda #$00
+    sta LOCAL_ISN+0
+    sta LOCAL_ISN+1
+    sta LOCAL_ISN+2
+    sta LOCAL_ISN+3
+    sta LOCAL_ISN_TMP
+    rts
+
+CLEAR_REMOTE_ISN:
+    lda #$00
+    sta REMOTE_ISN+0
+    sta REMOTE_ISN+1
+    sta REMOTE_ISN+2
+    sta REMOTE_ISN+3
+    sta REMOTE_ISN_TMP
+    sta REMOTE_ISN_TMP+1
+    rts
+
+CALC_LOCAL_ISN:
+    ; 1) compute sum = payload_size + 1
+    lda TCP_DATA_PAYLOAD_SIZE
+    clc
+    adc #$01
+    sta LOCAL_ISN_TMP
+
+    ; 2) add that sum into the low byte of LOCAL_ISN
+    lda LOCAL_ISN+3
+    clc
+    adc LOCAL_ISN_TMP
+    sta LOCAL_ISN+3
+
+    ; 3) ripple any carry into the upper bytes
+    lda LOCAL_ISN+2
+    adc #$00
+    sta LOCAL_ISN+2
+    lda LOCAL_ISN+1
+    adc #$00
+    sta LOCAL_ISN+1
+    lda LOCAL_ISN+0
+    adc #$00
+    sta LOCAL_ISN+0
+
+    rts
+
+;=============================================================================
+; CALC_REMOTE_ISN
+;   Advances 32-bit REMOTE_ISN by (1 + received_payload_length).
+;   Uses TCP_RX_DATA_PAYLOAD_SIZE computed above.
+;=============================================================================
+CALC_REMOTE_ISN:
+    jsr CALC_RX_TCP_BYTE_COUNT
+    ; now TCP_RX_DATA_PAYLOAD_SIZE holds the 16-bit TCP payload length
+
+    ; 1) Compute 16-bit (received_size + 1) into REMOTE_ISN_TMP
+    lda TCP_RX_DATA_PAYLOAD_SIZE
+    clc
+    adc #$01
+    sta REMOTE_ISN_TMP            ; low byte
+    lda TCP_RX_DATA_PAYLOAD_SIZE+1
+    adc #$00
+    sta REMOTE_ISN_TMP+1         ; high byte
+
+    ; 2) add that sum into the low byte of REMOTE_ISN
+    lda REMOTE_ISN+3
+    clc
+    adc REMOTE_ISN_TMP
+    sta REMOTE_ISN+3
+    ; next byte:
+    lda REMOTE_ISN+2
+    adc REMOTE_ISN_TMP+1
+    sta REMOTE_ISN+2
+    ; ripple into remaining:
+    lda REMOTE_ISN+1
+    adc #$00
+    sta REMOTE_ISN+1
+    lda REMOTE_ISN+0
+    adc #$00
+    sta REMOTE_ISN+0
+    rts
+
+;=============================================================================
+; CALC_RX_TCP_BYTE_COUNT
+;   Computes the TCP payload length of the received frame and
+;   stores the 16-bit result into TCP_RX_DATA_PAYLOAD_SIZE (little-endian).
+;   Expects: ETH_RX_FRAME_PAYLOAD points at first IP header byte.
+;=============================================================================
+CALC_RX_TCP_BYTE_COUNT:
+
+    ;—— 1) Pull IP Total-Length into TMP_HI:TMP_LO ——  
+    lda ETH_RX_FRAME_PAYLOAD+3    ; low byte of Total-Length  
+    sta _TMP_LO  
+    lda ETH_RX_FRAME_PAYLOAD+2    ; high byte of Total-Length  
+    sta _TMP_HI  
+
+    ;—— 2) Subtract the IP header length ——  
+    ; IHL is low nibble of byte 0, in 32-bit words → ×4 = bytes  
+    lda ETH_RX_FRAME_PAYLOAD      ; Version/IHL  
+    and #$0F                      ; isolate IHL  
+    asl                           ; ×2  
+    asl                           ; ×4  
+    sta _TMP_IP_HDR_LEN            ; now holds IP-header bytes (usually 20)  
+
+    sec                           ; prepare for subtraction  
+    lda _TMP_LO  
+    sbc _TMP_IP_HDR_LEN            ; low–byte subtract  
+    sta _TMP_LO  
+    lda _TMP_HI 
+    sbc #$00                      ; high–byte subtract  
+    sta _TMP_HI  
+
+    ;—— 3) Subtract the TCP header length ——  
+    ; Data-Offset is high nibble of byte (20+12) in payload; value = words  
+    lda ETH_RX_FRAME_PAYLOAD+32   ; that's payload-offset 20 + 12  
+    and #$F0                      ; isolate high nibble (DataOffset<<4)  
+    lsr                           ; >>1  
+    lsr                           ; >>2  
+    lsr                           ; >>3  
+    lsr                           ; >>4  ; now A = DataOffset in 32-bit words  
+    asl                           ; *2  
+    asl                           ; *4  ; A = TCP-header bytes (usually 20)  
+    sta _TMP_TCP_HDR_LEN  
+
+    sec  
+    lda _TMP_LO  
+    sbc _TMP_TCP_HDR_LEN           ; subtract low byte  
+    sta _TMP_LO  
+    lda _TMP_HI
+    sbc #$00  
+    sta _TMP_HI 
+    
+    lda _TMP_LO
+    sta TCP_RX_DATA_PAYLOAD_SIZE
+    lda _TMP_HI
+    sta TCP_RX_DATA_PAYLOAD_SIZE+1
+
+    ; now TCP_RX_DATA_PAYLOAD_SIZE = number of data bytes in the TCP segment (little endian)
+    rts
+
+_TMP_LO:
+    .byte $00
+_TMP_HI:
+    .byte $00
+
+_TMP_IP_HDR_LEN:
+    .byte $00
+
+_TMP_TCP_HDR_LEN:
+    .byte $00
+
+
+    
+
 
 .include "arp.asm"
 .include "dhcp.asm"
@@ -1129,7 +1430,7 @@ _ahead:
     rts
 
 _tcp_syn_ack:
-    ; stash seq number
+    ; stash seq number in REMOTE_ISN
     lda ETH_RX_FRAME_PAYLOAD+20+4       ; SEQ number
     sta REMOTE_ISN+0
     lda ETH_RX_FRAME_PAYLOAD+20+5
@@ -1138,6 +1439,8 @@ _tcp_syn_ack:
     sta REMOTE_ISN+2
     lda ETH_RX_FRAME_PAYLOAD+20+7
     sta REMOTE_ISN+3
+
+    
 
     lda #ETH_STATE_TCP_SYNACK_RCVD
     sta ETH_STATE
@@ -1187,8 +1490,8 @@ ETH_TX_TYPE:
     .byte $08, $06
 ETH_TX_FRAME_PAYLOAD:
     .fill 1500, $00
-ETH_TX_FRAME_PAYLOAD_SIZE
-    .byte $00, $00
+;ETH_TX_FRAME_PAYLOAD_SIZE
+;    .byte $00, $00
 
 ETH_RX_FRAME_HEADER:
 ETH_RX_FRAME_DEST_MAC:
@@ -1200,4 +1503,6 @@ ETH_RX_TYPE:
 ETH_RX_FRAME_PAYLOAD:
     .fill 1500, $00
 ETH_RX_FRAME_PAYLOAD_SIZE
+    .byte $00, $00
+TCP_RX_DATA_PAYLOAD_SIZE
     .byte $00, $00
