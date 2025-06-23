@@ -12,13 +12,25 @@ RAND32_VALUE:
 
 RAND32_SEED:
 
-    lda $D41B
+    ;lda $D41B
+-     BIT $D7FE
+      BMI -
+      LDA $D7EF
     sta XORSHIFT32STATE+0
-    lda $D41B
+    ;lda $D41B
+-     BIT $D7FE
+      BMI -
+      LDA $D7EF
     sta XORSHIFT32STATE+1
-    lda $D41B
+    ;lda $D41B
+-     BIT $D7FE
+      BMI -
+      LDA $D7EF
     sta XORSHIFT32STATE+2
-    lda $D41B
+    ;lda $D41B
+-     BIT $D7FE
+      BMI -
+      LDA $D7EF
     sta XORSHIFT32STATE+3
 
     jsr RAND32
@@ -68,6 +80,13 @@ _ahead:
     sta $D776               ; MULTINB
     lda RAND32_RANGE+3
     sta $D777               ; MULTINB
+
+    ; wait until multibusy flag is clear
+;_wait:
+;    lda $D70F
+;    and #%01000000
+;    bne _wait
+
 
     lda $d77c 
     sta RAND32_VALUE+0
