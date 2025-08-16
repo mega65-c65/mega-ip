@@ -166,18 +166,16 @@ ETH_INIT:
 
     jsr MEGA65_IO_ENABLE
 
-    lda ETH_PROMISCUOUS
-    beq +
+; Configure RX filter:
+; - Multicast OFF  (bit5 = 0)
+; - Broadcast ON   (bit4 = 1)  [needed for ARP etc.]
+; - Promiscuous OFF (NOPROM=1, bit0 = 1)
 
-    ;lda MEGA65_ETH_CTRL3    ; promiscous mode on
-    ;and #%11111110          ; clear bit 0
-    lda #$10                ; disable multicast, promiscous mode, allow broadcast for ARP
+    lda MEGA65_ETH_CTRL3
+    and #%11011111        ; clear bit5 (MCST=0 → no multicast)
+    ora #%00010001        ; set bit4 (BCST=1) and bit0 (NOPROM=1)
     sta MEGA65_ETH_CTRL3
-    jmp _ahead
-
-+   lda MEGA65_ETH_CTRL3
-    ora #$01 
-    sta MEGA65_ETH_CTRL3
+    jmp _more
 
 _ahead:
     ; set ETH TX phase to 1
@@ -193,7 +191,7 @@ _ahead:
     and #%00111111          ; clear bits 6 and 7
     ora #%01000000          ; set bit 6
     sta MEGA65_ETH_CTRL3    ; write it back
-
+_more:
     ; read mac address from controller
     lda MEGA65_ETH_MAC+0
     sta ETH_TX_FRAME_SRC_MAC+0
@@ -467,8 +465,9 @@ TCP_STATE_HANDLER:
     beq _not_RST
 
     ; remote sent RST → tear down immediately
-    lda #TCP_STATE_CLOSED
-    sta TCP_STATE
+    ;lda #TCP_STATE_CLOSED
+    ;sta TCP_STATE
+jsr TCP_HARD_RESET
     rts
 
 _not_RST:
@@ -508,6 +507,11 @@ _lp_copy_data:
 
     ; then ACK the data:
 _ack_data:
+
+    lda #$00
+    sta TCP_DATA_PAYLOAD_SIZE
+    sta TCP_DATA_PAYLOAD_SIZE+1   ; ensure 0-length outbound segment
+
     lda #$00
     sta REMOTE_ISN_BUMP
     jsr CALC_REMOTE_ISN                 ; ADVANCE REMOTE_ISN by +1+payload
@@ -1165,10 +1169,23 @@ BUILD_TCP_HEADER:
     lda REMOTE_PORT+1
     sta TCP_HDR_DST_PORT+1
 
-    lda #$00                                    ; set window size to 255 bytes (could be higher)
-    sta TCP_HDR_WINDOW
-    lda #$ff
-    sta TCP_HDR_WINDOW+1
+ ;   lda #$00                                    ; set window size to 255 bytes (could be higher)
+ ;   sta TCP_HDR_WINDOW
+ ;   lda #$ff
+ ;   sta TCP_HDR_WINDOW+1
+
+; =====
+; --- compute advertised window from ring free space (0..255) ---
+; free = (TAIL - HEAD - 1) mod 256
+    lda RBUF_TAIL
+    sec
+    sbc RBUF_HEAD
+    sbc #1
+    sta TCP_HDR_WINDOW+1   ; low byte
+    lda #$00
+    sta TCP_HDR_WINDOW     ; high byte (we cap at 255)
+
+; =====
     
     ; copy LOCAL_ISN into TCP Header Sequence Number
     lda LOCAL_ISN+0
@@ -1674,8 +1691,57 @@ _TMP_IP_HDR_LEN:
 _TMP_TCP_HDR_LEN:
     .byte $00
 
+;=========
+; Tear everything down on RST (or fatal error)
+TCP_HARD_RESET:
+    ; state
+    lda #$00
+    sta ETH_RX_TCP_FLAGS
 
-    
+    lda #$00
+    sta TIME_WAIT_COUNTER_LO
+    sta TIME_WAIT_COUNTER_HI
+
+    jsr CLEAR_LOCAL_ISN
+    jsr CLEAR_REMOTE_ISN
+
+    ; flush RX ring (optional, but avoids BASIC reading stale bytes)
+    lda RBUF_HEAD
+    sta RBUF_TAIL
+
+    ; mark closed
+    lda #$00
+    sta ETH_STATE            ; if you use it for TX/RX gate
+    lda #TCP_STATE_CLOSED
+    sta TCP_STATE
+
+    lda #$00
+    sta REMOTE_ISN_BUMP
+
+    lda #$00
+    sta TCP_DATA_PAYLOAD_SIZE
+
+    ; notify BASIC: set a sticky event flag it can poll
+    ; bit0 = RST seen
+    lda TCP_EVENT_FLAG
+    ora #$01
+    sta TCP_EVENT_FLAG
+    rts
+
+TCP_EVENT_FLAG
+    .byte $00
+
+
+; returns current event bits in A and clears them (BASIC can poll this for hard reset)
+ETH_STATUS_POLL:
+    lda TCP_EVENT_FLAG
+    pha
+    lda #$00
+    sta TCP_EVENT_FLAG
+    pla
+    rts
+
+;==========
 
 
 .include "arp.asm"
@@ -1703,6 +1769,65 @@ _accept_packet:
     lda #$03
     sta MEGA65_ETH_CTRL2
 
+;==============
+; --- Early filter using NIC’s 2 status bytes (before any DMA) ---
+; Buffer layout per MEGA65 doc (per received frame):
+;   +0 : length LSB
+;   +1 : [bits 0..3: length MSB nibble]
+;        bit4 = 1 → multicast
+;        bit5 = 1 → broadcast
+;        bit6 = 1 → unicast-to-me (matches MACADDR)
+;        bit7 = 1 → CRC error (bad frame)
+
+    ; Peek meta byte 0 (length LSB) — optional, but handy to have
+    FAR_PEEK $ff, $0de800
+    sta _rx_len_lsb
+
+    ; Peek meta byte 1 (flags + length MSB nibble)
+    FAR_PEEK $ff, $0de801
+    sta _rx_meta1
+
+    ; ---- Drop CRC-bad frames fast (bit7) ----
+ ;   lda _rx_meta1
+ ;   and #%10000000
+ ;   beq _chk_multicast
+    ; ack & bail
+    ;lda #$01
+    ;sta MEGA65_ETH_CTRL2
+    ;lda #$03
+    ;sta MEGA65_ETH_CTRL2
+ ;   rts
+
+_chk_multicast:
+    ; ---- Drop multicast (bit4) ----
+    lda _rx_meta1
+    and #%00010000
+    beq _chk_dest_ok
+    ; ack & bail
+    lda #$01
+    sta MEGA65_ETH_CTRL2
+    lda #$03
+    sta MEGA65_ETH_CTRL2
+    rts
+
+_chk_dest_ok:
+    jmp _accept_for_us
+    ; ---- Keep only broadcast (bit5) OR unicast-to-me (bit6) ----
+;    lda _rx_meta1
+;    and #%01100000            ; isolate bits 6|5
+;    bne _accept_for_us        ; if either set → keep
+    ; otherwise: not for us → drop
+    ;lda #$01
+    ;sta MEGA65_ETH_CTRL2
+    ;lda #$03
+    ;sta MEGA65_ETH_CTRL2
+;    rts
+
+_rx_len_lsb: .byte $00
+_rx_meta1:   .byte $00
+
+_accept_for_us:
+;=============
     ; get the length of bytes in incoming RX buffer
     ; using full 32 bit access method
 
@@ -1742,6 +1867,35 @@ _len_msb:
     .byte $00                   ; command high byte
     .word $0000                 ; modulo (ignored)
 
+
+
+
+; Drop IPv6 outright
+;    lda ETH_RX_TYPE
+;    cmp #$86
+;    bne _rx_not_ipv6
+;    lda ETH_RX_TYPE+1
+;    cmp #$DD
+;    bne _rx_not_ipv6
+;    rts
+
+;_rx_not_ipv6:
+; Drop IPv6 multicast MAC 33:33:xx:xx:xx:xx (in case hardware filter changes)
+;    lda ETH_RX_FRAME_DEST_MAC+0
+;    cmp #$33
+;    bne _rx_continue
+;    lda ETH_RX_FRAME_DEST_MAC+1
+;    cmp #$33
+;    bne _rx_continue
+
+;_forever:
+;    inc $d021
+;    jmp _forever
+;
+ ;   rts
+
+
+_rx_continue:
     ; confirm if this packet is for us
     jsr ETH_IS_PACKET_FOR_US
     beq _unknown_packet
@@ -1836,6 +1990,15 @@ INCOMING_TCP_PACKET:
 _extract_flags:
     lda ETH_RX_FRAME_PAYLOAD+20+13      ; TCP FLAGS
     sta ETH_RX_TCP_FLAGS
+
+;lda ETH_RX_FRAME_PAYLOAD+20+4   ; SEQ[31:24]
+;sta REMOTE_ISN+0
+;lda ETH_RX_FRAME_PAYLOAD+20+5   ; SEQ[23:16]
+;sta REMOTE_ISN+1
+;lda ETH_RX_FRAME_PAYLOAD+20+6   ; SEQ[15:8]
+;sta REMOTE_ISN+2
+;lda ETH_RX_FRAME_PAYLOAD+20+7   ; SEQ[7:0]
+;sta REMOTE_ISN+3
 
 _retain_remote_isn:
     ; stash seq number in REMOTE_ISN
