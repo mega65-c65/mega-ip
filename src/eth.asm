@@ -453,13 +453,34 @@ _dest_addr:
 _exit:
     rts
 
-
+; Process deferred ARP reply from mainline
+ETH_PROCESS_DEFERRED:
+    lda ARP_REPLY_PENDING
+    beq _epd_done
+    ldx #$2a
+_epd_copy:
+    dex
+    lda ARP_REPLY_PACKET,x
+    sta ETH_TX_FRAME_DEST_MAC,x
+    cpx #$00
+    bne _epd_copy
+    lda #$2a
+    sta ETH_TX_LEN_LSB
+    lda #$00
+    sta ETH_TX_LEN_MSB
+    jsr ETH_PACKET_SEND
+    bcs _epd_done
+    lda #$00
+    sta ARP_REPLY_PENDING
+_epd_done:
+    rts
 
 ;=============================================================================
 ; TCP state handler
 ;=============================================================================
 TCP_STATE_HANDLER:
 
+    jsr ETH_PROCESS_DEFERRED
     lda ETH_RX_TCP_FLAGS
     and #TCP_FLAG_RST
     beq _not_RST
@@ -764,11 +785,21 @@ _yes:
 ; Ethernet clear to send
 ;=============================================================================
 ETH_WAIT_CLEAR_TO_SEND:
-
-    ;lda MEGA65_ETH_CTRL1        ; test if bit 7 is set
-    ;ora #$80
-    ;sta MEGA65_ETH_CTRL1
-    
+    ldx #$00
+    ldy #$00
+_cts_spin:
+    lda MEGA65_ETH_CTRL1
+    and #$80
+    bne _cts_ready
+    dey
+    bne _cts_spin
+    dex
+    bne _cts_spin
+    sec
+    rts
+_cts_ready:
+    clc
+    rts
 -   lda MEGA65_ETH_CTRL1
     and #$80
     beq -
@@ -813,10 +844,14 @@ _ETH_BUF_SRC:
 
     ; be sure we can send
     jsr ETH_WAIT_CLEAR_TO_SEND
-
+    bcs _tx_fail
     ; transmit now
     lda #$01
     sta MEGA65_ETH_COMMAND
+    clc
+    rts
+_tx_fail:
+    sec
     rts
 
 
@@ -1924,10 +1959,11 @@ _tcp_packet_check:
     bne _unknown_packet
 
 _tcp_socket_check:
-    lda ETH_RX_FRAME_PAYLOAD+20+2   ; TCP header starts at +20: src port hi
+    ; correct: verify dst == our local ephemeral
+    lda ETH_RX_FRAME_PAYLOAD+20+2   ; TCP dst port hi
     cmp LOCAL_PORT+0
     bne _unknown_packet
-    lda ETH_RX_FRAME_PAYLOAD+20+3   ; src port lo ≠ really necessary; you want dst:
+    lda ETH_RX_FRAME_PAYLOAD+20+3   ; TCP dst port lo
     cmp LOCAL_PORT+1
     bne _unknown_packet
     jmp INCOMING_TCP_PACKET
@@ -2054,3 +2090,38 @@ ETH_RX_FRAME_PAYLOAD_SIZE:
     .byte $00, $00
 TCP_RX_DATA_PAYLOAD_SIZE:
     .byte $00, $00
+
+; Non-blocking packet send (IRQ-safe)
+ETH_PACKET_SEND_NO_WAIT:
+    jsr MEGA65_IO_ENABLE
+    lda ETH_TX_LEN_LSB
+    sta MEGA65_ETH_TXSIZE_LSB
+    lda ETH_TX_LEN_MSB
+    sta MEGA65_ETH_TXSIZE_MSB
+    lda #<ETH_TX_FRAME_HEADER
+    sta _ETH_BUF_SRC2
+    lda #>ETH_TX_FRAME_HEADER
+    sta _ETH_BUF_SRC2+1
+    sta $D707
+    .byte $81
+    .byte $ff
+    .byte $00
+    .byte $00
+    .byte $00,$00
+_ETH_BUF_SRC2:
+    .byte $00,$00,EXEC_BANK
+    .byte $00,$e8,$0d
+    .byte $00
+    .word $0000
+    lda #$03
+    sta MEGA65_ETH_CTRL1
+    lda MEGA65_ETH_CTRL1
+    and #$80
+    beq _nw_fail
+    lda #$01
+    sta MEGA65_ETH_COMMAND
+    clc
+    rts
+_nw_fail:
+    sec
+    rts

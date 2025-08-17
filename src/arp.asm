@@ -112,7 +112,7 @@ _loop_compare2:
     bne _loop_compare2
     jmp _build_reply
 _not_ours:
-    rts
+rts
 
 _build_reply:
     ; destination broadcast (pull from src in RX buffer)
@@ -215,7 +215,6 @@ _build_reply:
 ; This routine will update the ARP cache and flip ETH_STATE back to IDLE
 ; This is when my machine does a WHO HAS IP 192.168.1.100?
 ARP_UPDATE_CACHE:
-
     ; find available slot
     ldx #$00
 _loop1
@@ -382,3 +381,15 @@ ARP_CACHE:
     .byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
     .byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
     
+
+
+; Deferred ARP reply frame (42 bytes)
+ARP_REPLY_PACKET:
+    .byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+    .byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+    .byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+    .byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+    .byte $00, $00
+
+ARP_REPLY_PENDING:
+    .byte $00
