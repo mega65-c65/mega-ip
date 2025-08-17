@@ -47,6 +47,7 @@ EXEC_BANK = $04     ; code is running from $42000
     jmp ETH_TCP_SEND_STRING
     jmp RBUF_GET
     jmp ETH_TCP_DISCONNECT
+    jmp ETH_STATUS_POLL
 
 LOCAL_IP:
     .byte 192, 168, 1, 75
@@ -457,21 +458,19 @@ _exit:
 ETH_PROCESS_DEFERRED:
     lda ARP_REPLY_PENDING
     beq _epd_done
-    ldx #$2a
+    lda #$00
+    sta ARP_REPLY_PENDING
+    ldx #$29
 _epd_copy:
-    dex
     lda ARP_REPLY_PACKET,x
     sta ETH_TX_FRAME_DEST_MAC,x
-    cpx #$00
-    bne _epd_copy
+    dex
+    bpl _epd_copy
     lda #$2a
     sta ETH_TX_LEN_LSB
     lda #$00
     sta ETH_TX_LEN_MSB
     jsr ETH_PACKET_SEND
-    bcs _epd_done
-    lda #$00
-    sta ARP_REPLY_PENDING
 _epd_done:
     rts
 
@@ -2015,13 +2014,24 @@ _not_ours:
 ; Routine to handle incoming TCP packet
 ;=============================================================================
 INCOMING_TCP_PACKET:
-
-    inc $d020
-    lda $d020
-    cmp #$0f
-    bne _extract_flags
-    lda #$00
-    sta $d020
+    ; Only handle IPv4 TCP; drop others (e.g., mDNS/UDP)
+    lda ETH_RX_FRAME_PAYLOAD+0
+    and #$F0
+    cmp #$40
+    beq _tcp_check
+    rts
+_tcp_check:
+    lda ETH_RX_FRAME_PAYLOAD+9
+    cmp #$06
+    beq _tcp_ok
+    rts
+_tcp_ok:
+    ;inc $d020
+    ;lda $d020
+    ;cmp #$0f
+    ;bne _extract_flags
+    ;lda #$00
+    ;sta $d020
 
 _extract_flags:
     lda ETH_RX_FRAME_PAYLOAD+20+13      ; TCP FLAGS
