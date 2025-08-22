@@ -129,26 +129,83 @@ TIME_WAIT_COUNTER_HI:
 
 ; recieved tcp data buffer
 
+; Constants for runtime addresses
+IRQ_BASE = $1600
+VEC_TABLE_ADDR = (ETH_VEC_TABLE - ETH_RCV_IRQ) + IRQ_BASE
+CUST_IRQ_ADDR  = (ETH_CUST_IRQ - ETH_RCV_IRQ) + IRQ_BASE
+IRQ_RETURN_ADDR = (ETH_IRQ_RETURN - ETH_RCV_IRQ) + IRQ_BASE
 
 ETH_RCV_IRQ:
-.byte $38, $A2, $3D, $A0, $16, $20, $8D, $FF, $AD, $3D, $16, $8D, $3B, $16, $AD, $3E
-.byte $16, $8D, $3C, $16, $A9, $27, $8D, $3D, $16, $A9, $16, $8D, $3E, $16, $18, $A2
-.byte $3D, $A0, $16, $20, $8D, $FF, $60
+; This is the installer code that runs once via JSR $1600
+.byte $38                                          ; SEC
+.byte $a2, <VEC_TABLE_ADDR                        ; LDX #<vectable
+.byte $a0, >VEC_TABLE_ADDR                        ; LDY #>vectable
+.byte $20, $8d, $ff                               ; JSR $FF8D (VECTOR - read table)
 
-.byte $A9, EXEC_BANK
-.byte $85, $02
-.byte $A9, >ETH_RCV
-.byte $85, $03
-.byte $A9, <ETH_RCV
-.byte $85, $04
-.byte $A9, $04          ; ensure interrupts disabled upon JSRFAR call
-.byte $85, $05, $20
+; Copy original IIRQ vector to our JMP instruction
+.byte $ad, <VEC_TABLE_ADDR, >VEC_TABLE_ADDR       ; LDA vectable (IIRQ low)
+.byte $8d, <(IRQ_RETURN_ADDR+1), >(IRQ_RETURN_ADDR+1)  ; STA jmp+1
+.byte $ad, <(VEC_TABLE_ADDR+1), >(VEC_TABLE_ADDR+1)    ; LDA vectable+1 (IIRQ high)
+.byte $8d, <(IRQ_RETURN_ADDR+2), >(IRQ_RETURN_ADDR+2)  ; STA jmp+2
 
-.byte $6E, $FF, $4C, $EC, $F9, $27, $16, $26
-.byte $CE, $B6, $F9, $6D, $F3, $3F, $F4, $E1, $F3, $11, $F4, $9E, $F4, $2C, $F3, $58
-.byte $F3, $75, $F8, $1C, $F3, $9A, $F4, $26, $CE, $E0, $F4, $70, $F7, $5D, $CC, $69
-.byte $CC, $75, $CC, $84, $CC, $93, $CC, $A2, $CC, $B1, $CC, $C0, $CC, $EB, $E6, $2C
-.byte $E7, $22, $E9, $AF, $E1 
+; Write our custom IRQ address to IIRQ vector
+.byte $a9, <CUST_IRQ_ADDR                         ; LDA #<custom_irq
+.byte $8d, <VEC_TABLE_ADDR, >VEC_TABLE_ADDR       ; STA vectable
+.byte $a9, >CUST_IRQ_ADDR                         ; LDA #>custom_irq
+.byte $8d, <(VEC_TABLE_ADDR+1), >(VEC_TABLE_ADDR+1)    ; STA vectable+1
+
+; Install updated vector table
+.byte $18                                          ; CLC
+.byte $a2, <VEC_TABLE_ADDR                        ; LDX #<vectable
+.byte $a0, >VEC_TABLE_ADDR                        ; LDY #>vectable
+.byte $20, $8d, $ff                               ; JSR $FF8D (VECTOR - set table)
+.byte $60                                          ; RTS
+
+; The actual IRQ handler starts here (at offset $27 from $1600 = $1627)
+ETH_CUST_IRQ:
+; KERNAL has already saved A, X, Y, Z, B on stack
+; We just need to save ZP locations we use
+
+.byte $A5, $02                                    ; LDA $02
+.byte $48                                          ; PHA
+.byte $A5, $03                                    ; LDA $03
+.byte $48                                          ; PHA
+.byte $A5, $04                                    ; LDA $04
+.byte $48                                          ; PHA
+.byte $A5, $05                                    ; LDA $05
+.byte $48                                          ; PHA
+
+; Set up JSRFAR parameters
+.byte $A9, EXEC_BANK                              ; LDA #EXEC_BANK
+.byte $85, $02                                    ; STA $02
+.byte $A9, >ETH_RCV                               ; LDA #>ETH_RCV
+.byte $85, $03                                    ; STA $03
+.byte $A9, <ETH_RCV                               ; LDA #<ETH_RCV
+.byte $85, $04                                    ; STA $04
+.byte $A9, $04                                    ; LDA #$04
+.byte $85, $05                                    ; STA $05
+.byte $20, $6E, $FF                               ; JSR $FF6E (JSRFAR)
+
+; Restore ZP locations
+.byte $68                                          ; PLA
+.byte $85, $05                                    ; STA $05
+.byte $68                                          ; PLA
+.byte $85, $04                                    ; STA $04
+.byte $68                                          ; PLA
+.byte $85, $03                                    ; STA $03
+.byte $68                                          ; PLA
+.byte $85, $02                                    ; STA $02
+
+ETH_IRQ_RETURN:
+.byte $4C, $00, $00                               ; JMP $0000 (will be modified)
+
+; Vector table (56 bytes)
+ETH_VEC_TABLE:
+.fill 56, $00
+
+ETH_RCV_IRQ_END:
+
+IRQ_LEN = ETH_RCV_IRQ_END - ETH_RCV_IRQ
 
 .include "random.asm"
 
@@ -231,28 +288,36 @@ _loop_delay
     dec _loop_ctr
     bne _loop_delay
 
-    ; install IRQ handler if not already installed
-    ;FAR_PEEK $00, $001600
-    ;cmp #$38
-    ;beq _clear_buffer
-
-    sta $D707
-    .byte $00                   ; end of job options
-    .byte $00                   ; copy
-    .byte $75, $00              ; length lsb, msb ($75 = 117 bytes)
-    .byte <ETH_RCV_IRQ, >ETH_RCV_IRQ, EXEC_BANK   ; src lsb, msb, bank
-    .byte $00, $16, $00         ; dest ($1600 in bank 0)
-    .byte $00                   ; command high byte
-    .word $0000                 ; modulo (ignored)
-
-    jsr $1600                   ; start rcv irq
-
 _clear_buffer:
     ; clear the receieve buffer
     lda #$00
     sta RBUF_HEAD
     sta RBUF_TAIL
 
+    ; install IRQ handler if not already installed
+    ;FAR_PEEK $00, $001600
+    ;cmp #$38
+    ;beq _clear_buffer
+
+ ;   sta $D707
+ ;   .byte $00                   ; end of job options
+ ;   .byte $00                   ; copy
+ ;   .byte IRQ_LEN, $00          ; length lsb, msb
+ ;   .byte <ETH_RCV_IRQ, >ETH_RCV_IRQ, EXEC_BANK   ; src lsb, msb, bank
+ ;   .byte $00, $16, $00         ; dest ($1600 in bank 0)
+ ;   .byte $00                   ; command high byte
+ ;   .word $0000                 ; modulo (ignored)
+
+    ; Manual copy for debugging
+    ldx #$00
+_copy_loop:
+    lda ETH_RCV_IRQ,x
+    sta $01600,x
+    inx
+    cpx #IRQ_LEN
+    bne _copy_loop
+
+    jsr $1600                   ; start rcv irq
     rts
 
 _loop_ctr:
@@ -340,6 +405,8 @@ _send_SYN:
 
     lda #TCP_FLAG_SYN
     jsr ETH_BUILD_TCPIP_PACKET
+    bcs _connect_fail
+
     jsr ETH_PACKET_SEND
 
     lda #TCP_STATE_SYN_SENT
@@ -348,6 +415,9 @@ _send_SYN:
     jsr CALC_LOCAL_ISN
 
     jmp TCP_STATE_HANDLER
+
+_connect_fail:
+    rts
 
 
 ;=============================================================================
@@ -367,7 +437,7 @@ ETH_TCP_DISCONNECT:
 
     lda #TCP_STATE_FIN_WAIT_1
     sta TCP_STATE
-    jmp TCP_STATE_HANDLER
+;    jmp TCP_STATE_HANDLER
 
 _not_connected:
     rts
@@ -431,6 +501,8 @@ ETH_TCP_SEND_STRING:
     lda _var_len
     sta TCP_DATA_PAYLOAD_SIZE
 
+php
+sei
     ; use DMA to copy the bytes
     sta $D707
     .byte $80                                   ; enhanced dma - src bits 20-27
@@ -448,7 +520,7 @@ _dest_addr:
     .byte <TCP_DATA_PAYLOAD, >TCP_DATA_PAYLOAD, EXEC_BANK             ; dest lsb, msb, bank
     .byte $00                                   ; command high byte
     .word $0000                                 ; modulo (ignored)
-
+plp
     jmp ETH_TCP_SEND
 
 _exit:
@@ -458,18 +530,25 @@ _exit:
 ETH_PROCESS_DEFERRED:
     lda ARP_REPLY_PENDING
     beq _epd_done
+
     lda #$00
     sta ARP_REPLY_PENDING
-    ldx #$29
+
+    ldx #$2a
 _epd_copy:
+    dex
     lda ARP_REPLY_PACKET,x
     sta ETH_TX_FRAME_DEST_MAC,x
-    dex
-    bpl _epd_copy
+    cpx #$00
+    bne _epd_copy
+    lda ARP_REPLY_PACKET
+    sta ETH_TX_FRAME_DEST_MAC
+    
     lda #$2a
     sta ETH_TX_LEN_LSB
     lda #$00
     sta ETH_TX_LEN_MSB
+
     jsr ETH_PACKET_SEND
 _epd_done:
     rts
@@ -479,7 +558,7 @@ _epd_done:
 ;=============================================================================
 TCP_STATE_HANDLER:
 
-    jsr ETH_PROCESS_DEFERRED
+    ;jsr ETH_PROCESS_DEFERRED
     lda ETH_RX_TCP_FLAGS
     and #TCP_FLAG_RST
     beq _not_RST
@@ -617,6 +696,11 @@ _check_FIN_WAIT_2:
     bne _wait_and_loop
 
 _got_FIN_ACK:
+    ; consume the peer's FIN (+1 on remote sequence)
+    lda #$01
+    sta REMOTE_ISN_BUMP
+    jsr CALC_REMOTE_ISN
+
     ; send final ACK
     lda #TCP_FLAG_ACK
     jsr ETH_BUILD_TCPIP_PACKET
@@ -659,7 +743,13 @@ _check_LAST_ACK:
     and #TCP_FLAG_ACK
     cmp #TCP_FLAG_ACK
     bne _wait_and_loop
+
     ; peer ACK’d your FIN, now go TIME_WAIT
+    lda #$02
+    sta TIME_WAIT_COUNTER_HI
+    lda #$58
+    sta TIME_WAIT_COUNTER_LO
+
     lda #TCP_STATE_TIME_WAIT
     sta TCP_STATE
     rts
@@ -669,8 +759,9 @@ _other:
     rts
 
 _wait_and_loop:
-    jsr ETH_WAIT_100MS
-    jmp TCP_STATE_HANDLER
+;    jsr ETH_WAIT_100MS
+;    jmp TCP_STATE_HANDLER
+    rts
 
 ;=============================================================================
 ; TIME_WAIT_TICK
@@ -799,10 +890,11 @@ _cts_spin:
 _cts_ready:
     clc
     rts
--   lda MEGA65_ETH_CTRL1
-    and #$80
-    beq -
-    rts
+
+;-   lda MEGA65_ETH_CTRL1
+;    and #$80
+;    beq -
+;    rts
 
 ;=============================================================================
 ; Routine to copy packet in TX buffer to Ethernet buffer and do transmit
@@ -814,28 +906,35 @@ ETH_PACKET_SEND:
 
     lda ETH_TX_LEN_LSB
     sta MEGA65_ETH_TXSIZE_LSB
+    sta _len_lsb
     lda ETH_TX_LEN_MSB
     sta MEGA65_ETH_TXSIZE_MSB
+    sta _len_msb
 
     lda #<ETH_TX_FRAME_HEADER
     sta _ETH_BUF_SRC
     lda #>ETH_TX_FRAME_HEADER
     sta _ETH_BUF_SRC+1
 
+php
+sei
     ; inline DMA to copy our buffer to TX buffer
     sta $D707
     .byte $81                   ; enhanced dma - dest bits 20-27
     .byte $ff                   ; ----------------------^
     .byte $00                   ; end of job options
     .byte $00                   ; copy
-    .byte $00, $00              ; length lsb, msb
+_len_lsb:
+    .byte $00                   ; length lsb
+_len_msb:
+    .byte $00                   ; length msb
 _ETH_BUF_SRC:
     .byte $00, $00, EXEC_BANK   ; src lsb, msb, bank
     ;.byte $00, $00, $05         ; debug destination
     .byte $00, $e8, $0d         ; dest eth TX/RX buffer ($ffde800)
     .byte $00                   ; command high byte
     .word $0000                 ; modulo (ignored)
-
+plp
 
     ; make sure ethernet is not under reset
     lda #$03
@@ -887,10 +986,15 @@ ETH_CHECK_SAME_NET:
 _compare_net:
     lda REMOTE_IP, x
     and SUBNET_MASK, x
-    cmp LOCAL_IP, x
+    sta _tmp_oct
+
+    lda LOCAL_IP, x
+    and SUBNET_MASK, x
+    cmp _tmp_oct
     bne _not_same_net
+
     dex
-    bne _compare_net
+    bpl _compare_net
 
     lda #$01
     rts
@@ -898,6 +1002,8 @@ _compare_net:
 _not_same_net:
     lda #$00
     rts
+
+_tmp_oct: .byte $00
 
 
 ;=============================================================================
@@ -910,8 +1016,13 @@ ETH_BUILD_TCPIP_PACKET:
     pha                             ; push the TCP_FLAG to stack
 
     lda TCP_STATE                   ; dont do a ARP if we already are connected
-    cmp TCP_STATE_ESTABLISHED
+    cmp #TCP_STATE_ESTABLISHED
     beq _IP_found_in_cache
+
+    ; we need to check if we are on the same net to send the packet to.
+    ; if we are, then we just need to check the arp cache for the mac address
+    ; of the machine on the same net.  Otherwise, we use the mac address of
+    ; the gateway.
 
     jsr ETH_CHECK_SAME_NET
     beq _use_gateway
@@ -953,20 +1064,31 @@ _do_arp_request:                    ; use the IP we looked up in cache and do an
     lda ARP_QUERY_IP+3
     sta ARP_REQUEST_IP+3
     
+    lda #$00
+    sta ETH_STATE
     jsr ARP_REQUEST
 
-    cli                             ; i dont like this, but it seems necessary
+    ; at this point, interrupts are disabled, but we need to re-enable them so an
+    ; ARP request can be sent and the response dealt with.  There should be better
+    ; ways to handle this though.  It also assumes there will be an ARP response
+    ; for now, thats ok but real world, a failure will lock the machine.
+    cli
+
 _arp_reply_loop:                    ; wait for ARP reply
     lda ETH_STATE
     cmp #ETH_STATE_ARP_WAITING
     beq _arp_reply_loop
 
+    ; restore the processor register, which will disable interrupts again
+    sei
+
     jsr ARP_QUERY_CACHE             ; cache should be populated now, so query again
-    jmp _handle_arp_cache_result
+    jmp _handle_arp_cache_result    ; jump back up to confirm and query again if needed
 
-_IP_found_in_cache:
+    ; we now have the IP address in the cache and can continue building the packet
     ; ETH_TX_FRAME_DEST_MAC will be auto populated if cache hit
-
+_IP_found_in_cache:
+    
     lda #$08                        ; Ipv4 ethertype
     sta ETH_TX_TYPE
     lda #$00
@@ -992,6 +1114,7 @@ _IP_found_in_cache:
     adc #$00
     sta ETH_TX_LEN_MSB
     
+    clc
     rts
 
 ;=============================================================================
@@ -1475,6 +1598,13 @@ _add_overflow:
     adc #$00
     sta _num1hi
 
+; --- ADD THIS: end-around carry if that addition overflowed ---
+    bcc _no_final_carry     ; if no carry from the high-byte add, skip
+    inc _num1lo             ; add the end-around carry back in
+    bne _no_final_carry
+    inc _num1hi
+;---
+_no_final_carry:
     lda _num1lo              ; move result to 2nd value
     sta _num2lo
     lda _num1hi
@@ -1768,6 +1898,15 @@ TCP_EVENT_FLAG
 
 ; returns current event bits in A and clears them (BASIC can poll this for hard reset)
 ETH_STATUS_POLL:
+    jsr ETH_PROCESS_DEFERRED
+
+   ; Allow TIME_WAIT to progress while BASIC polls
+   lda TCP_STATE
+   cmp #TCP_STATE_TIME_WAIT
+   bne _no_tw
+   jsr TIME_WAIT_TICK
+
+_no_tw:
     lda TCP_EVENT_FLAG
     pha
     lda #$00
@@ -1779,7 +1918,7 @@ ETH_STATUS_POLL:
 
 
 .include "arp.asm"
-.include "dhcp.asm"
+;.include "dhcp.asm"
 
 ;=============================================================================
 ; Main IRQ / Incoming data routine
@@ -1794,6 +1933,7 @@ ETH_RCV:
     lda MEGA65_ETH_CTRL2
     and #%00100000                  ; check RX bit for waiting frame
     bne _accept_packet
+    ;jsr ETH_PROCESS_DEFERRED 
     rts
 
 _accept_packet:
@@ -1842,6 +1982,7 @@ _chk_multicast:
     sta MEGA65_ETH_CTRL2
     lda #$03
     sta MEGA65_ETH_CTRL2
+    ;jsr ETH_PROCESS_DEFERRED 
     rts
 
 _chk_dest_ok:
@@ -1880,11 +2021,16 @@ _accept_for_us:
     FAR_PEEK $ff, $0de800
     sta _len_lsb                ; store lsb in our inline dma command
 
-    lda #$01                    ; byte 1 MSB of length (first 4 bits)
-    sta $45
-    lda [$45],z                 ; peek it again
-    and #$0f                    ; strip upper 4 bits
-    sta _len_msb                ; store msb in our inline dma command
+    ; MSB nibble from meta byte 1
+    FAR_PEEK $ff, $0de801
+    and #$0f
+    sta _len_msb
+
+    ;lda #$01                    ; byte 1 MSB of length (first 4 bits)
+    ;sta $45
+    ;lda [$45],z                 ; peek it again
+    ;and #$0f                    ; strip upper 4 bits
+    ;sta _len_msb                ; store msb in our inline dma command
 
     ; inline DMA to copy ethernet buffer to RX buffer
     sta $D707
@@ -1930,18 +2076,29 @@ _len_msb:
 
 
 _rx_continue:
+
+; --- classify by EtherType first ---
+    lda ETH_RX_TYPE
+    cmp #$08
+    bne _unknown_packet
+
+    lda ETH_RX_TYPE+1
+    cmp #$06
+    beq _is_arp              ; handle ARP without MAC gating
+
     ; confirm if this packet is for us
     jsr ETH_IS_PACKET_FOR_US
     beq _unknown_packet
+    jmp _tcp_packet_check
 
-    lda ETH_RX_TYPE
-    cmp #$08                            ; is packet $08xx?
-    bne _unknown_packet                 ; no - ignore this packet
+    ;lda ETH_RX_TYPE
+    ;cmp #$08                            ; is packet $08xx?
+    ;bne _unknown_packet                 ; no - ignore this packet
 
-_arp_packet_check:
-    lda ETH_RX_TYPE+1
-    cmp #$06                            ; is packet $0806 (ARP)?
-    bne _tcp_packet_check
+;_arp_packet_check:
+;    lda ETH_RX_TYPE+1
+;    cmp #$06                            ; is packet $0806 (ARP)?
+;    bne _tcp_packet_check
 
 _is_arp:
     lda ETH_RX_FRAME_PAYLOAD+6          ; high byte of OPER
@@ -1950,6 +2107,7 @@ _is_arp:
     beq _call_arp_reply
     cmp #$02                            ; = 2 (reply)?
     beq _call_arp_update_cache
+    ;jsr ETH_PROCESS_DEFERRED 
     rts                                 ; neither request nor reply → ignore
 
 _tcp_packet_check:
@@ -1968,6 +2126,7 @@ _tcp_socket_check:
     jmp INCOMING_TCP_PACKET
 
 _unknown_packet:
+    ;jsr ETH_PROCESS_DEFERRED 
     rts
 
 _call_arp_reply:
@@ -2112,6 +2271,10 @@ ETH_PACKET_SEND_NO_WAIT:
     sta _ETH_BUF_SRC2
     lda #>ETH_TX_FRAME_HEADER
     sta _ETH_BUF_SRC2+1
+
+php
+sei
+
     sta $D707
     .byte $81
     .byte $ff
@@ -2123,6 +2286,8 @@ _ETH_BUF_SRC2:
     .byte $00,$e8,$0d
     .byte $00
     .word $0000
+
+plp
     lda #$03
     sta MEGA65_ETH_CTRL1
     lda MEGA65_ETH_CTRL1

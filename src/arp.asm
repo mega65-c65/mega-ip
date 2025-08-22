@@ -112,102 +112,123 @@ _loop_compare2:
     bne _loop_compare2
     jmp _build_reply
 _not_ours:
-rts
+    rts
 
 _build_reply:
-    ; destination broadcast (pull from src in RX buffer)
+    ; ---------------------------
+    ; Ethernet header (14 bytes)
+    ; dst = requester MAC
     lda ETH_RX_FRAME_SRC_MAC+0
-    sta ETH_TX_FRAME_DEST_MAC+0
+    sta ARP_REPLY_PACKET+0
     lda ETH_RX_FRAME_SRC_MAC+1
-    sta ETH_TX_FRAME_DEST_MAC+1
+    sta ARP_REPLY_PACKET+1
     lda ETH_RX_FRAME_SRC_MAC+2
-    sta ETH_TX_FRAME_DEST_MAC+2
+    sta ARP_REPLY_PACKET+2
     lda ETH_RX_FRAME_SRC_MAC+3
-    sta ETH_TX_FRAME_DEST_MAC+3
+    sta ARP_REPLY_PACKET+3
     lda ETH_RX_FRAME_SRC_MAC+4
-    sta ETH_TX_FRAME_DEST_MAC+4
+    sta ARP_REPLY_PACKET+4
     lda ETH_RX_FRAME_SRC_MAC+5
-    sta ETH_TX_FRAME_DEST_MAC+5
+    sta ARP_REPLY_PACKET+5
 
-    ; ETH_TYPE = $0806
+    ; src = our MAC (read from controller regs, not TX buffer)
+    lda MEGA65_ETH_MAC+0
+    sta ARP_REPLY_PACKET+6
+    lda MEGA65_ETH_MAC+1
+    sta ARP_REPLY_PACKET+7
+    lda MEGA65_ETH_MAC+2
+    sta ARP_REPLY_PACKET+8
+    lda MEGA65_ETH_MAC+3
+    sta ARP_REPLY_PACKET+9
+    lda MEGA65_ETH_MAC+4
+    sta ARP_REPLY_PACKET+10
+    lda MEGA65_ETH_MAC+5
+    sta ARP_REPLY_PACKET+11
+
+    ; ethertype = 0x0806 (ARP)
     lda #$08
-    sta ETH_TX_TYPE
+    sta ARP_REPLY_PACKET+12
     lda #$06
-    sta ETH_TX_TYPE + 1
+    sta ARP_REPLY_PACKET+13
 
-    ; build ARP header
+    ; ---------------------------
+    ; ARP payload (28 bytes) at +14
 
+    ; HTYPE = 0x0001 (Ethernet)
     lda #$00
-    sta ETH_TX_FRAME_PAYLOAD+0     ; HTYPE - hardware type = 1 (Ethernet)
-    lda #$01                    
-    sta ETH_TX_FRAME_PAYLOAD+1
+    sta ARP_REPLY_PACKET+14
+    lda #$01
+    sta ARP_REPLY_PACKET+15
 
+    ; PTYPE = 0x0800 (IPv4)
     lda #$08
-    sta ETH_TX_FRAME_PAYLOAD+2     ; PTYPE - protocol type = 0x0800 (ipv4)
+    sta ARP_REPLY_PACKET+16
     lda #$00
-    sta ETH_TX_FRAME_PAYLOAD+3
+    sta ARP_REPLY_PACKET+17
 
+    ; HLEN = 6, PLEN = 4
     lda #$06
-    sta ETH_TX_FRAME_PAYLOAD+4     ; HLEN - hardware size (mac address = 6 bytes)
+    sta ARP_REPLY_PACKET+18
     lda #$04
-    sta ETH_TX_FRAME_PAYLOAD+5     ; PLEN - protocol size (ipv4 = 4 bytes)
+    sta ARP_REPLY_PACKET+19
 
+    ; OPER = 0x0002 (reply)
     lda #$00
-    sta ETH_TX_FRAME_PAYLOAD+6     ; OPER - opcode 2 = response
+    sta ARP_REPLY_PACKET+20
     lda #$02
-    sta ETH_TX_FRAME_PAYLOAD+7
-    
-    lda ETH_TX_FRAME_SRC_MAC+0     ; SHA - src mac address
-    sta ETH_TX_FRAME_PAYLOAD+8
-    lda ETH_TX_FRAME_SRC_MAC+1
-    sta ETH_TX_FRAME_PAYLOAD+9
-    lda ETH_TX_FRAME_SRC_MAC+2
-    sta ETH_TX_FRAME_PAYLOAD+10
-    lda ETH_TX_FRAME_SRC_MAC+3
-    sta ETH_TX_FRAME_PAYLOAD+11
-    lda ETH_TX_FRAME_SRC_MAC+4
-    sta ETH_TX_FRAME_PAYLOAD+12
-    lda ETH_TX_FRAME_SRC_MAC+5
-    sta ETH_TX_FRAME_PAYLOAD+13
+    sta ARP_REPLY_PACKET+21
 
-    lda LOCAL_IP+0                  ; SPA - src IP address  192.168.1.77
-    sta ETH_TX_FRAME_PAYLOAD+14
+    ; SHA = our MAC
+    lda MEGA65_ETH_MAC+0
+    sta ARP_REPLY_PACKET+22
+    lda MEGA65_ETH_MAC+1
+    sta ARP_REPLY_PACKET+23
+    lda MEGA65_ETH_MAC+2
+    sta ARP_REPLY_PACKET+24
+    lda MEGA65_ETH_MAC+3
+    sta ARP_REPLY_PACKET+25
+    lda MEGA65_ETH_MAC+4
+    sta ARP_REPLY_PACKET+26
+    lda MEGA65_ETH_MAC+5
+    sta ARP_REPLY_PACKET+27
+
+    ; SPA = our IP
+    lda LOCAL_IP+0
+    sta ARP_REPLY_PACKET+28
     lda LOCAL_IP+1
-    sta ETH_TX_FRAME_PAYLOAD+15
+    sta ARP_REPLY_PACKET+29
     lda LOCAL_IP+2
-    sta ETH_TX_FRAME_PAYLOAD+16
+    sta ARP_REPLY_PACKET+30
     lda LOCAL_IP+3
-    sta ETH_TX_FRAME_PAYLOAD+17
+    sta ARP_REPLY_PACKET+31
 
-    lda ETH_RX_FRAME_SRC_MAC+0      ; THA - target mac address
-    sta ETH_TX_FRAME_PAYLOAD+18
+    ; THA = requester MAC
+    lda ETH_RX_FRAME_SRC_MAC+0
+    sta ARP_REPLY_PACKET+32
     lda ETH_RX_FRAME_SRC_MAC+1
-    sta ETH_TX_FRAME_PAYLOAD+19
+    sta ARP_REPLY_PACKET+33
     lda ETH_RX_FRAME_SRC_MAC+2
-    sta ETH_TX_FRAME_PAYLOAD+20
+    sta ARP_REPLY_PACKET+34
     lda ETH_RX_FRAME_SRC_MAC+3
-    sta ETH_TX_FRAME_PAYLOAD+21
+    sta ARP_REPLY_PACKET+35
     lda ETH_RX_FRAME_SRC_MAC+4
-    sta ETH_TX_FRAME_PAYLOAD+22
+    sta ARP_REPLY_PACKET+36
     lda ETH_RX_FRAME_SRC_MAC+5
-    sta ETH_TX_FRAME_PAYLOAD+23
+    sta ARP_REPLY_PACKET+37
 
+    ; TPA = requester’s SPA (from the ARP request payload)
+    lda ETH_RX_FRAME_PAYLOAD+14
+    sta ARP_REPLY_PACKET+38
+    lda ETH_RX_FRAME_PAYLOAD+15
+    sta ARP_REPLY_PACKET+39
+    lda ETH_RX_FRAME_PAYLOAD+16
+    sta ARP_REPLY_PACKET+40
+    lda ETH_RX_FRAME_PAYLOAD+17
+    sta ARP_REPLY_PACKET+41
 
-    lda REMOTE_IP+0                 ; TPA - target IP address
-    sta ETH_TX_FRAME_PAYLOAD+24
-    lda REMOTE_IP+1
-    sta ETH_TX_FRAME_PAYLOAD+25
-    lda REMOTE_IP+2
-    sta ETH_TX_FRAME_PAYLOAD+26
-    lda REMOTE_IP+3
-    sta ETH_TX_FRAME_PAYLOAD+27
-
-    lda #$2a                        ; 42 ($2a) byte packet length
-    sta ETH_TX_LEN_LSB
-    lda #$00
-    sta ETH_TX_LEN_MSB
-
-    jmp ETH_PACKET_SEND
+    ; Defer send to mainline
+    lda #$01
+    sta ARP_REPLY_PENDING
 
     rts
 
@@ -215,6 +236,10 @@ _build_reply:
 ; This routine will update the ARP cache and flip ETH_STATE back to IDLE
 ; This is when my machine does a WHO HAS IP 192.168.1.100?
 ARP_UPDATE_CACHE:
+
+    lda #$00
+    sta ETH_STATE
+
     ; find available slot
     ldx #$00
 _loop1
