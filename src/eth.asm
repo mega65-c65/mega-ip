@@ -32,6 +32,13 @@ TCP_STATE_CLOSING           = $08
 TCP_STATE_LAST_ACK          = $09
 TCP_STATE_TIME_WAIT         = $0a
 
+; A bitfield returned by CONNECT_* entry points
+CONN_CONNECTED   = %00000001  ; ESTABLISHED
+CONN_FAILED      = %00000010  ; handshake failed / RST / closed
+CONN_IN_PROGRESS = %00000100  ; we’re working on it
+CONN_ARP_WAIT    = %00001000  ; ARP request outstanding
+CONN_SYN_SENT    = %00010000  ; SYN has been sent
+
 EXEC_BANK = $04     ; code is running from $42000
 *=$2000
 
@@ -48,6 +55,10 @@ EXEC_BANK = $04     ; code is running from $42000
     jmp RBUF_GET
     jmp ETH_TCP_DISCONNECT
     jmp ETH_STATUS_POLL
+
+    jmp ETH_TCP_CONNECT_START
+    jmp ETH_CONNECT_POLL
+    jmp ETH_CONNECT_CANCEL
 
 LOCAL_IP:
     .byte 192, 168, 1, 75
@@ -294,6 +305,12 @@ _clear_buffer:
     sta RBUF_HEAD
     sta RBUF_TAIL
 
+    ; Initialize connection state
+    sta TCP_EVENT_FLAG
+    sta CONNECT_ACTIVE
+    sta CONNECT_SYN_SENT
+    sta CONNECT_FAIL_LATCH
+
     ; install IRQ handler if not already installed
     ;FAR_PEEK $00, $001600
     ;cmp #$38
@@ -330,7 +347,8 @@ ETH_SET_LOCAL_IP:
     sta LOCAL_IP+0
     stx LOCAL_IP+1
     sty LOCAL_IP+2
-    stz LOCAL_IP+3
+    tza
+    sta LOCAL_IP+3
     rts
 
 ;=============================================================================
@@ -340,7 +358,8 @@ ETH_SET_REMOTE_IP:
     sta REMOTE_IP+0
     stx REMOTE_IP+1
     sty REMOTE_IP+2
-    stz REMOTE_IP+3
+    tza
+    sta REMOTE_IP+3
     rts
 
 ;=============================================================================
@@ -350,7 +369,8 @@ ETH_SET_GATEWAY_IP:
     sta GATEWAY_IP+0
     stx GATEWAY_IP+1
     sty GATEWAY_IP+2
-    stz GATEWAY_IP+3
+    tza
+    sta GATEWAY_IP+3
     rts
 
 ;=============================================================================
@@ -360,7 +380,8 @@ ETH_SET_SUBNET_MASK:
     sta SUBNET_MASK+0
     stx SUBNET_MASK+1
     sty SUBNET_MASK+2
-    stz SUBNET_MASK+3
+    tza
+    sta SUBNET_MASK+3
     rts
 
 ;=============================================================================
@@ -369,6 +390,234 @@ ETH_SET_SUBNET_MASK:
 ETH_SET_REMOTE_PORT:
     sta REMOTE_PORT+0
     stx REMOTE_PORT+1
+    rts
+
+CONNECT_ACTIVE:        .byte $00   ; 1 while a connect attempt is active
+CONNECT_SYN_SENT:      .byte $00   ; 1 after we transmit SYN
+CONNECT_FAIL_LATCH:    .byte $00   ; set by IRQ on RST/abort, polled/cleared in CONNECT_POLL
+
+;=============================================================================
+; ETH_TCP_CONNECT_START
+; Kick off a client connection without blocking.
+; Returns A = status bits (see constants). Never busy-waits.
+;=============================================================================
+ETH_TCP_CONNECT_START:
+    ; already established?
+    lda TCP_STATE
+    cmp #TCP_STATE_ESTABLISHED
+    beq _already_up
+
+    ; If a previous attempt is mid-flight, just report status
+    lda CONNECT_ACTIVE
+    bne _report_only
+
+    ; Fresh attempt - generate new port
+    lda LOCAL_PORT+1
+    clc
+    adc #$01
+    sta LOCAL_PORT+1
+    lda LOCAL_PORT+0
+    adc #$00
+    sta LOCAL_PORT+0
+
+    ; Initialize connection state
+    jsr CLEAR_TCP_PAYLOAD
+    jsr CLEAR_REMOTE_ISN
+
+    inc LOCAL_ISN+3
+    bne _ahead
+    inc LOCAL_ISN+2
+    bne _ahead
+    inc LOCAL_ISN+1
+    bne _ahead
+    inc LOCAL_ISN+0
+
+_ahead:
+    lda #$00
+    sta ETH_RX_TCP_FLAGS
+    sta CONNECT_FAIL_LATCH
+    sta CONNECT_SYN_SENT
+
+    lda #$01
+    sta CONNECT_ACTIVE
+
+    ; Try ARP cache first (remote or gateway)
+    jsr ETH_CHECK_SAME_NET       ; C=1 same subnet, C=0 use gateway
+    bcs _use_remote
+_use_gateway:
+    ; set ARP_QUERY_IP := GATEWAY_IP
+    ldx #$03
+_cpy_gw:
+    lda GATEWAY_IP,x
+    sta ARP_QUERY_IP,x
+    dex
+    bpl _cpy_gw
+    jmp _query_cache
+_use_remote:
+    ; set ARP_QUERY_IP := REMOTE_IP
+    ldx #$03
+_cpy_rem:
+    lda REMOTE_IP,x
+    sta ARP_QUERY_IP,x
+    dex
+    bpl _cpy_rem
+
+_query_cache:
+    jsr ARP_QUERY_CACHE
+    beq _need_arp
+
+    ; Have MAC → send SYN immediately
+    lda #TCP_FLAG_SYN
+    jsr ETH_BUILD_TCPIP_PACKET
+    bcs _send_fail                 ; (carry set = build error)
+    
+    jsr ETH_PACKET_SEND
+    ;jsr CALC_LOCAL_ISN 
+
+    lda #$01
+    sta CONNECT_SYN_SENT
+    lda #TCP_STATE_SYN_SENT
+    sta TCP_STATE
+    lda #CONN_IN_PROGRESS|CONN_SYN_SENT
+    rts
+
+_need_arp:
+    ; Start ARP and return quickly
+    lda #ETH_STATE_ARP_WAITING
+    sta ETH_STATE
+
+    ; ARP_REQUEST expects ARP_REQUEST_IP; mirror ARP_QUERY_IP there
+    ldx #$03
+_cpy_arp:
+    lda ARP_QUERY_IP,x
+    sta ARP_REQUEST_IP,x
+    dex
+    bpl _cpy_arp
+
+    jsr ARP_REQUEST
+
+    lda #CONN_IN_PROGRESS|CONN_ARP_WAIT
+    rts
+
+_send_fail:
+    lda #$00
+    sta CONNECT_ACTIVE
+    lda #CONN_FAILED
+    rts
+
+_already_up:
+    lda #CONN_CONNECTED
+    rts
+
+_report_only:
+    jmp ETH_CONNECT_POLL          ; reuse the polling logic to build A
+
+;=============================================================================
+; ETH_CONNECT_POLL
+; Drive the connect attempt forward (ARP→SYN) and report status in A.
+; Safe to call anytime (even when not connecting).
+;=============================================================================
+ETH_CONNECT_POLL:
+    ; let mainline drain any deferred IRQ work
+    jsr ETH_PROCESS_DEFERRED
+
+    lda CONNECT_ACTIVE
+    beq _not_connecting
+
+    ; failed earlier?
+    lda CONNECT_FAIL_LATCH
+    beq _chk_state
+    lda #$00
+    sta CONNECT_ACTIVE
+    sta CONNECT_SYN_SENT
+    sta CONNECT_FAIL_LATCH
+    lda #CONN_FAILED
+    rts
+
+_chk_state:
+    ; established?
+    lda TCP_STATE
+    cmp #TCP_STATE_ESTABLISHED
+    bne _not_est
+    lda #$00
+    sta CONNECT_ACTIVE
+    sta CONNECT_SYN_SENT
+    lda #CONN_CONNECTED
+    rts
+
+_not_est:
+    ; If ARP finished and we haven’t sent SYN yet, send it now
+    lda CONNECT_SYN_SENT
+    bne _inprog
+
+    lda ETH_STATE
+    cmp #ETH_STATE_ARP_WAITING
+    beq _inprog                   ; still resolving MAC
+
+    ; ARP done → verify cache then send SYN
+    jsr ARP_QUERY_CACHE
+    beq _inprog                   ; still not populated (rare)
+
+    lda #TCP_FLAG_SYN
+    jsr ETH_BUILD_TCPIP_PACKET
+    bcs _inprog     ; was: bcs _fail
+    jsr ETH_PACKET_SEND
+    lda #$01
+    sta CONNECT_SYN_SENT
+    lda #TCP_STATE_SYN_SENT
+    sta TCP_STATE
+
+_inprog:
+    lda #CONN_IN_PROGRESS          ; start with IN_PROGRESS in A
+    ldy CONNECT_SYN_SENT           ; if SYN has been sent, add that bit
+    beq _no_syn
+    ora #CONN_SYN_SENT
+_no_syn:
+    ldx ETH_STATE                  ; if still waiting on ARP, add that bit
+    cpx #ETH_STATE_ARP_WAITING
+    bne _ret
+    ora #CONN_ARP_WAIT
+_ret:
+    rts
+
+_not_connecting:
+    ; Not in a connect attempt; reflect steady-state
+    lda TCP_STATE
+    cmp #TCP_STATE_ESTABLISHED
+    beq _up
+    lda #$00
+    rts
+_up:
+    lda #CONN_CONNECTED
+    rts
+
+;=============================================================================
+; ETH_CONNECT_CANCEL
+; Abort an in-flight connect. Sends RST if a SYN was sent.
+;=============================================================================
+ETH_CONNECT_CANCEL:
+    lda CONNECT_ACTIVE
+    beq _done
+
+    lda CONNECT_SYN_SENT
+    beq _clear_only
+
+    ; We sent SYN; send RST to abandon handshake
+    lda #TCP_FLAG_RST
+    jsr ETH_BUILD_TCPIP_PACKET
+    bcc +
+    jmp _clear_only               ; build failed → just clear
++   jsr ETH_PACKET_SEND
+
+_clear_only:
+    lda #$00
+    sta CONNECT_ACTIVE
+    sta CONNECT_SYN_SENT
+    sta CONNECT_FAIL_LATCH
+    lda #TCP_STATE_CLOSED
+    sta TCP_STATE
+_done:
+    lda #$00
     rts
 
 ;=============================================================================
@@ -412,7 +661,7 @@ _send_SYN:
     lda #TCP_STATE_SYN_SENT
     sta TCP_STATE
 
-    jsr CALC_LOCAL_ISN
+    ;jsr CALC_LOCAL_ISN
 
     jmp TCP_STATE_HANDLER
 
@@ -528,6 +777,32 @@ _exit:
 
 ; Process deferred ARP reply from mainline
 ETH_PROCESS_DEFERRED:
+    ; ---- ACK first, if any ----
+    lda ACK_REPLY_PENDING
+    beq _check_arp
+    lda #$00
+    sta ACK_REPLY_PENDING
+
+    ldx ACK_REPLY_LEN_L
+    beq _ack_done
+_ack_copy_back:
+    dex
+    lda ACK_REPLY_PACKET,x
+    sta ETH_TX_FRAME_DEST_MAC,x
+    cpx #$00
+    bne _ack_copy_back
+    lda ACK_REPLY_PACKET
+    sta ETH_TX_FRAME_DEST_MAC
+
+    lda ACK_REPLY_LEN_L
+    sta ETH_TX_LEN_LSB
+    lda ACK_REPLY_LEN_H
+    sta ETH_TX_LEN_MSB
+
+    jsr ETH_PACKET_SEND
+_ack_done:
+
+_check_arp:
     lda ARP_REPLY_PENDING
     beq _epd_done
 
@@ -541,8 +816,6 @@ _epd_copy:
     sta ETH_TX_FRAME_DEST_MAC,x
     cpx #$00
     bne _epd_copy
-    lda ARP_REPLY_PACKET
-    sta ETH_TX_FRAME_DEST_MAC
     
     lda #$2a
     sta ETH_TX_LEN_LSB
@@ -554,7 +827,10 @@ _epd_done:
     rts
 
 ;=============================================================================
-; TCP state handler
+; TCP state handler  (drop-in)
+; - Handles RST
+; - ESTABLISHED: trims overlap, ignores future segs, copies only new bytes,
+;   ACKs exactly what was stored
 ;=============================================================================
 TCP_STATE_HANDLER:
 
@@ -564,73 +840,254 @@ TCP_STATE_HANDLER:
     beq _not_RST
 
     ; remote sent RST → tear down immediately
-    ;lda #TCP_STATE_CLOSED
-    ;sta TCP_STATE
-jsr TCP_HARD_RESET
+    jsr TCP_HARD_RESET
     rts
 
 _not_RST:
 
     lda TCP_STATE
 
+;---------------------------------------------------------------------------
+; ESTABLISHED
+;---------------------------------------------------------------------------
 _check_ESTABLISHED:
     cmp #TCP_STATE_ESTABLISHED
     bne _check_CLOSED
 
-    ;--- if the peer is closing too (FIN+ACK), go handle that first ---
+    ; If the peer is closing too (FIN+ACK), go handle that first
     lda ETH_RX_TCP_FLAGS
     and #(TCP_FLAG_FIN|TCP_FLAG_ACK)
     cmp #(TCP_FLAG_FIN|TCP_FLAG_ACK)
     beq _got_FIN_IN_ESTABLISHED
 
-    ; ——— did we get an ACK for our last PSH? ———
-    ;lda ETH_RX_TCP_FLAGS
-    ;and #TCP_FLAG_ACK
-    ;cmp #TCP_FLAG_ACK
-    ;beq _got_data_ack
+    ; Any payload?
+    lda TCP_RX_DATA_PAYLOAD_SIZE
+    ora TCP_RX_DATA_PAYLOAD_SIZE+1
+    beq _est_done
+    
+    ; ----------------- bounded critical section for copy -----------------
+    php
+    sei
 
-    ;--- at this point, we have a server packet with possible incoming data to process
-    lda TCP_RX_DATA_PAYLOAD_SIZE        ; previously calculated from INCOMING_TCP_PACKET
-    beq _est_done                       ; no data to handle
+    ; remaining := payload size (16-bit)
+    lda TCP_RX_DATA_PAYLOAD_SIZE
+    sta RX_COPY_REM_LO
+    lda TCP_RX_DATA_PAYLOAD_SIZE+1
+    sta RX_COPY_REM_HI
 
-    ;--- copy data to a small recieve buffer that BASIC will need to read from
-    ldy #$00
-_lp_copy_data: 
-    jsr RBUF_IS_FULL                    ; if buffer is full, no choice...just ack the data
-    bcs _ack_data                       ; we will do a proper window resizing soon
-    lda ETH_RX_FRAME_PAYLOAD+20+20, y
-    jsr RBUF_PUT 
-    iny
-    cpy TCP_RX_DATA_PAYLOAD_SIZE
-    bne _lp_copy_data
-
-    ; then ACK the data:
-_ack_data:
-
+    ; ----------------- compare SEG.SEQ vs RCV.NXT (REMOTE_ISN) -----------------
+    lda SEG_SEQ+0
+    cmp REMOTE_ISN+0
+    bne _cmp_done
+    lda SEG_SEQ+1
+    cmp REMOTE_ISN+1
+    bne _cmp_done
+    lda SEG_SEQ+2
+    cmp REMOTE_ISN+2
+    bne _cmp_done
+    lda SEG_SEQ+3
+    cmp REMOTE_ISN+3
+_cmp_done:
+    bcc _seg_in_past         ; SEG.SEQ <  RCV.NXT → overlap on left
+    beq _seg_in_order        ; SEG.SEQ == RCV.NXT → in-order
+    ; SEG.SEQ > RCV.NXT → out-of-order future → dup-ACK current RCV.NXT
+_seg_in_future:
     lda #$00
-    sta TCP_DATA_PAYLOAD_SIZE
-    sta TCP_DATA_PAYLOAD_SIZE+1   ; ensure 0-length outbound segment
+    sta TCP_RX_DATA_PAYLOAD_SIZE
+    sta TCP_RX_DATA_PAYLOAD_SIZE+1
+    lda #$00
+    sta REMOTE_ISN_BUMP
+    jsr CALC_REMOTE_ISN            ; add 0 (keep RCV.NXT)
+    lda #TCP_FLAG_ACK
+    jsr ETH_BUILD_TCPIP_PACKET
+    jsr DEFER_CURRENT_TX
+    plp
+    rts
+
+_seg_in_past:
+    ; SKIP := (RCV.NXT - SEG.SEQ) low 16 (clamp below)
+    sec
+    lda REMOTE_ISN+3
+    sbc SEG_SEQ+3
+    sta SKIP_LO
+    lda REMOTE_ISN+2
+    sbc SEG_SEQ+2
+    sta SKIP_HI
+
+    ; If SKIP >= seg_len → whole segment duplicate → dup-ACK and return
+    lda SKIP_HI
+    cmp RX_COPY_REM_HI
+    bcc _have_tail
+    bne _dup_entire
+    lda SKIP_LO
+    cmp RX_COPY_REM_LO
+    bcc _have_tail
+_dup_entire:
+    lda #$00
+    sta TCP_RX_DATA_PAYLOAD_SIZE
+    sta TCP_RX_DATA_PAYLOAD_SIZE+1
+    lda #$00
+    sta REMOTE_ISN_BUMP
+    jsr CALC_REMOTE_ISN
+    lda #TCP_FLAG_ACK
+    jsr ETH_BUILD_TCPIP_PACKET
+    jsr DEFER_CURRENT_TX
+    plp
+    rts
+
+_have_tail:
+    ; remaining := seg_len - SKIP
+    lda RX_COPY_REM_LO
+    sec
+    sbc SKIP_LO
+    sta RX_COPY_REM_LO
+    lda RX_COPY_REM_HI
+    sbc SKIP_HI
+    sta RX_COPY_REM_HI
+
+    ; reader base := ETH_RX_FRAME_PAYLOAD + TCP_DATA_OFFSET + SKIP
+    lda TCP_DATA_OFFSET
+    clc
+    adc SKIP_LO
+    sta OFF_LO
+    lda #$00
+    adc SKIP_HI
+    sta OFF_HI
+
+    lda #<ETH_RX_FRAME_PAYLOAD
+    clc
+    adc OFF_LO
+    sta _payload_read+1
+    lda #>ETH_RX_FRAME_PAYLOAD
+    adc OFF_HI
+    sta _payload_read+2
+    ldy #$00
+    jmp _copy_setup_done
+
+_seg_in_order:
+    ; reader base := ETH_RX_FRAME_PAYLOAD + TCP_DATA_OFFSET
+    lda #<ETH_RX_FRAME_PAYLOAD
+    clc
+    adc TCP_DATA_OFFSET
+    sta _payload_read+1
+    lda #>ETH_RX_FRAME_PAYLOAD
+    adc #$00
+    sta _payload_read+2
+    ldy #$00
+
+_copy_setup_done:
+    ; Track how many bytes we actually store this pass
+    lda #$00
+    sta RX_CONSUMED_LO
+    sta RX_CONSUMED_HI
+
+; ------------------ copy loop ------------------
+_lp_copy_data:
+    lda RX_COPY_REM_LO
+    ora RX_COPY_REM_HI
+    beq _ack_what_we_took
+
+    jsr RBUF_IS_FULL
+    bcs _ack_what_we_took          ; ring full → ACK only consumed
+
+_payload_read:
+    .byte $B9, $00, $00            ; LDA abs,Y (operands patched above)
+    jsr RBUF_PUT                   ; (RBUF_PUT returns C=1 if full; we prechecked)
+    bcs _ack_what_we_took
+
+    ; consumed++
+    inc RX_CONSUMED_LO
+    bne _no_carry_cons
+    inc RX_CONSUMED_HI
+
+_no_carry_cons:
+    ; advance source pointer
+    iny
+    bne _no_page
+    inc _payload_read+2            ; crossed page
+
+_no_page:
+; remaining--
+    sec
+    lda RX_COPY_REM_LO
+    sbc #1
+    sta RX_COPY_REM_LO
+    lda RX_COPY_REM_HI
+    sbc #0
+    sta RX_COPY_REM_HI
+
+    ; any left?
+    lda RX_COPY_REM_LO
+    ora RX_COPY_REM_HI
+    bne _lp_copy_data       ; Check if high byte went negative
+    jmp _ack_what_we_took   ; Exit if it did
+ 
+
+; ------------------ ACK exactly what we took ------------------
+_ack_what_we_took:
+    ; Make CALC_REMOTE_ISN add “consumed” bytes only
+    lda RX_CONSUMED_LO
+    sta TCP_RX_DATA_PAYLOAD_SIZE
+    lda RX_CONSUMED_HI
+    sta TCP_RX_DATA_PAYLOAD_SIZE+1
 
     lda #$00
     sta REMOTE_ISN_BUMP
-    jsr CALC_REMOTE_ISN                 ; ADVANCE REMOTE_ISN by +1+payload
+    jsr CALC_REMOTE_ISN            ; RCV.NXT += consumed
+
+    ; Build a pure ACK (no data)
+    lda #$00
+    sta TCP_DATA_PAYLOAD_SIZE
+    sta TCP_DATA_PAYLOAD_SIZE+1
+
     lda #TCP_FLAG_ACK
     jsr ETH_BUILD_TCPIP_PACKET
-    jsr ETH_PACKET_SEND
     
+    ; Copy the built frame into a side buffer and flag it for mainline
+    ; Clamp frame size to buffer limit
+    lda ETH_TX_LEN_LSB
+    ldx ETH_TX_LEN_MSB
+    cpx #0                   ; High byte non-zero?
+    bne _clamp_to_60         ; Yes, definitely > 60
+    cmp #61                  ; Check low byte
+    bcc _size_ok             ; < 61, we're good
+    
+_clamp_to_60:
+    lda #60
+    ldx #0
+    
+_size_ok:
+    sta ACK_REPLY_LEN_L
+    stx ACK_REPLY_LEN_H
+    tax                      ; X = length for copy
+    beq _ack_defer_done
+
+_ack_defer_copy:
+    dex
+    lda ETH_TX_FRAME_DEST_MAC,x
+    sta ACK_REPLY_PACKET,x
+    cpx #$00
+    bne _ack_defer_copy
+
+    lda #$01
+    sta ACK_REPLY_PENDING
+
+_ack_defer_done:
+    plp
     rts
 
-_got_data_ack:
-    rts
 
 _got_FIN_IN_ESTABLISHED:
     ; peer wants to close → ACK their FIN
     lda #$01
     sta REMOTE_ISN_BUMP
     jsr CALC_REMOTE_ISN              ; +1 for the FIN
+    lda #$00
+    sta REMOTE_ISN_BUMP
+
     lda #TCP_FLAG_ACK
     jsr ETH_BUILD_TCPIP_PACKET
-    jsr ETH_PACKET_SEND
+    jsr DEFER_CURRENT_TX
 
     ; move into CLOSE_WAIT so application can call disconnect
     lda #TCP_STATE_CLOSE_WAIT
@@ -640,14 +1097,19 @@ _got_FIN_IN_ESTABLISHED:
 _est_done:
     rts
 
+;---------------------------------------------------------------------------
+; CLOSED
+;---------------------------------------------------------------------------
 _check_CLOSED:
     ; if closed, nothing to do. return
     cmp #TCP_STATE_CLOSED
     bne _check_SYN
     rts
 
+;---------------------------------------------------------------------------
+; SYN-SENT (await SYN+ACK)
+;---------------------------------------------------------------------------
 _check_SYN:
-    ; if SYN, await the SYN/ACK
     cmp #TCP_STATE_SYN_SENT
     bne _check_FIN_WAIT_1
 
@@ -657,20 +1119,46 @@ _check_SYN:
     bne _wait_and_loop
 
 _got_SYNACK:
-    ; bump REMOTE_ISN + 1 (no data)
+    ; server's ISN is in SEG_SEQ (set by INCOMING_TCP_PACKET)
+    lda SEG_SEQ+0
+    sta REMOTE_ISN+0
+    lda SEG_SEQ+1
+    sta REMOTE_ISN+1
+    lda SEG_SEQ+2
+    sta REMOTE_ISN+2
+    lda SEG_SEQ+3
+    sta REMOTE_ISN+3
+
+    ; consume the peer's SYN
     lda #$01
     sta REMOTE_ISN_BUMP
     jsr CALC_REMOTE_ISN
+    lda #$00
+    sta REMOTE_ISN_BUMP
+
+    ; The SYN we sent consumes 1 sequence number
+    inc LOCAL_ISN+3
+    bne _got_SYNACK_ahead
+    inc LOCAL_ISN+2
+    bne _got_SYNACK_ahead
+    inc LOCAL_ISN+1
+    bne _got_SYNACK_ahead
+    inc LOCAL_ISN+0
+
+_got_SYNACK_ahead:
     ; build & send the final ACK
     lda #TCP_FLAG_ACK
     jsr ETH_BUILD_TCPIP_PACKET
-    jsr ETH_PACKET_SEND
+    jsr DEFER_CURRENT_TX
 
     ; handshake complete
     lda #TCP_STATE_ESTABLISHED
     sta TCP_STATE
     rts
 
+;---------------------------------------------------------------------------
+; FIN-WAIT-1
+;---------------------------------------------------------------------------
 _check_FIN_WAIT_1:
     cmp #TCP_STATE_FIN_WAIT_1
     bne _check_FIN_WAIT_2
@@ -685,6 +1173,9 @@ _got_FIN_WAIT_1_ACK:
     sta TCP_STATE
     jmp _wait_and_loop
 
+;---------------------------------------------------------------------------
+; FIN-WAIT-2
+;---------------------------------------------------------------------------
 _check_FIN_WAIT_2:
     ; await the FIN/ACK
     cmp #TCP_STATE_FIN_WAIT_2
@@ -700,11 +1191,13 @@ _got_FIN_ACK:
     lda #$01
     sta REMOTE_ISN_BUMP
     jsr CALC_REMOTE_ISN
+    lda #$00
+    sta REMOTE_ISN_BUMP
 
     ; send final ACK
     lda #TCP_FLAG_ACK
     jsr ETH_BUILD_TCPIP_PACKET
-    jsr ETH_PACKET_SEND
+    jsr DEFER_CURRENT_TX
 
     ; reset TIME_WAIT counter
     lda #$02
@@ -716,12 +1209,18 @@ _got_FIN_ACK:
     sta TCP_STATE
     jmp _wait_and_loop
 
+;---------------------------------------------------------------------------
+; TIME-WAIT
+;---------------------------------------------------------------------------
 _check_TIME_WAIT:
     cmp #TCP_STATE_TIME_WAIT
     bne _check_CLOSE_WAIT
     jsr TIME_WAIT_TICK
     rts
 
+;---------------------------------------------------------------------------
+; CLOSE-WAIT
+;---------------------------------------------------------------------------
 _check_CLOSE_WAIT:
     cmp #TCP_STATE_CLOSE_WAIT
     bne _check_LAST_ACK
@@ -729,12 +1228,15 @@ _check_CLOSE_WAIT:
     ; build & send FIN+ACK
     lda #TCP_FLAG_FIN|TCP_FLAG_ACK
     jsr ETH_BUILD_TCPIP_PACKET
-    jsr ETH_PACKET_SEND
+    jsr DEFER_CURRENT_TX
     ; move to LAST_ACK
     lda #TCP_STATE_LAST_ACK
     sta TCP_STATE
     rts
 
+;---------------------------------------------------------------------------
+; LAST-ACK
+;---------------------------------------------------------------------------
 _check_LAST_ACK:
     cmp #TCP_STATE_LAST_ACK
     bne _other
@@ -761,6 +1263,43 @@ _other:
 _wait_and_loop:
 ;    jsr ETH_WAIT_100MS
 ;    jmp TCP_STATE_HANDLER
+    rts
+
+RX_COPY_REM_LO:     .byte 0
+RX_COPY_REM_HI:     .byte 0
+RX_CONSUMED_LO:     .byte 0
+RX_CONSUMED_HI:     .byte 0
+SKIP_LO:          .byte 0
+SKIP_HI:          .byte 0
+OFF_LO:           .byte 0
+OFF_HI:           .byte 0
+
+
+DEFER_CURRENT_TX:
+    lda ETH_TX_LEN_LSB
+    ldx ETH_TX_LEN_MSB
+    cpx #$00
+    bne _clamp
+    cmp #61
+    bcc _len_ok
+_clamp:
+    lda #60
+    ldx #$00
+_len_ok:
+    sta ACK_REPLY_LEN_L
+    stx ACK_REPLY_LEN_H
+
+    ldx ACK_REPLY_LEN_L
+    beq _done
+_copy:
+    dex
+    lda ETH_TX_FRAME_DEST_MAC,x
+    sta ACK_REPLY_PACKET,x
+    cpx #0
+    bne _copy
+    lda #$01
+    sta ACK_REPLY_PENDING
+_done
     rts
 
 ;=============================================================================
@@ -795,49 +1334,36 @@ _done:
 ; Carry set if buffer full, clear if success
 ;=============================================================================
 RBUF_PUT:
-    pha
+    ldx RBUF_HEAD         ; X = head
+    inx                   ; X = next = head + 1 (wraps 0..255)
+    cpx RBUF_TAIL         ; next == tail ? full
+    beq _full
 
-    lda RBUF_HEAD
+    dex                   ; X = head (slot to write)
+    sta RBUF_BASE,x       ; store the byte first
+    inx                   ; X = next (publish)
+    stx RBUF_HEAD         ; publish new head
     clc
-    adc #1                ; head + 1
-    cmp RBUF_TAIL
-    beq _full             ; if next head == tail, buffer full
-    sta _next_head
-
-    ldx RBUF_HEAD
-    pla
-    sta RBUF_BASE,x       ; store byte to buffer
-
-    lda _next_head
-    sta RBUF_HEAD
-
-    clc                   ; success
     rts
-
 _full:
-    pla
     sec
     rts
-
-_next_head:
-    .byte $00
 
 ;=============================================================================
 ; Returns byte in A
 ; Carry set if buffer empty, clear if success
 ;=============================================================================
 RBUF_GET:
-    lda RBUF_HEAD
-    cmp RBUF_TAIL
-    beq _empty              ; nothing to read
+    jsr ETH_PROCESS_DEFERRED
+    ldx RBUF_TAIL         ; X = tail (slot to read)
+    cpx RBUF_HEAD         ; empty if tail == head
+    beq _empty
 
-    ldx RBUF_TAIL
-    lda RBUF_BASE,x         ; get byte
-    inc RBUF_TAIL           ; advance tail
-
-    clc                     ; success
+    lda RBUF_BASE,x       ; A = byte
+    inx                   ; X = new tail (wraps)
+    stx RBUF_TAIL         ; publish new tail
+    clc
     rts
-
 _empty:
     lda #$00
     sec
@@ -1024,6 +1550,10 @@ ETH_BUILD_TCPIP_PACKET:
     ; of the machine on the same net.  Otherwise, we use the mac address of
     ; the gateway.
 
+    ; if a non-blocking connect is in progress, don't ARP or spin here.
+    lda CONNECT_ACTIVE
+    beq _do_arp_request          ; not connecting => old behavior ok (your tooling)
+
     jsr ETH_CHECK_SAME_NET
     beq _use_gateway
 
@@ -1037,7 +1567,8 @@ _use_remote:
     lda REMOTE_IP+3
     sta ARP_QUERY_IP+3
     jsr ARP_QUERY_CACHE
-    jmp _handle_arp_cache_result
+    beq _no_mac_yet
+    jmp _IP_found_in_cache
     
 _use_gateway:
     lda GATEWAY_IP+0
@@ -1049,6 +1580,13 @@ _use_gateway:
     lda GATEWAY_IP+3
     sta ARP_QUERY_IP+3
     jsr ARP_QUERY_CACHE
+    beq _no_mac_yet
+    jmp _IP_found_in_cache
+
+_no_mac_yet:
+    pla                     ; restore flags byte
+    sec                     ; C=1 => caller keeps polling
+    rts
 
 _handle_arp_cache_result:
     bne _IP_found_in_cache          ; if found in cache, skip ahead
@@ -1184,6 +1722,7 @@ IPV4_HDR_PROTO:     .byte $11                   ; name of protocol for which dat
 IPV4_HDR_CHKSM:     .byte $00, $00              ; 16 bit header checksum
 IPV4_HDR_SRC_IP:    .byte $00, $00, $00, $00    ; source IP address
 IPV4_HDR_DST_IP:    .byte $00, $00, $00, $00    ; dest IP address
+IP_HEADER_LEN:      .byte $00
 
 CALC_IPV4_CHECKSUM:
 
@@ -1316,7 +1855,12 @@ BUILD_TCP_HEADER:
     lda #%01010000                                  
     sta TCP_HDR_FLGS_OFFS
 
-    lda LOCAL_PORT+0                            ; copy ephimeral and remote ports
+    ; Save the actual TCP header size for checksum calculation
+    lda #20                          ; Default 20 bytes (no options)
+    sta TCP_HEADER_SIZE              ; Add this variable
+
+    ; copy ephimeral and remote ports
+    lda LOCAL_PORT+0                
     sta TCP_HDR_SRC_PORT+0
     lda LOCAL_PORT+1
     sta TCP_HDR_SRC_PORT+1
@@ -1326,24 +1870,17 @@ BUILD_TCP_HEADER:
     lda REMOTE_PORT+1
     sta TCP_HDR_DST_PORT+1
 
- ;   lda #$00                                    ; set window size to 255 bytes (could be higher)
- ;   sta TCP_HDR_WINDOW
- ;   lda #$ff
- ;   sta TCP_HDR_WINDOW+1
-
-; =====
-; --- compute advertised window from ring free space (0..255) ---
-; free = (TAIL - HEAD - 1) mod 256
+    ; compute advertised window from ring free space (0..255) ---
+    ; free = (TAIL - HEAD - 1) mod 256
     lda RBUF_TAIL
     sec
     sbc RBUF_HEAD
     sbc #1
     sta TCP_HDR_WINDOW+1   ; low byte
+    sta ADV_WINDOW_LAST       ; remember what we just advertised
     lda #$00
     sta TCP_HDR_WINDOW     ; high byte (we cap at 255)
 
-; =====
-    
     ; copy LOCAL_ISN into TCP Header Sequence Number
     lda LOCAL_ISN+0
     sta TCP_HDR_SEQ_NUM+0
@@ -1382,6 +1919,20 @@ BUILD_TCP_HEADER:
     ;lda RAND32_VALUE+3
     ;sta TCP_HDR_SEQ_NUM+3
 
+    ; If payload length is odd, write a 0 pad byte so checksum sees 0, not junk
+    ldy TCP_DATA_PAYLOAD_SIZE
+    tya
+    and #$01
+    beq _no_pad
+    lda #$00
+    sta TCP_DATA_PAYLOAD,y
+    iny
+_no_pad:
+    ; TCP_DATA_PAYLOAD_WORD_COUNT = (size + 1) >> 1
+    tya
+    lsr
+    sta TCP_DATA_PAYLOAD_WORD_COUNT
+
     jsr CALC_TCP_CHECKSUM
     
     ; copy header to buffer
@@ -1412,9 +1963,15 @@ _lp_done:
 
     rts
 
+ADV_WINDOW_LAST: .byte 0
+WINUPDATE_THRESHOLD = $20    ; send update when we open by ≥32 bytes
+
 ; we will max our data payload at 235 bytes which is small, but
 ; fits well with BASIC string sizes (tcp header = 20 + 235 = 255)
 TCP_DATA_PAYLOAD_SIZE:
+.byte $00
+
+TCP_HEADER_SIZE
 .byte $00
 
 TCP_DATA_PAYLOAD_WORD_COUNT:
@@ -1492,7 +2049,7 @@ CALC_TCP_CHECKSUM:
     ; tcp header size
     lda #$00
     sta TCP_PSEUDO_HDR+10
-    lda #20
+    lda TCP_HEADER_SIZE
     sta TCP_PSEUDO_HDR+11
     
     ; add size of data payload
@@ -1539,9 +2096,11 @@ _loop_pseudo_header
     bne _loop_pseudo_header ; if x <> 0 then loop again
 
 _sum_tcp_hdr:
-    ; —— now sum the 10 words of the TCP header ——
-    ldx #$0a                ; x = 10 (count of words)
-    ldy #$00                ; y = 0 (each byte)
+    ; Calculate word count from TCP_HEADER_SIZE
+    lda TCP_HEADER_SIZE
+    lsr                              ; Divide by 2 to get word count
+    tax                              ; x = word count
+    ldy #$00
 
 _loop_tcp_header:
     lda _reslo              ; store add result back into num1
@@ -1598,12 +2157,12 @@ _add_overflow:
     adc #$00
     sta _num1hi
 
-; --- ADD THIS: end-around carry if that addition overflowed ---
+    ; end-around carry if that addition overflowed
     bcc _no_final_carry     ; if no carry from the high-byte add, skip
     inc _num1lo             ; add the end-around carry back in
     bne _no_final_carry
     inc _num1hi
-;---
+
 _no_final_carry:
     lda _num1lo              ; move result to 2nd value
     sta _num2lo
@@ -1794,55 +2353,96 @@ REMOTE_ISN_BUMP:
 ;=============================================================================
 CALC_RX_TCP_BYTE_COUNT:
 
-    ;—— 1) Pull IP Total-Length into TMP_HI:TMP_LO ——  
-    lda ETH_RX_FRAME_PAYLOAD+3    ; low byte of Total-Length  
-    sta _TMP_LO  
-    lda ETH_RX_FRAME_PAYLOAD+2    ; high byte of Total-Length  
-    sta _TMP_HI  
+    ; ----- IP header length (bytes) from Version/IHL -----
+    lda ETH_RX_FRAME_PAYLOAD+0     ; Version(4) | IHL(4)
+    and #$0f                       ; IHL (words)
+    asl                            ; *2
+    asl                            ; *4 -> bytes (20..60)
+    sta _TMP_IP_HDR_LEN
 
-    ;—— 2) Subtract the IP header length ——  
-    ; IHL is low nibble of byte 0, in 32-bit words → ×4 = bytes  
-    lda ETH_RX_FRAME_PAYLOAD      ; Version/IHL  
-    and #$0F                      ; isolate IHL  
-    asl                           ; ×2  
-    asl                           ; ×4  
-    sta _TMP_IP_HDR_LEN            ; now holds IP-header bytes (usually 20)  
+    ; clamp [20..60]
+    lda _TMP_IP_HDR_LEN
+    cmp #20
+    bcs _ip_ge20
+    lda #20
+_ip_ge20
+    cmp #60
+    bcc _ip_ok
+    lda #60
+_ip_ok
+    sta _TMP_IP_HDR_LEN
 
-    sec                           ; prepare for subtraction  
-    lda _TMP_LO  
-    sbc _TMP_IP_HDR_LEN            ; low–byte subtract  
-    sta _TMP_LO  
-    lda _TMP_HI 
-    sbc #$00                      ; high–byte subtract  
-    sta _TMP_HI  
+    ; ----- TCP header length (bytes) from DataOffset nibble -----
+    ; Read byte at (IP base + IHL*4 + 12)
+    lda #<ETH_RX_FRAME_PAYLOAD+12
+    clc
+    adc _TMP_IP_HDR_LEN
+    sta _rd_off_nib+1
+    lda #>ETH_RX_FRAME_PAYLOAD+12
+    adc #$00
+    sta _rd_off_nib+2
 
-    ;—— 3) Subtract the TCP header length ——  
-    ; Data-Offset is high nibble of byte (20+12) in payload; value = words  
-    lda ETH_RX_FRAME_PAYLOAD+32   ; that's payload-offset 20 + 12  
-    and #$F0                      ; isolate high nibble (DataOffset<<4)  
-    lsr                           ; >>1  
-    lsr                           ; >>2  
-    lsr                           ; >>3  
-    lsr                           ; >>4  ; now A = DataOffset in 32-bit words  
-    asl                           ; *2  
-    asl                           ; *4  ; A = TCP-header bytes (usually 20)  
-    sta _TMP_TCP_HDR_LEN  
+_rd_off_nib:
+    .byte $AD, $00, $00            ; LDA $0000 (patched above to IP+IHL*4+12)
+    and #$F0                       ; DataOffset (high nibble, words)
+    lsr
+    lsr
+    lsr
+    lsr                            ; -> words (5..15)
+    asl
+    asl                            ; *4 -> bytes (20..60)
+    sta _TMP_TCP_HDR_LEN
 
-    sec  
-    lda _TMP_LO  
-    sbc _TMP_TCP_HDR_LEN           ; subtract low byte  
-    sta _TMP_LO  
-    lda _TMP_HI
-    sbc #$00  
-    sta _TMP_HI 
-    
-    lda _TMP_LO
+    ; clamp [20..60]
+    lda _TMP_TCP_HDR_LEN
+    cmp #20
+    bcs _tcp_ge20
+    lda #20
+_tcp_ge20
+    cmp #60
+    bcc _tcp_ok
+    lda #60
+_tcp_ok
+    sta _TMP_TCP_HDR_LEN
+
+    ; ----- Total header bytes for later payload start -----
+    lda _TMP_IP_HDR_LEN
+    clc
+    adc _TMP_TCP_HDR_LEN
+    sta TCP_DATA_OFFSET            ; (non-ZP byte you define in .bss/.data)
+
+    ; ----- IP Total Length (network order at +2/+3) -----
+    ; Build: tmp = IP_TOTAL_LEN - IP_HDR_LEN
+    lda ETH_RX_FRAME_PAYLOAD+3     ; total len LSB
+    sec
+    sbc _TMP_IP_HDR_LEN
+    sta _tmp_len_lo
+    lda ETH_RX_FRAME_PAYLOAD+2     ; total len MSB
+    sbc #$00
+    sta _tmp_len_hi
+
+    ; Then subtract TCP_HDR_LEN:  payload = tmp - TCP_HDR_LEN
+    lda _tmp_len_lo
+    sec
+    sbc _TMP_TCP_HDR_LEN
+    sta TCP_RX_DATA_PAYLOAD_SIZE       ; LSB
+    lda _tmp_len_hi
+    sbc #$00
+    sta TCP_RX_DATA_PAYLOAD_SIZE+1     ; MSB
+    bcs _done                           ; carry=1 → no borrow → non-negative
+
+    ; underflow → clamp to zero (defensive)
+    lda #$00
     sta TCP_RX_DATA_PAYLOAD_SIZE
-    lda _TMP_HI
     sta TCP_RX_DATA_PAYLOAD_SIZE+1
 
-    ; now TCP_RX_DATA_PAYLOAD_SIZE = number of data bytes in the TCP segment (little endian)
+_done
     rts
+
+; ---- local scratch in normal RAM (not ZP) ----
+_tmp_len_lo:       .byte 0
+_tmp_len_hi:       .byte 0
+
 
 _TMP_LO:
     .byte $00
@@ -1854,6 +2454,10 @@ _TMP_IP_HDR_LEN:
 
 _TMP_TCP_HDR_LEN:
     .byte $00
+
+; total bytes from start of IP header to start of TCP payload
+TCP_DATA_OFFSET: 
+    .byte $00   
 
 ;=========
 ; Tear everything down on RST (or fatal error)
@@ -1898,24 +2502,86 @@ TCP_EVENT_FLAG
 
 ; returns current event bits in A and clears them (BASIC can poll this for hard reset)
 ETH_STATUS_POLL:
+    ; 1) Flush any deferred sends (ARP replies / deferred ACKs)
     jsr ETH_PROCESS_DEFERRED
 
-   ; Allow TIME_WAIT to progress while BASIC polls
-   lda TCP_STATE
-   cmp #TCP_STATE_TIME_WAIT
-   bne _no_tw
-   jsr TIME_WAIT_TICK
+    ; 2) Let TIME_WAIT progress while BASIC polls
+    lda TCP_STATE
+    cmp #TCP_STATE_TIME_WAIT
+    bne _check_events
+    jsr TIME_WAIT_TICK
 
-_no_tw:
+_check_events:
+    ; 3) If there are event bits, return them and clear
     lda TCP_EVENT_FLAG
+    beq _check_state
     pha
     lda #$00
     sta TCP_EVENT_FLAG
     pla
     rts
 
-;==========
+_check_state:
+    ; Return 0 when connected/normal, 1 when disconnected/error
+    lda TCP_STATE
+    cmp #TCP_STATE_ESTABLISHED
+    beq _connected_with_winupd
+    cmp #TCP_STATE_CLOSE_WAIT
+    beq _connected_with_winupd
+    cmp #TCP_STATE_CLOSED
+    beq _disconnected
 
+    ; Transitional states → treat as "connected/normal" (0)
+    lda #$00
+    rts
+
+_connected_with_winupd:
+    ; Call window-update helper without clobbering A
+    pha
+    jsr ETH_MAYBE_WINUPDATE
+    pla
+    lda #$00
+    rts
+
+_disconnected:
+    lda #$01
+    rts
+
+ETH_MAYBE_WINUPDATE:
+    ; cur_free = (TAIL - HEAD - 1) mod 256
+    lda RBUF_TAIL
+    sec
+    sbc RBUF_HEAD
+    sbc #1
+    sta _cur_free            ; wrap is fine; A already has mod-256 result
+
+    ; Only care if the last advertised window was zero
+    lda ADV_WINDOW_LAST
+    bne _ret                 ; we didn’t advertise 0 last time → nothing to do
+
+    ; We last advertised 0: if we’ve opened enough, send a window update
+    lda _cur_free
+    beq _ret                 ; still 0 → nothing to send
+    cmp #WINUPDATE_THRESHOLD
+    bcc _ret                 ; not enough to bother the peer yet
+
+    ; Build & send a pure ACK (no data) to advertise the new window
+    lda #$00
+    sta TCP_DATA_PAYLOAD_SIZE
+    sta TCP_DATA_PAYLOAD_SIZE+1
+    lda #TCP_FLAG_ACK
+    jsr ETH_BUILD_TCPIP_PACKET
+    bcs _ret
+    jsr ETH_PACKET_SEND
+
+    ; Now ADV_WINDOW_LAST should reflect what we actually advertised.
+    ; (It will also be set by BUILD_TCP_HEADER on any future packet.)
+    lda _cur_free
+    sta ADV_WINDOW_LAST
+_ret:
+    rts
+
+_cur_free: .byte 0
 
 .include "arp.asm"
 ;.include "dhcp.asm"
@@ -2116,13 +2782,22 @@ _tcp_packet_check:
     bne _unknown_packet
 
 _tcp_socket_check:
-    ; correct: verify dst == our local ephemeral
-    lda ETH_RX_FRAME_PAYLOAD+20+2   ; TCP dst port hi
+    ; X := IP header length in BYTES (IHL * 4)
+    lda ETH_RX_FRAME_PAYLOAD+0    ; Version/IHL
+    and #$0F
+    asl
+    asl
+    tax                           ; X = IHL bytes (20..60)
+
+    ; TCP destination port (offset +2 from start of TCP header)
+    lda ETH_RX_FRAME_PAYLOAD+2,x  ; dst port hi
     cmp LOCAL_PORT+0
     bne _unknown_packet
-    lda ETH_RX_FRAME_PAYLOAD+20+3   ; TCP dst port lo
+    lda ETH_RX_FRAME_PAYLOAD+3,x  ; dst port lo
     cmp LOCAL_PORT+1
     bne _unknown_packet
+
+    ; (fall through to TCP handler)
     jmp INCOMING_TCP_PACKET
 
 _unknown_packet:
@@ -2173,53 +2848,56 @@ _not_ours:
 ; Routine to handle incoming TCP packet
 ;=============================================================================
 INCOMING_TCP_PACKET:
+
     ; Only handle IPv4 TCP; drop others (e.g., mDNS/UDP)
     lda ETH_RX_FRAME_PAYLOAD+0
     and #$F0
     cmp #$40
-    beq _tcp_check
-    rts
-_tcp_check:
+    bne _drop
+
+    ; TCP protocol?
     lda ETH_RX_FRAME_PAYLOAD+9
     cmp #$06
-    beq _tcp_ok
-    rts
-_tcp_ok:
-    ;inc $d020
-    ;lda $d020
-    ;cmp #$0f
-    ;bne _extract_flags
-    ;lda #$00
-    ;sta $d020
+    bne _drop
 
-_extract_flags:
-    lda ETH_RX_FRAME_PAYLOAD+20+13      ; TCP FLAGS
+    ; ---- ip_len_bytes = IHL * 4 (keep in X, do NOT store in TCP_DATA_OFFSET) ----
+    lda ETH_RX_FRAME_PAYLOAD+0
+    and #$0F
+    asl
+    asl
+    sta IP_HEADER_LEN
+    tax                               ; X = ip header length in bytes
+
+    ; verify this is our socket (dst port at ip_len+2) ----
+    lda ETH_RX_FRAME_PAYLOAD+2,x      ; dst port hi
+    cmp LOCAL_PORT+0
+    bne _drop
+    lda ETH_RX_FRAME_PAYLOAD+3,x      ; dst port lo
+    cmp LOCAL_PORT+1
+    bne _drop
+
+    ; ---- TCP flags at ip_len + 13 ----
+    lda ETH_RX_FRAME_PAYLOAD+13,x
     sta ETH_RX_TCP_FLAGS
 
-;lda ETH_RX_FRAME_PAYLOAD+20+4   ; SEQ[31:24]
-;sta REMOTE_ISN+0
-;lda ETH_RX_FRAME_PAYLOAD+20+5   ; SEQ[23:16]
-;sta REMOTE_ISN+1
-;lda ETH_RX_FRAME_PAYLOAD+20+6   ; SEQ[15:8]
-;sta REMOTE_ISN+2
-;lda ETH_RX_FRAME_PAYLOAD+20+7   ; SEQ[7:0]
-;sta REMOTE_ISN+3
+    ; SEG.SEQ → SEG_SEQ[0..3] (big endian)
+    lda ETH_RX_FRAME_PAYLOAD+4,x
+    sta SEG_SEQ+0
+    lda ETH_RX_FRAME_PAYLOAD+5,x
+    sta SEG_SEQ+1
+    lda ETH_RX_FRAME_PAYLOAD+6,x
+    sta SEG_SEQ+2
+    lda ETH_RX_FRAME_PAYLOAD+7,x
+    sta SEG_SEQ+3
 
-_retain_remote_isn:
-    ; stash seq number in REMOTE_ISN
-    lda ETH_RX_FRAME_PAYLOAD+20+4       ; SEQ number
-    sta REMOTE_ISN+0
-    lda ETH_RX_FRAME_PAYLOAD+20+5
-    sta REMOTE_ISN+1
-    lda ETH_RX_FRAME_PAYLOAD+20+6
-    sta REMOTE_ISN+2
-    lda ETH_RX_FRAME_PAYLOAD+20+7
-    sta REMOTE_ISN+3
+    ; ---- compute payload size and TCP_DATA_OFFSET (payload start) ----
+    jsr CALC_RX_TCP_BYTE_COUNT
 
-    jsr CALC_RX_TCP_BYTE_COUNT      ; fills TCP_RX_DATA_PAYLOAD_SIZE
-    
+    ; hand off to the state machine (still in IRQ context)
     jmp TCP_STATE_HANDLER
 
+_drop:
+    rts
 
 
 ; Ethernet frame structures
@@ -2233,6 +2911,8 @@ _retain_remote_isn:
 ; Min frame size = 64 bytes
 ; max payload = 1500 bytes
 ; max total frame = 1518 bytes without VLAN, 1522 with VLAN tag
+
+SEG_SEQ: .byte 0,0,0,0
 
 ETH_TX_FRAME_HEADER:
 ETH_TX_FRAME_DEST_MAC:
@@ -2259,6 +2939,11 @@ ETH_RX_FRAME_PAYLOAD_SIZE:
     .byte $00, $00
 TCP_RX_DATA_PAYLOAD_SIZE:
     .byte $00, $00
+
+ACK_REPLY_PENDING: .byte 0
+ACK_REPLY_LEN_L:   .byte 0
+ACK_REPLY_LEN_H:   .byte 0
+ACK_REPLY_PACKET:  .fill 60, $00       ; 54 bytes is enough (14+20+20), 60 gives slack
 
 ; Non-blocking packet send (IRQ-safe)
 ETH_PACKET_SEND_NO_WAIT:
