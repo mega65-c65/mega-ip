@@ -29,3 +29,37 @@ FAR_PEEK   .macro hi, address
     lda [$45],z
 
 .endm
+
+FAR_POKE_Y   .macro hi, address
+
+    pha
+    phy
+    lda #<\address
+    sta $45
+    lda #>\address
+    sta $46
+    lda #`\address
+    sta $47
+    lda #\hi
+    sta $48
+    plz
+    pla
+    sta [$45],z
+
+.endm
+
+FAR_PEEK_Y   .macro hi, address
+
+    phy
+    lda #<\address
+    sta $45
+    lda #>\address
+    sta $46
+    lda #`\address
+    sta $47
+    lda #\hi
+    sta $48
+    plz
+    lda [$45],z
+
+.endm

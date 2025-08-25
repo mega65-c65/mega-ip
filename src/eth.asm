@@ -2,14 +2,13 @@
 .include "macros.asm"
 .include "mega65.asm"
 
-
 .cpu "45gs02"
 
-TCP_FLAG_SYN = $02
-TCP_FLAG_ACK = $10
-TCP_FLAG_PSH = $08
-TCP_FLAG_FIN = $01
-TCP_FLAG_RST = $04
+TCP_FLAG_SYN                = $02
+TCP_FLAG_ACK                = $10
+TCP_FLAG_PSH                = $08
+TCP_FLAG_FIN                = $01
+TCP_FLAG_RST                = $04
 
 ; Ethernet states
 ETH_STATE_DOWN              = $00
@@ -17,7 +16,6 @@ ETH_STATE_ARP_WAITING       = $01
 ETH_STATE_ARP_READY         = $02
 ETH_STATE_RX_FRAME          = $03
 ETH_STATE_TX_FRAME          = $04
-
 
 ; TCP states
 TCP_STATE_CLOSED            = $00
@@ -33,12 +31,21 @@ TCP_STATE_LAST_ACK          = $09
 TCP_STATE_TIME_WAIT         = $0a
 
 ; A bitfield returned by CONNECT_* entry points
-CONN_CONNECTED   = %00000001  ; ESTABLISHED
-CONN_FAILED      = %00000010  ; handshake failed / RST / closed
-CONN_IN_PROGRESS = %00000100  ; we’re working on it
-CONN_ARP_WAIT    = %00001000  ; ARP request outstanding
-CONN_SYN_SENT    = %00010000  ; SYN has been sent
+CONN_CONNECTED              = %00000001     ; ESTABLISHED
+CONN_FAILED                 = %00000010     ; handshake failed / RST / closed
+CONN_IN_PROGRESS            = %00000100     ; we’re working on it
+CONN_ARP_WAIT               = %00001000     ; ARP request outstanding
+CONN_SYN_SENT               = %00010000     ; SYN has been sent
 
+; Event bits returned by ETH_STATUS_POLL (sticky until read)
+EV_RST                      = %00000001     ; hard reset seen (peer RST)          [existing]
+EV_PEER_FIN                 = %00000010     ; peer initiated close (we saw FIN)
+EV_LOCAL_CLOSE              = %00000100     ; our FIN exchange completed
+EV_TIMEWAIT_DONE            = %00001000     ; TIME_WAIT expired → CLOSED
+EV_CONNECT_FAIL             = %00010000     ; SYN handshake failed / timeout
+
+; This code is loaded to bank 4, starting at $2000 (BLOAD"eth.bin",P($42000),R)
+; The reason is so that the standard MAP for BASIC remains in effect.
 EXEC_BANK = $04     ; code is running from $42000
 *=$2000
 
@@ -49,7 +56,11 @@ EXEC_BANK = $04     ; code is running from $42000
     jmp ETH_SET_REMOTE_IP
     jmp ETH_SET_REMOTE_PORT
     jmp ETH_SET_SUBNET_MASK
-    jmp ETH_TCP_CONNECT
+
+    nop
+    nop
+    nop
+
     jmp ETH_TCP_SEND
     jmp ETH_TCP_SEND_STRING
     jmp RBUF_GET
@@ -120,25 +131,12 @@ ipv4_sum_hi: .byte 0
 tcp_sum_lo:  .byte 0
 tcp_sum_hi:  .byte 0
 
-; Ring buffer layout in RAM
-RBUF_HEAD:
-    .byte $00
-RBUF_TAIL:
-    .byte $00
-
-; recieved tcp data buffer
-RBUF_BASE:
-TCP_RX_DATA_BUFFER:
-.fill 256, $00
-
 ; 2×MSL = 60 s → 600 ticks of 100 ms → 0x0258
 TIME_WAIT_COUNTER_LO:
 .byte $58
 
 TIME_WAIT_COUNTER_HI:
 .byte $02
-
-; recieved tcp data buffer
 
 ; Constants for runtime addresses
 IRQ_BASE = $1600
@@ -148,7 +146,7 @@ IRQ_RETURN_ADDR = (ETH_IRQ_RETURN - ETH_RCV_IRQ) + IRQ_BASE
 
 ETH_RCV_IRQ:
 ; This is the installer code that runs once via JSR $1600
-.byte $38                                          ; SEC
+.byte $38                                         ; SEC
 .byte $a2, <VEC_TABLE_ADDR                        ; LDX #<vectable
 .byte $a0, >VEC_TABLE_ADDR                        ; LDY #>vectable
 .byte $20, $8d, $ff                               ; JSR $FF8D (VECTOR - read table)
@@ -166,11 +164,11 @@ ETH_RCV_IRQ:
 .byte $8d, <(VEC_TABLE_ADDR+1), >(VEC_TABLE_ADDR+1)    ; STA vectable+1
 
 ; Install updated vector table
-.byte $18                                          ; CLC
+.byte $18                                         ; CLC
 .byte $a2, <VEC_TABLE_ADDR                        ; LDX #<vectable
 .byte $a0, >VEC_TABLE_ADDR                        ; LDY #>vectable
 .byte $20, $8d, $ff                               ; JSR $FF8D (VECTOR - set table)
-.byte $60                                          ; RTS
+.byte $60                                         ; RTS
 
 ; The actual IRQ handler starts here (at offset $27 from $1600 = $1627)
 ETH_CUST_IRQ:
@@ -178,13 +176,13 @@ ETH_CUST_IRQ:
 ; We just need to save ZP locations we use
 
 .byte $A5, $02                                    ; LDA $02
-.byte $48                                          ; PHA
+.byte $48                                         ; PHA
 .byte $A5, $03                                    ; LDA $03
-.byte $48                                          ; PHA
+.byte $48                                         ; PHA
 .byte $A5, $04                                    ; LDA $04
-.byte $48                                          ; PHA
+.byte $48                                         ; PHA
 .byte $A5, $05                                    ; LDA $05
-.byte $48                                          ; PHA
+.byte $48                                         ; PHA
 
 ; Set up JSRFAR parameters
 .byte $A9, EXEC_BANK                              ; LDA #EXEC_BANK
@@ -198,13 +196,13 @@ ETH_CUST_IRQ:
 .byte $20, $6E, $FF                               ; JSR $FF6E (JSRFAR)
 
 ; Restore ZP locations
-.byte $68                                          ; PLA
+.byte $68                                         ; PLA
 .byte $85, $05                                    ; STA $05
-.byte $68                                          ; PLA
+.byte $68                                         ; PLA
 .byte $85, $04                                    ; STA $04
-.byte $68                                          ; PLA
+.byte $68                                         ; PLA
 .byte $85, $03                                    ; STA $03
-.byte $68                                          ; PLA
+.byte $68                                         ; PLA
 .byte $85, $02                                    ; STA $02
 
 ETH_IRQ_RETURN:
@@ -235,11 +233,10 @@ ETH_INIT:
 
     jsr MEGA65_IO_ENABLE
 
-; Configure RX filter:
-; - Multicast OFF  (bit5 = 0)
-; - Broadcast ON   (bit4 = 1)  [needed for ARP etc.]
-; - Promiscuous OFF (NOPROM=1, bit0 = 1)
-
+    ; Configure RX filter:
+    ; - Multicast OFF  (bit5 = 0)
+    ; - Broadcast ON   (bit4 = 1)  [needed for ARP etc.]
+    ; - Promiscuous OFF (NOPROM=1, bit0 = 1)
     lda MEGA65_ETH_CTRL3
     and #%11011111        ; clear bit5 (MCST=0 → no multicast)
     ora #%00010001        ; set bit4 (BCST=1) and bit0 (NOPROM=1)
@@ -248,14 +245,12 @@ ETH_INIT:
 
 _ahead:
     ; set ETH TX phase to 1
-
     lda MEGA65_ETH_CTRL3
     and #%11110011          ; clear bits 3 and 2
     ora #%00000100          ; set bit 2
     sta MEGA65_ETH_CTRL3
 
     ; Set ETH RX Phase delay to 1
-
     lda MEGA65_ETH_CTRL3    ; read current value
     and #%00111111          ; clear bits 6 and 7
     ora #%01000000          ; set bit 6
@@ -302,8 +297,10 @@ _loop_delay
 _clear_buffer:
     ; clear the receieve buffer
     lda #$00
-    sta RBUF_HEAD
-    sta RBUF_TAIL
+    sta RBUF_HEAD_HI
+    sta RBUF_HEAD_LO
+    sta RBUF_TAIL_HI
+    sta RBUF_TAIL_LO
 
     ; Initialize connection state
     sta TCP_EVENT_FLAG
@@ -472,7 +469,6 @@ _query_cache:
     bcs _send_fail                 ; (carry set = build error)
     
     jsr ETH_PACKET_SEND
-    ;jsr CALC_LOCAL_ISN 
 
     lda #$01
     sta CONNECT_SYN_SENT
@@ -621,55 +617,6 @@ _done:
     rts
 
 ;=============================================================================
-; Attempt to initiate a TCP connection
-;=============================================================================
-ETH_TCP_CONNECT:
-
-    ; if idle, we can initiate a connection by sending a SYN
-    lda TCP_STATE
-    cmp #TCP_STATE_CLOSED
-    beq _send_SYN
-
-    ; not closed - hand off to handler routine
-    jmp TCP_STATE_HANDLER
-
-_send_SYN:
-
-    ; generate a local ephemeral port number (start at $c000 and just add 1)
-    lda LOCAL_PORT+1
-    clc
-    adc #$01
-    sta LOCAL_PORT+1
-    lda LOCAL_PORT+0
-    adc #$00
-    sta LOCAL_PORT+0
-
-    jsr CLEAR_TCP_PAYLOAD
-
-    lda #$00
-    sta ETH_RX_TCP_FLAGS
-
-    jsr CLEAR_LOCAL_ISN
-    jsr CLEAR_REMOTE_ISN
-
-    lda #TCP_FLAG_SYN
-    jsr ETH_BUILD_TCPIP_PACKET
-    bcs _connect_fail
-
-    jsr ETH_PACKET_SEND
-
-    lda #TCP_STATE_SYN_SENT
-    sta TCP_STATE
-
-    ;jsr CALC_LOCAL_ISN
-
-    jmp TCP_STATE_HANDLER
-
-_connect_fail:
-    rts
-
-
-;=============================================================================
 ; Close a TCP connection
 ;=============================================================================
 ETH_TCP_DISCONNECT:
@@ -686,7 +633,6 @@ ETH_TCP_DISCONNECT:
 
     lda #TCP_STATE_FIN_WAIT_1
     sta TCP_STATE
-;    jmp TCP_STATE_HANDLER
 
 _not_connected:
     rts
@@ -750,8 +696,8 @@ ETH_TCP_SEND_STRING:
     lda _var_len
     sta TCP_DATA_PAYLOAD_SIZE
 
-php
-sei
+;php
+;sei
     ; use DMA to copy the bytes
     sta $D707
     .byte $80                                   ; enhanced dma - src bits 20-27
@@ -769,7 +715,7 @@ _dest_addr:
     .byte <TCP_DATA_PAYLOAD, >TCP_DATA_PAYLOAD, EXEC_BANK             ; dest lsb, msb, bank
     .byte $00                                   ; command high byte
     .word $0000                                 ; modulo (ignored)
-plp
+;plp
     jmp ETH_TCP_SEND
 
 _exit:
@@ -834,7 +780,6 @@ _epd_done:
 ;=============================================================================
 TCP_STATE_HANDLER:
 
-    ;jsr ETH_PROCESS_DEFERRED
     lda ETH_RX_TCP_FLAGS
     and #TCP_FLAG_RST
     beq _not_RST
@@ -854,12 +799,19 @@ _check_ESTABLISHED:
     cmp #TCP_STATE_ESTABLISHED
     bne _check_CLOSED
 
-    ; If the peer is closing too (FIN+ACK), go handle that first
+    ; If the peer is closing too (FIN), go handle that first
     lda ETH_RX_TCP_FLAGS
-    and #(TCP_FLAG_FIN|TCP_FLAG_ACK)
-    cmp #(TCP_FLAG_FIN|TCP_FLAG_ACK)
-    beq _got_FIN_IN_ESTABLISHED
+    and #TCP_FLAG_FIN
+    beq _no_fin_in_established
+    jmp _got_FIN_IN_ESTABLISHED
 
+    ; If the peer is closing too (FIN+ACK), go handle that first
+    ;lda ETH_RX_TCP_FLAGS
+    ;and #(TCP_FLAG_FIN|TCP_FLAG_ACK)
+    ;cmp #(TCP_FLAG_FIN|TCP_FLAG_ACK)
+    ;beq _got_FIN_IN_ESTABLISHED
+
+_no_fin_in_established:
     ; Any payload?
     lda TCP_RX_DATA_PAYLOAD_SIZE
     ora TCP_RX_DATA_PAYLOAD_SIZE+1
@@ -992,7 +944,9 @@ _lp_copy_data:
 
 _payload_read:
     .byte $B9, $00, $00            ; LDA abs,Y (operands patched above)
+    phy
     jsr RBUF_PUT                   ; (RBUF_PUT returns C=1 if full; we prechecked)
+    ply
     bcs _ack_what_we_took
 
     ; consumed++
@@ -1007,7 +961,7 @@ _no_carry_cons:
     inc _payload_read+2            ; crossed page
 
 _no_page:
-; remaining--
+    ; remaining--
     sec
     lda RX_COPY_REM_LO
     sbc #1
@@ -1020,8 +974,6 @@ _no_page:
     lda RX_COPY_REM_LO
     ora RX_COPY_REM_HI
     bne _lp_copy_data       ; Check if high byte went negative
-    jmp _ack_what_we_took   ; Exit if it did
- 
 
 ; ------------------ ACK exactly what we took ------------------
 _ack_what_we_took:
@@ -1092,6 +1044,10 @@ _got_FIN_IN_ESTABLISHED:
     ; move into CLOSE_WAIT so application can call disconnect
     lda #TCP_STATE_CLOSE_WAIT
     sta TCP_STATE
+
+    lda TCP_EVENT_FLAG
+    ora #EV_PEER_FIN
+    sta TCP_EVENT_FLAG
     rts
 
 _est_done:
@@ -1116,7 +1072,7 @@ _check_SYN:
     lda ETH_RX_TCP_FLAGS
     and #(TCP_FLAG_SYN|TCP_FLAG_ACK)
     cmp #(TCP_FLAG_SYN|TCP_FLAG_ACK)
-    bne _wait_and_loop
+    bne _done
 
 _got_SYNACK:
     ; server's ISN is in SEG_SEQ (set by INCOMING_TCP_PACKET)
@@ -1166,12 +1122,12 @@ _check_FIN_WAIT_1:
     lda ETH_RX_TCP_FLAGS
     and #TCP_FLAG_ACK
     cmp #TCP_FLAG_ACK
-    bne _wait_and_loop
+    bne _done
 
 _got_FIN_WAIT_1_ACK:
     lda #TCP_STATE_FIN_WAIT_2
     sta TCP_STATE
-    jmp _wait_and_loop
+    jmp _done
 
 ;---------------------------------------------------------------------------
 ; FIN-WAIT-2
@@ -1181,10 +1137,15 @@ _check_FIN_WAIT_2:
     cmp #TCP_STATE_FIN_WAIT_2
     bne _check_TIME_WAIT
 
+    ; await the FIN (ACK may or may not be set)
     lda ETH_RX_TCP_FLAGS
-    and #(TCP_FLAG_FIN|TCP_FLAG_ACK)
-    cmp #(TCP_FLAG_FIN|TCP_FLAG_ACK)
-    bne _wait_and_loop
+    and #TCP_FLAG_FIN
+    beq _done
+
+    ;lda ETH_RX_TCP_FLAGS
+    ;and #(TCP_FLAG_FIN|TCP_FLAG_ACK)
+    ;cmp #(TCP_FLAG_FIN|TCP_FLAG_ACK)
+    ;bne _done
 
 _got_FIN_ACK:
     ; consume the peer's FIN (+1 on remote sequence)
@@ -1207,7 +1168,11 @@ _got_FIN_ACK:
 
     lda #TCP_STATE_TIME_WAIT
     sta TCP_STATE
-    jmp _wait_and_loop
+
+    lda TCP_EVENT_FLAG
+    ora #EV_LOCAL_CLOSE
+    sta TCP_EVENT_FLAG
+    jmp _done
 
 ;---------------------------------------------------------------------------
 ; TIME-WAIT
@@ -1239,12 +1204,12 @@ _check_CLOSE_WAIT:
 ;---------------------------------------------------------------------------
 _check_LAST_ACK:
     cmp #TCP_STATE_LAST_ACK
-    bne _other
+    bne _done
 
     lda ETH_RX_TCP_FLAGS
     and #TCP_FLAG_ACK
     cmp #TCP_FLAG_ACK
-    bne _wait_and_loop
+    bne _done
 
     ; peer ACK’d your FIN, now go TIME_WAIT
     lda #$02
@@ -1254,15 +1219,8 @@ _check_LAST_ACK:
 
     lda #TCP_STATE_TIME_WAIT
     sta TCP_STATE
-    rts
 
-_other:
-    ; not sure what would get us here
-    rts
-
-_wait_and_loop:
-;    jsr ETH_WAIT_100MS
-;    jmp TCP_STATE_HANDLER
+_done:
     rts
 
 RX_COPY_REM_LO:     .byte 0
@@ -1274,7 +1232,9 @@ SKIP_HI:          .byte 0
 OFF_LO:           .byte 0
 OFF_HI:           .byte 0
 
-
+; ================================================================================
+; Defers transmit until out of IRQ
+; ================================================================================
 DEFER_CURRENT_TX:
     lda ETH_TX_LEN_LSB
     ldx ETH_TX_LEN_MSB
@@ -1326,6 +1286,11 @@ TIME_WAIT_TICK:
     lda #TCP_STATE_CLOSED
     sta TCP_STATE
 
+    ; notify BASIC that TIME_WAIT ended
+    lda TCP_EVENT_FLAG
+    ora #EV_TIMEWAIT_DONE
+    sta TCP_EVENT_FLAG
+
 _done:
     rts
 
@@ -1333,64 +1298,156 @@ _done:
 ; A = byte to write
 ; Carry set if buffer full, clear if success
 ;=============================================================================
+; In:  A = byte to store
+; Out: C=0 success, C=1 full (A preserved on success)
 RBUF_PUT:
-    ldx RBUF_HEAD         ; X = head
-    inx                   ; X = next = head + 1 (wraps 0..255)
-    cpx RBUF_TAIL         ; next == tail ? full
-    beq _full
+    pha                         ; save data byte on stack
 
-    dex                   ; X = head (slot to write)
-    sta RBUF_BASE,x       ; store the byte first
-    inx                   ; X = next (publish)
-    stx RBUF_HEAD         ; publish new head
+    ; snapshot current head into HLO/HHI
+    lda RBUF_HEAD_LO
+    sta HLO
+    lda RBUF_HEAD_HI
+    sta HHI
+
+    ; next = head + 1 (10-bit)
     clc
-    rts
+    lda HLO
+    adc #1
+    sta NEXT_LO
+    lda HHI
+    adc #0
+    and #$03
+    sta NEXT_HI
+
+    ; full? (next == tail)
+    jsr READ_TAIL_ATOMIC
+    lda NEXT_LO
+    cmp TMP_TAIL_LO
+    bne _not_full
+    lda NEXT_HI
+    cmp TMP_TAIL_HI
+    bne _not_full
 _full:
-    sec
+    pla                         ; drop saved byte
+    sec                         ; full
     rts
+
+_not_full:
+    ; write data at page(HHI) : offset(HLO)
+    ldy HLO
+    pla                         ; A = data byte
+    ldx HHI
+    cpx #0
+    bne _p1
+    FAR_POKE_Y $00, $55000
+    ;sta RBUF_PAGE0,y            ; page 0
+    jmp _pub
+_p1 cpx #1
+    bne _p2
+    FAR_POKE_Y $00, $56000
+    ;sta RBUF_PAGE1,y            ; page 1
+    jmp _pub
+_p2 cpx #2
+    bne _p3
+    FAR_POKE_Y $00, $57000
+    ;sta RBUF_PAGE2,y            ; page 2
+    jmp _pub
+_p3
+    FAR_POKE_Y $00, $58000
+    ;sta RBUF_PAGE3,y            ; page 3
+
+_pub:
+    ; publish head = next
+    lda NEXT_LO
+    sta RBUF_HEAD_LO
+    lda NEXT_HI
+    sta RBUF_HEAD_HI
+
+    clc                         ; success
+    rts
+
+
 
 ;=============================================================================
 ; Returns byte in A
 ; Carry set if buffer empty, clear if success
 ;=============================================================================
 RBUF_GET:
-    jsr ETH_PROCESS_DEFERRED
-    ldx RBUF_TAIL         ; X = tail (slot to read)
-    cpx RBUF_HEAD         ; empty if tail == head
+    ; empty? (head == tail)
+    jsr READ_HEAD_ATOMIC
+    lda RBUF_TAIL_LO
+    cmp TMP_HEAD_LO
+    bne _not_empty
+    lda RBUF_TAIL_HI
+    cmp TMP_HEAD_HI
     beq _empty
 
-    lda RBUF_BASE,x       ; A = byte
-    inx                   ; X = new tail (wraps)
-    stx RBUF_TAIL         ; publish new tail
-    clc
+_not_empty:
+    ; read from page(TAIL_HI) : offset(TAIL_LO)
+    ldy RBUF_TAIL_LO
+    ldx RBUF_TAIL_HI
+    cpx #0
+    bne _g1
+    FAR_PEEK_Y $00, $55000
+    ;lda RBUF_PAGE0,y            ; page 0
+    jmp _adv
+_g1 cpx #1
+    bne _g2
+    FAR_PEEK_Y $00, $56000
+    ;lda RBUF_PAGE1,y            ; page 1
+    jmp _adv
+_g2 cpx #2
+    bne _g3
+    FAR_PEEK_Y $00, $57000
+    ;lda RBUF_PAGE2,y            ; page 2
+    jmp _adv
+_g3
+    FAR_PEEK_Y $00, $58000
+    ;lda RBUF_PAGE3,y            ; page 3
+
+_adv:
+    ; tail = tail + 1 (10-bit)
+    inc RBUF_TAIL_LO
+    bne _ok
+    inc RBUF_TAIL_HI
+    lda RBUF_TAIL_HI
+    and #$03
+    sta RBUF_TAIL_HI
+_ok:
+    clc                         ; success
     rts
+
 _empty:
     lda #$00
     sec
     rts
 
-;=============================================================================
-; Carry set if empty
-;=============================================================================
-RBUF_IS_EMPTY:
-    lda RBUF_HEAD
-    cmp RBUF_TAIL
-    beq _yes
-    clc
-    rts
-_yes:
-    sec
-    rts
 
 ;=============================================================================
 ; Carry set if full
 ;=============================================================================
 RBUF_IS_FULL:
-    lda RBUF_HEAD
+    ; compute next = head+1
+    lda RBUF_HEAD_LO
+    sta HLO
+    lda RBUF_HEAD_HI
+    sta HHI
     clc
+    lda HLO
     adc #1
-    cmp RBUF_TAIL
+    sta NEXT_LO
+    lda HHI
+    adc #0
+    and #$03
+    sta NEXT_HI
+    jsr READ_TAIL_ATOMIC
+    lda NEXT_LO
+    cmp TMP_TAIL_LO
+    bne _no
+    lda NEXT_HI
+    cmp TMP_TAIL_HI
     beq _yes
+_no: 
     clc
     rts
 _yes:
@@ -1456,7 +1513,6 @@ _len_msb:
     .byte $00                   ; length msb
 _ETH_BUF_SRC:
     .byte $00, $00, EXEC_BANK   ; src lsb, msb, bank
-    ;.byte $00, $00, $05         ; debug destination
     .byte $00, $e8, $0d         ; dest eth TX/RX buffer ($ffde800)
     .byte $00                   ; command high byte
     .word $0000                 ; modulo (ignored)
@@ -1552,7 +1608,7 @@ ETH_BUILD_TCPIP_PACKET:
 
     ; if a non-blocking connect is in progress, don't ARP or spin here.
     lda CONNECT_ACTIVE
-    beq _do_arp_request          ; not connecting => old behavior ok (your tooling)
+    beq _do_arp_request             ; not connecting => old behavior ok (your tooling)
 
     jsr ETH_CHECK_SAME_NET
     beq _use_gateway
@@ -1617,7 +1673,7 @@ _arp_reply_loop:                    ; wait for ARP reply
     cmp #ETH_STATE_ARP_WAITING
     beq _arp_reply_loop
 
-    ; restore the processor register, which will disable interrupts again
+    ; disable interrupts
     sei
 
     jsr ARP_QUERY_CACHE             ; cache should be populated now, so query again
@@ -1870,16 +1926,40 @@ BUILD_TCP_HEADER:
     lda REMOTE_PORT+1
     sta TCP_HDR_DST_PORT+1
 
-    ; compute advertised window from ring free space (0..255) ---
-    ; free = (TAIL - HEAD - 1) mod 256
-    lda RBUF_TAIL
+    ; ---- compute free = (TAIL - HEAD - 1) mod 1024 ----
+    jsr READ_HEAD_ATOMIC
+    jsr READ_TAIL_ATOMIC
+
+    ; free := (TAIL - HEAD - 1) mod 1024
     sec
-    sbc RBUF_HEAD
+    lda TMP_TAIL_LO
+    sbc TMP_HEAD_LO
+    sta FREE_LO
+    lda TMP_TAIL_HI
+    sbc TMP_HEAD_HI
+    and #$03                          ; keep to 10-bit pages 0..3
+    sta FREE_HI
+
+    ; subtract 1 (mod 1024)
+    sec
+    lda FREE_LO
     sbc #1
-    sta TCP_HDR_WINDOW+1   ; low byte
-    sta ADV_WINDOW_LAST       ; remember what we just advertised
-    lda #$00
-    sta TCP_HDR_WINDOW     ; high byte (we cap at 255)
+    sta FREE_LO
+    lda FREE_HI
+    sbc #0
+    and #$03
+    sta FREE_HI
+
+    ; Write TCP window (16-bit, network order high:low in your struct)
+    lda FREE_HI
+    sta TCP_HDR_WINDOW
+    lda FREE_LO
+    sta TCP_HDR_WINDOW+1
+
+    ; Remember what we advertised (16-bit)
+    sta ADV_WINDOW_LAST_LO
+    lda FREE_HI
+    sta ADV_WINDOW_LAST_HI
 
     ; copy LOCAL_ISN into TCP Header Sequence Number
     lda LOCAL_ISN+0
@@ -1963,8 +2043,7 @@ _lp_done:
 
     rts
 
-ADV_WINDOW_LAST: .byte 0
-WINUPDATE_THRESHOLD = $20    ; send update when we open by ≥32 bytes
+WINUPDATE_THRESHOLD = $01    ; send update when we open by ≥32 bytes
 
 ; we will max our data payload at 235 bytes which is small, but
 ; fits well with BASIC string sizes (tcp header = 20 + 235 = 255)
@@ -2474,8 +2553,10 @@ TCP_HARD_RESET:
     jsr CLEAR_REMOTE_ISN
 
     ; flush RX ring (optional, but avoids BASIC reading stale bytes)
-    lda RBUF_HEAD
-    sta RBUF_TAIL
+    lda RBUF_HEAD_HI
+    sta RBUF_TAIL_HI
+    lda RBUF_HEAD_LO
+    sta RBUF_TAIL_LO
 
     ; mark closed
     lda #$00
@@ -2501,9 +2582,20 @@ TCP_EVENT_FLAG
 
 
 ; returns current event bits in A and clears them (BASIC can poll this for hard reset)
+STATUS_LAST_EVENTS: .byte 0
+
+; ETH_STATUS_POLL
+; - Flush deferred TX (ACK/ARP) so IRQ never has to send
+; - If we previously advertised a 0 window and we’ve freed space,
+;   send a pure ACK to wake the peer (ETH_MAYBE_WINUPDATE)
+; - Advance TIME_WAIT
+; - If any events are latched, return them (and clear)
+; - Otherwise return 0=connected/ok, 1=disconnected
+
 ETH_STATUS_POLL:
-    ; 1) Flush any deferred sends (ARP replies / deferred ACKs)
+    ; 1) Do non-IRQ work first
     jsr ETH_PROCESS_DEFERRED
+    jsr ETH_MAYBE_WINUPDATE
 
     ; 2) Let TIME_WAIT progress while BASIC polls
     lda TCP_STATE
@@ -2512,34 +2604,28 @@ ETH_STATUS_POLL:
     jsr TIME_WAIT_TICK
 
 _check_events:
-    ; 3) If there are event bits, return them and clear
     lda TCP_EVENT_FLAG
-    beq _check_state
+    beq _check_state          ; no events → fall through
     pha
     lda #$00
-    sta TCP_EVENT_FLAG
+    sta TCP_EVENT_FLAG        ; clear sticky bits after read
     pla
     rts
 
 _check_state:
-    ; Return 0 when connected/normal, 1 when disconnected/error
+    ; 0 = connected/normal
+    ; 1 = disconnected/closed
     lda TCP_STATE
     cmp #TCP_STATE_ESTABLISHED
-    beq _connected_with_winupd
-    cmp #TCP_STATE_CLOSE_WAIT
-    beq _connected_with_winupd
+    beq _connected
     cmp #TCP_STATE_CLOSED
     beq _disconnected
 
-    ; Transitional states → treat as "connected/normal" (0)
+    ; transitional states → treat as "ok" (0) for the poller
     lda #$00
     rts
 
-_connected_with_winupd:
-    ; Call window-update helper without clobbering A
-    pha
-    jsr ETH_MAYBE_WINUPDATE
-    pla
+_connected:
     lda #$00
     rts
 
@@ -2547,25 +2633,50 @@ _disconnected:
     lda #$01
     rts
 
+; Computes free = (TAIL - HEAD - 1) mod 1024 (10-bit),
+; and if last advertised window was 0 and free >= threshold,
+; sends a pure ACK to wake the sender.  No zero-page used.
+
 ETH_MAYBE_WINUPDATE:
-    ; cur_free = (TAIL - HEAD - 1) mod 256
-    lda RBUF_TAIL
+    ; ---- cur_free = (TAIL - HEAD - 1) mod 1024 ----
+    jsr READ_HEAD_ATOMIC              ; fills TMP_HEAD_LO/TMP_HEAD_HI
+    jsr READ_TAIL_ATOMIC              ; fills TMP_TAIL_LO/TMP_TAIL_HI
+
+    lda TMP_TAIL_LO
     sec
-    sbc RBUF_HEAD
+    sbc TMP_HEAD_LO
+    sta _cur_free_lo
+    lda TMP_TAIL_HI
+    sbc TMP_HEAD_HI
+    and #$03
+    sta _cur_free_hi
+
+    ; cur_free -= 1
+    sec
+    lda _cur_free_lo
     sbc #1
-    sta _cur_free            ; wrap is fine; A already has mod-256 result
+    sta _cur_free_lo
+    lda _cur_free_hi
+    sbc #0
+    and #$03
+    sta _cur_free_hi
 
-    ; Only care if the last advertised window was zero
-    lda ADV_WINDOW_LAST
-    bne _ret                 ; we didn’t advertise 0 last time → nothing to do
+    ; ---- Only act if we last advertised 0 ----
+    lda ADV_WINDOW_LAST_LO
+    ora ADV_WINDOW_LAST_HI
+    bne _ret                           ; last adv wasn’t zero → nothing to do
 
-    ; We last advertised 0: if we’ve opened enough, send a window update
-    lda _cur_free
-    beq _ret                 ; still 0 → nothing to send
+    ; if free == 0 → nothing to send
+    lda _cur_free_lo
+    ora _cur_free_hi
+    beq _ret
+
+    ; require at least a small opening (hysteresis)
+    lda _cur_free_lo                   ; low byte compare is fine with threshold=1
     cmp #WINUPDATE_THRESHOLD
-    bcc _ret                 ; not enough to bother the peer yet
+    bcc _ret
 
-    ; Build & send a pure ACK (no data) to advertise the new window
+    ; ---- Build & send pure ACK (no data) to advertise the new window ----
     lda #$00
     sta TCP_DATA_PAYLOAD_SIZE
     sta TCP_DATA_PAYLOAD_SIZE+1
@@ -2574,14 +2685,19 @@ ETH_MAYBE_WINUPDATE:
     bcs _ret
     jsr ETH_PACKET_SEND
 
-    ; Now ADV_WINDOW_LAST should reflect what we actually advertised.
-    ; (It will also be set by BUILD_TCP_HEADER on any future packet.)
-    lda _cur_free
-    sta ADV_WINDOW_LAST
+    ; Record what we *actually* advertised (also set in BUILD_TCP_HEADER on future TX)
+    lda _cur_free_lo
+    sta ADV_WINDOW_LAST_LO
+    lda _cur_free_hi
+    sta ADV_WINDOW_LAST_HI
+
 _ret:
     rts
 
-_cur_free: .byte 0
+; locals (not zero-page)
+_cur_free_lo: .byte 0
+_cur_free_hi: .byte 0
+
 
 .include "arp.asm"
 ;.include "dhcp.asm"
@@ -2598,17 +2714,17 @@ ETH_RCV:
     ; check if frame has been recieved
     lda MEGA65_ETH_CTRL2
     and #%00100000                  ; check RX bit for waiting frame
-    bne _accept_packet
-    ;jsr ETH_PROCESS_DEFERRED 
+    bne _latch_frame
     rts
 
-_accept_packet:
+_latch_frame:
     ; Acknowledge the ethernet frame, freeing the buffer up for next RX
     lda #$01
     sta MEGA65_ETH_CTRL2
     lda #$03
     sta MEGA65_ETH_CTRL2
 
+_filter_packet:
 ;==============
 ; --- Early filter using NIC’s 2 status bytes (before any DMA) ---
 ; Buffer layout per MEGA65 doc (per received frame):
@@ -2621,82 +2737,39 @@ _accept_packet:
 
     ; Peek meta byte 0 (length LSB) — optional, but handy to have
     FAR_PEEK $ff, $0de800
-    sta _rx_len_lsb
+    sta _len_lsb
 
     ; Peek meta byte 1 (flags + length MSB nibble)
     FAR_PEEK $ff, $0de801
-    sta _rx_meta1
-
-    ; ---- Drop CRC-bad frames fast (bit7) ----
- ;   lda _rx_meta1
- ;   and #%10000000
- ;   beq _chk_multicast
-    ; ack & bail
-    ;lda #$01
-    ;sta MEGA65_ETH_CTRL2
-    ;lda #$03
-    ;sta MEGA65_ETH_CTRL2
- ;   rts
-
-_chk_multicast:
-    ; ---- Drop multicast (bit4) ----
-    lda _rx_meta1
-    and #%00010000
-    beq _chk_dest_ok
-    ; ack & bail
-    lda #$01
-    sta MEGA65_ETH_CTRL2
-    lda #$03
-    sta MEGA65_ETH_CTRL2
-    ;jsr ETH_PROCESS_DEFERRED 
-    rts
-
-_chk_dest_ok:
-    jmp _accept_for_us
-    ; ---- Keep only broadcast (bit5) OR unicast-to-me (bit6) ----
-;    lda _rx_meta1
-;    and #%01100000            ; isolate bits 6|5
-;    bne _accept_for_us        ; if either set → keep
-    ; otherwise: not for us → drop
-    ;lda #$01
-    ;sta MEGA65_ETH_CTRL2
-    ;lda #$03
-    ;sta MEGA65_ETH_CTRL2
-;    rts
-
-_rx_len_lsb: .byte $00
-_rx_meta1:   .byte $00
-
-_accept_for_us:
-;=============
-    ; get the length of bytes in incoming RX buffer
-    ; using full 32 bit access method
-
-    ;lda #$00        ; byte 0 LSB of length
-    ;sta $45
-    ;lda #$e8
-    ;sta $46
-    ;lda #$0d 
-    ;sta $47
-    ;lda #$ff
-    ;sta $48
-
-    ;ldz #$00
-    ;lda [$45],z
-
-    FAR_PEEK $ff, $0de800
-    sta _len_lsb                ; store lsb in our inline dma command
-
-    ; MSB nibble from meta byte 1
-    FAR_PEEK $ff, $0de801
+    sta ETH_RCV_META
     and #$0f
     sta _len_msb
 
-    ;lda #$01                    ; byte 1 MSB of length (first 4 bits)
-    ;sta $45
-    ;lda [$45],z                 ; peek it again
-    ;and #$0f                    ; strip upper 4 bits
-    ;sta _len_msb                ; store msb in our inline dma command
+_chk_bad_crc:
+    ; ---- Drop CRC-bad frames fast (bit7) ----
+    lda ETH_RCV_META
+    and #%10000000
+    beq _chk_multicast
+    rts
+
+_chk_multicast:
+    ; ---- Drop multicast (bit4) ----
+    lda ETH_RCV_META
+    and #%00010000
+    beq _chk_dest_ok
+    rts
+
+_chk_dest_ok:
+    ; ---- Keep only broadcast (bit5) OR unicast-to-me (bit6) ----
+    lda ETH_RCV_META
+    and #%01100000            ; isolate bits 6|5
+    beq _accept_packet        ; if either set → keep
+    rts
+
+_accept_packet:
+    nop
+    nop
+    nop
 
     ; inline DMA to copy ethernet buffer to RX buffer
     sta $D707
@@ -2713,58 +2786,22 @@ _len_msb:
     .byte $00                   ; command high byte
     .word $0000                 ; modulo (ignored)
 
+    ; verify dest mac or broadcast
+    jsr ETH_IS_PACKET_FOR_US
+    beq _unknown_packet
 
-
-
-; Drop IPv6 outright
-;    lda ETH_RX_TYPE
-;    cmp #$86
-;    bne _rx_not_ipv6
-;    lda ETH_RX_TYPE+1
-;    cmp #$DD
-;    bne _rx_not_ipv6
-;    rts
-
-;_rx_not_ipv6:
-; Drop IPv6 multicast MAC 33:33:xx:xx:xx:xx (in case hardware filter changes)
-;    lda ETH_RX_FRAME_DEST_MAC+0
-;    cmp #$33
-;    bne _rx_continue
-;    lda ETH_RX_FRAME_DEST_MAC+1
-;    cmp #$33
-;    bne _rx_continue
-
-;_forever:
-;    inc $d021
-;    jmp _forever
-;
- ;   rts
-
-
-_rx_continue:
-
-; --- classify by EtherType first ---
+_chk_eth_type:
+    ; --- classify by EtherType first ---
     lda ETH_RX_TYPE
     cmp #$08
     bne _unknown_packet
 
     lda ETH_RX_TYPE+1
-    cmp #$06
-    beq _is_arp              ; handle ARP without MAC gating
-
-    ; confirm if this packet is for us
-    jsr ETH_IS_PACKET_FOR_US
-    beq _unknown_packet
-    jmp _tcp_packet_check
-
-    ;lda ETH_RX_TYPE
-    ;cmp #$08                            ; is packet $08xx?
-    ;bne _unknown_packet                 ; no - ignore this packet
-
-;_arp_packet_check:
-;    lda ETH_RX_TYPE+1
-;    cmp #$06                            ; is packet $0806 (ARP)?
-;    bne _tcp_packet_check
+    cmp #$06                            ; is packet $0806 (ARP)?
+    beq _is_arp
+    cmp #$00                            ; is packet $0800 (IPv4)?
+    beq _is_ipv4
+    jmp _unknown_packet
 
 _is_arp:
     lda ETH_RX_FRAME_PAYLOAD+6          ; high byte of OPER
@@ -2773,42 +2810,34 @@ _is_arp:
     beq _call_arp_reply
     cmp #$02                            ; = 2 (reply)?
     beq _call_arp_update_cache
-    ;jsr ETH_PROCESS_DEFERRED 
     rts                                 ; neither request nor reply → ignore
 
-_tcp_packet_check:
-    lda ETH_RX_TYPE+1
-    cmp #$00                            ; is packet $0800 (TCP)?
-    bne _unknown_packet
-
-_tcp_socket_check:
-    ; X := IP header length in BYTES (IHL * 4)
-    lda ETH_RX_FRAME_PAYLOAD+0    ; Version/IHL
-    and #$0F
-    asl
-    asl
-    tax                           ; X = IHL bytes (20..60)
-
-    ; TCP destination port (offset +2 from start of TCP header)
-    lda ETH_RX_FRAME_PAYLOAD+2,x  ; dst port hi
-    cmp LOCAL_PORT+0
-    bne _unknown_packet
-    lda ETH_RX_FRAME_PAYLOAD+3,x  ; dst port lo
-    cmp LOCAL_PORT+1
-    bne _unknown_packet
-
-    ; (fall through to TCP handler)
-    jmp INCOMING_TCP_PACKET
-
-_unknown_packet:
-    ;jsr ETH_PROCESS_DEFERRED 
-    rts
-
 _call_arp_reply:
+    nop
+    nop
+    nop
     jmp ARP_REPLY
 
 _call_arp_update_cache:
+    nop
+    nop
+    nop
     jmp ARP_UPDATE_CACHE
+
+_is_ipv4:
+    nop
+    nop
+    nop
+    jmp INCOMING_TCP_PACKET
+
+_unknown_packet:
+    nop
+    nop
+    nop
+    rts
+
+ETH_RCV_META:
+    .byte $00
 
 ;=============================================================================
 ; Routine to check if packed in RX buffer is for this machine / IP
@@ -2868,6 +2897,28 @@ INCOMING_TCP_PACKET:
     sta IP_HEADER_LEN
     tax                               ; X = ip header length in bytes
 
+    ; ------ IP address checks ------
+    ; dst IP must be LOCAL_IP
+    ldy #0
+_chk_dip:
+    lda ETH_RX_FRAME_PAYLOAD+16,y    ; IPv4 dst at +16..+19 (fixed in IPv4)
+    cmp LOCAL_IP,y
+    bne _drop
+    iny
+    cpy #4
+    bne _chk_dip
+
+    ; src IP must be REMOTE_IP (once we are trying to talk to a peer)
+    ; (do this unconditionally; if you prefer, you can skip while CLOSED)
+    ldy #0
+_chk_sip:
+    lda ETH_RX_FRAME_PAYLOAD+12,y    ; IPv4 src at +12..+15
+    cmp REMOTE_IP,y
+    bne _drop
+    iny
+    cpy #4
+    bne _chk_sip
+
     ; verify this is our socket (dst port at ip_len+2) ----
     lda ETH_RX_FRAME_PAYLOAD+2,x      ; dst port hi
     cmp LOCAL_PORT+0
@@ -2899,6 +2950,59 @@ INCOMING_TCP_PACKET:
 _drop:
     rts
 
+
+; ==== Ring configuration (no zero-page) ====
+
+RBUF_PAGE0      = RBUF_BASE + $000
+RBUF_PAGE1      = RBUF_BASE + $100
+RBUF_PAGE2      = RBUF_BASE + $200
+RBUF_PAGE3      = RBUF_BASE + $300
+
+; Producer (IRQ) publishes HEAD; consumer (mainline) publishes TAIL
+RBUF_HEAD_LO:   .byte 0
+RBUF_HEAD_HI:   .byte 0                  ; 0..3
+RBUF_TAIL_LO:   .byte 0
+RBUF_TAIL_HI:   .byte 0                  ; 0..3
+
+; temps (not ZP)
+TMP_TAIL_LO:    .byte 0
+TMP_TAIL_HI:    .byte 0
+TMP_HEAD_LO:    .byte 0
+TMP_HEAD_HI:    .byte 0
+NEXT_LO:        .byte 0
+NEXT_HI:        .byte 0
+HLO:            .byte 0
+HHI:            .byte 0
+FREE_LO:        .byte 0
+FREE_HI:        .byte 0
+
+ADV_WINDOW_LAST_LO: .byte 0
+ADV_WINDOW_LAST_HI: .byte 0
+
+READ_TAIL_ATOMIC:
+_again:
+    lda RBUF_TAIL_HI
+    sta TMP_TAIL_HI
+    lda RBUF_TAIL_LO
+    sta TMP_TAIL_LO
+    lda RBUF_TAIL_HI
+    cmp TMP_TAIL_HI
+    bne _again
+    rts
+
+READ_HEAD_ATOMIC:
+_again:
+    lda RBUF_HEAD_HI
+    sta TMP_HEAD_HI
+    lda RBUF_HEAD_LO
+    sta TMP_HEAD_LO
+    lda RBUF_HEAD_HI
+    cmp TMP_HEAD_HI
+    bne _again
+    rts
+
+;RBUF_BASE: .fill 1024, $00                  ; 1 KiB aligned (4 pages)
+RBUF_BASE = $0000
 
 ; Ethernet frame structures
 ;
@@ -2935,6 +3039,8 @@ ETH_RX_TYPE:
     .byte $00, $00
 ETH_RX_FRAME_PAYLOAD:
     .fill 1500, $00
+RX_CANARY:            
+    .byte $C3, $3C  ; should never change!!
 ETH_RX_FRAME_PAYLOAD_SIZE:
     .byte $00, $00
 TCP_RX_DATA_PAYLOAD_SIZE:
@@ -2944,44 +3050,3 @@ ACK_REPLY_PENDING: .byte 0
 ACK_REPLY_LEN_L:   .byte 0
 ACK_REPLY_LEN_H:   .byte 0
 ACK_REPLY_PACKET:  .fill 60, $00       ; 54 bytes is enough (14+20+20), 60 gives slack
-
-; Non-blocking packet send (IRQ-safe)
-ETH_PACKET_SEND_NO_WAIT:
-    jsr MEGA65_IO_ENABLE
-    lda ETH_TX_LEN_LSB
-    sta MEGA65_ETH_TXSIZE_LSB
-    lda ETH_TX_LEN_MSB
-    sta MEGA65_ETH_TXSIZE_MSB
-    lda #<ETH_TX_FRAME_HEADER
-    sta _ETH_BUF_SRC2
-    lda #>ETH_TX_FRAME_HEADER
-    sta _ETH_BUF_SRC2+1
-
-php
-sei
-
-    sta $D707
-    .byte $81
-    .byte $ff
-    .byte $00
-    .byte $00
-    .byte $00,$00
-_ETH_BUF_SRC2:
-    .byte $00,$00,EXEC_BANK
-    .byte $00,$e8,$0d
-    .byte $00
-    .word $0000
-
-plp
-    lda #$03
-    sta MEGA65_ETH_CTRL1
-    lda MEGA65_ETH_CTRL1
-    and #$80
-    beq _nw_fail
-    lda #$01
-    sta MEGA65_ETH_COMMAND
-    clc
-    rts
-_nw_fail:
-    sec
-    rts
