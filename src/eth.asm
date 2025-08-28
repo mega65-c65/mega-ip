@@ -1373,6 +1373,9 @@ _pub:
 ; Carry set if buffer empty, clear if success
 ;=============================================================================
 RBUF_GET:
+    php
+    sei
+
     ; empty? (head == tail)
     jsr READ_HEAD_ATOMIC
     lda RBUF_TAIL_LO
@@ -1406,6 +1409,7 @@ _g3
     ;lda RBUF_PAGE3,y            ; page 3
 
 _adv:
+    pha
     ; tail = tail + 1 (10-bit)
     inc RBUF_TAIL_LO
     bne _ok
@@ -1414,12 +1418,15 @@ _adv:
     and #$03
     sta RBUF_TAIL_HI
 _ok:
+    pla
     clc                         ; success
+    plp
     rts
 
 _empty:
     lda #$00
     sec
+    plp
     rts
 
 
