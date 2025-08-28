@@ -818,8 +818,8 @@ _no_fin_in_established:
     beq _est_done
     
     ; ----------------- bounded critical section for copy -----------------
-    php
-    sei
+;    php
+;    sei
 
     ; remaining := payload size (16-bit)
     lda TCP_RX_DATA_PAYLOAD_SIZE
@@ -853,7 +853,7 @@ _seg_in_future:
     lda #TCP_FLAG_ACK
     jsr ETH_BUILD_TCPIP_PACKET
     jsr DEFER_CURRENT_TX
-    plp
+;;    plp
     rts
 
 _seg_in_past:
@@ -884,7 +884,7 @@ _dup_entire:
     lda #TCP_FLAG_ACK
     jsr ETH_BUILD_TCPIP_PACKET
     jsr DEFER_CURRENT_TX
-    plp
+;;    plp
     rts
 
 _have_tail:
@@ -1025,7 +1025,7 @@ _ack_defer_copy:
     sta ACK_REPLY_PENDING
 
 _ack_defer_done:
-    plp
+;;    plp
     rts
 
 
@@ -1373,6 +1373,14 @@ _pub:
 ; Carry set if buffer empty, clear if success
 ;=============================================================================
 RBUF_GET:
+
+php
+sei
+
+phx
+phy
+phz
+
     ; empty? (head == tail)
     jsr READ_HEAD_ATOMIC
     lda RBUF_TAIL_LO
@@ -1407,6 +1415,9 @@ _g3
 
 _adv:
     ; tail = tail + 1 (10-bit)
+
+    pha
+
     inc RBUF_TAIL_LO
     bne _ok
     inc RBUF_TAIL_HI
@@ -1414,10 +1425,24 @@ _adv:
     and #$03
     sta RBUF_TAIL_HI
 _ok:
+    pla
+
+plz
+ply
+plx
+plp
+
     clc                         ; success
     rts
 
 _empty:
+
+
+plz
+ply
+plx
+plp
+
     lda #$00
     sec
     rts
@@ -1499,8 +1524,8 @@ ETH_PACKET_SEND:
     lda #>ETH_TX_FRAME_HEADER
     sta _ETH_BUF_SRC+1
 
-php
-sei
+;php
+;sei
     ; inline DMA to copy our buffer to TX buffer
     sta $D707
     .byte $81                   ; enhanced dma - dest bits 20-27
@@ -1516,7 +1541,7 @@ _ETH_BUF_SRC:
     .byte $00, $e8, $0d         ; dest eth TX/RX buffer ($ffde800)
     .byte $00                   ; command high byte
     .word $0000                 ; modulo (ignored)
-plp
+;;plp
 
     ; make sure ethernet is not under reset
     lda #$03
@@ -2707,7 +2732,7 @@ _cur_free_hi: .byte 0
 ;=============================================================================
 *=$4000
 ETH_RCV:
-
+    
     ; update ARP cache
     jsr ARP_CACHE_PURGE
 
@@ -2719,10 +2744,10 @@ ETH_RCV:
 
 _latch_frame:
     ; Acknowledge the ethernet frame, freeing the buffer up for next RX
-    lda #$01
-    sta MEGA65_ETH_CTRL2
-    lda #$03
-    sta MEGA65_ETH_CTRL2
+    ;lda #$01
+    ;sta MEGA65_ETH_CTRL2
+    ;lda #$03
+    ;sta MEGA65_ETH_CTRL2
 
 _filter_packet:
 ;==============
@@ -2745,11 +2770,22 @@ _filter_packet:
     and #$0f
     sta _len_msb
 
+; this may not be needed (strip off CRC bytes)
+    sec
+    lda _len_lsb
+    sbc #4
+    sta _len_lsb
+    lda _len_msb
+    sbc #0
+    sta _len_msb
+
+
 _chk_bad_crc:
     ; ---- Drop CRC-bad frames fast (bit7) ----
     lda ETH_RCV_META
     and #%10000000
     beq _chk_multicast
+    jsr ETH_ROTATE_BUFFER
     rts
 
 _chk_multicast:
@@ -2757,6 +2793,7 @@ _chk_multicast:
     lda ETH_RCV_META
     and #%00010000
     beq _chk_dest_ok
+    jsr ETH_ROTATE_BUFFER
     rts
 
 _chk_dest_ok:
@@ -2764,6 +2801,7 @@ _chk_dest_ok:
     lda ETH_RCV_META
     and #%01100000            ; isolate bits 6|5
     beq _accept_packet        ; if either set → keep
+    jsr ETH_ROTATE_BUFFER
     rts
 
 _accept_packet:
@@ -2785,6 +2823,8 @@ _len_msb:
     .byte <ETH_RX_FRAME_HEADER, >ETH_RX_FRAME_HEADER, EXEC_BANK   ; dest lsb, msb, bank
     .byte $00                   ; command high byte
     .word $0000                 ; modulo (ignored)
+
+    jsr ETH_ROTATE_BUFFER
 
     ; verify dest mac or broadcast
     jsr ETH_IS_PACKET_FOR_US
@@ -2838,6 +2878,13 @@ _unknown_packet:
 
 ETH_RCV_META:
     .byte $00
+
+ETH_ROTATE_BUFFER:
+    lda #$01
+    sta MEGA65_ETH_CTRL2
+    lda #$03
+    sta MEGA65_ETH_CTRL2
+    rts
 
 ;=============================================================================
 ; Routine to check if packed in RX buffer is for this machine / IP
@@ -3026,7 +3073,7 @@ ETH_TX_FRAME_SRC_MAC:
 ETH_TX_TYPE:
     .byte $08, $06
 ETH_TX_FRAME_PAYLOAD:
-    .fill 1500, $00
+    .fill 1600, $00
 ;ETH_TX_FRAME_PAYLOAD_SIZE
 ;    .byte $00, $00
 
@@ -3038,7 +3085,7 @@ ETH_RX_FRAME_SRC_MAC:
 ETH_RX_TYPE:
     .byte $00, $00
 ETH_RX_FRAME_PAYLOAD:
-    .fill 1500, $00
+    .fill 1600, $00
 RX_CANARY:            
     .byte $C3, $3C  ; should never change!!
 ETH_RX_FRAME_PAYLOAD_SIZE:
