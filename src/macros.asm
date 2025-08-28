@@ -45,7 +45,7 @@ FAR_POKE_Y   .macro hi, address
     plz
     pla
     sta [$45],z
-    
+
 .endm
 
 FAR_PEEK_Y   .macro hi, address
