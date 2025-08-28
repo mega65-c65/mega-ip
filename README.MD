@@ -1,4 +1,4 @@
-Ethernet Library for BASIC on the MEGA65
+Ethernet TCPIP Library for BASIC on the MEGA65
 
 *Note - this library is not yet stable!  Pull requests are very very welcome.
 
