@@ -56,10 +56,7 @@ EXEC_BANK = $04     ; code is running from $42000
     jmp ETH_SET_REMOTE_IP
     jmp ETH_SET_REMOTE_PORT
     jmp ETH_SET_SUBNET_MASK
-
-    nop
-    nop
-    nop
+    jmp ETH_SET_CHAR_XLATE
 
     jmp ETH_TCP_SEND
     jmp ETH_TCP_SEND_STRING
@@ -137,6 +134,10 @@ TIME_WAIT_COUNTER_LO:
 
 TIME_WAIT_COUNTER_HI:
 .byte $02
+
+; $00 = Commodore graphics (no translation)
+; $01 = ASCII -> PETSCII (fix case flip)
+CHARACTER_MODE: .byte $00
 
 ; Constants for runtime addresses
 IRQ_BASE = $1600
@@ -389,6 +390,14 @@ ETH_SET_REMOTE_PORT:
     stx REMOTE_PORT+1
     rts
 
+;=============================================================================
+; Set character translation
+;=============================================================================
+ETH_SET_CHAR_XLATE:
+    sta CHARACTER_MODE
+    rts
+
+
 CONNECT_ACTIVE:        .byte $00   ; 1 while a connect attempt is active
 CONNECT_SYN_SENT:      .byte $00   ; 1 after we transmit SYN
 CONNECT_FAIL_LATCH:    .byte $00   ; set by IRQ on RST/abort, polled/cleared in CONNECT_POLL
@@ -440,7 +449,7 @@ _ahead:
 
     ; Try ARP cache first (remote or gateway)
     jsr ETH_CHECK_SAME_NET       ; C=1 same subnet, C=0 use gateway
-    bcs _use_remote
+  bcs _use_remote
 _use_gateway:
     ; set ARP_QUERY_IP := GATEWAY_IP
     ldx #$03
@@ -672,10 +681,19 @@ _not_connected:
 ; so IF TX$ exists, we will copy its data to the outgoing buffer and send it
 
 ETH_TCP_SEND_STRING:
+
+    php
+    sei
+
     lda TCP_STATE
     cmp #TCP_STATE_ESTABLISHED
-    bne _exit
+    beq _connected
 
+_exit:
+    plp
+    rts
+
+_connected:
     ; get size of A$ if defined
     FAR_PEEK $00, $FD60
 
@@ -684,6 +702,8 @@ ETH_TCP_SEND_STRING:
 
     ; stash size otherwise
     sta _var_len
+    lda #$00
+    sta _var_len+1            ; DMA length MSB = 0
 
     ; get address
     FAR_PEEK $00, $FD61
@@ -695,10 +715,11 @@ ETH_TCP_SEND_STRING:
     ; now we will get the bytes and put them in the payload
     lda _var_len
     sta TCP_DATA_PAYLOAD_SIZE
+    ;lda #$00
+    ;sta TCP_DATA_PAYLOAD_SIZE+1
 
-;php
-;sei
     ; use DMA to copy the bytes
+    lda #$00
     sta $D707
     .byte $80                                   ; enhanced dma - src bits 20-27
     .byte $00   ; src hi
@@ -715,30 +736,32 @@ _dest_addr:
     .byte <TCP_DATA_PAYLOAD, >TCP_DATA_PAYLOAD, EXEC_BANK             ; dest lsb, msb, bank
     .byte $00                                   ; command high byte
     .word $0000                                 ; modulo (ignored)
-;plp
+    
+    plp
     jmp ETH_TCP_SEND
 
-_exit:
-    rts
+
 
 ; Process deferred ARP reply from mainline
 ETH_PROCESS_DEFERRED:
+    php
+    sei
     ; ---- ACK first, if any ----
     lda ACK_REPLY_PENDING
     beq _check_arp
     lda #$00
     sta ACK_REPLY_PENDING
 
-    ldx ACK_REPLY_LEN_L
+    lda ACK_REPLY_LEN_L
+    ora ACK_REPLY_LEN_H
     beq _ack_done
+    ldx ACK_REPLY_LEN_L
 _ack_copy_back:
     dex
     lda ACK_REPLY_PACKET,x
     sta ETH_TX_FRAME_DEST_MAC,x
     cpx #$00
     bne _ack_copy_back
-    lda ACK_REPLY_PACKET
-    sta ETH_TX_FRAME_DEST_MAC
 
     lda ACK_REPLY_LEN_L
     sta ETH_TX_LEN_LSB
@@ -770,6 +793,7 @@ _epd_copy:
 
     jsr ETH_PACKET_SEND
 _epd_done:
+    plp
     rts
 
 ;=============================================================================
@@ -786,7 +810,16 @@ TCP_STATE_HANDLER:
 
     ; remote sent RST → tear down immediately
     jsr TCP_HARD_RESET
-    rts
+    lda CONNECT_ACTIVE
+    beq +
+    lda CONNECT_SYN_SENT
+    beq +
+    lda #$01
+    sta CONNECT_FAIL_LATCH
+    lda TCP_EVENT_FLAG
+    ora #EV_CONNECT_FAIL
+    sta TCP_EVENT_FLAG
+ +  rts
 
 _not_RST:
 
@@ -1301,6 +1334,9 @@ _done:
 ; In:  A = byte to store
 ; Out: C=0 success, C=1 full (A preserved on success)
 RBUF_PUT:
+    php
+    sei
+
     pha                         ; save data byte on stack
 
     ; snapshot current head into HLO/HHI
@@ -1329,6 +1365,7 @@ RBUF_PUT:
     bne _not_full
 _full:
     pla                         ; drop saved byte
+    plp
     sec                         ; full
     rts
 
@@ -1339,21 +1376,25 @@ _not_full:
     ldx HHI
     cpx #0
     bne _p1
-    FAR_POKE_Y $00, $55000
+    ;FAR_POKE_Y $00, $55000
+    STAY_FAR $00, $55000
     ;sta RBUF_PAGE0,y            ; page 0
     jmp _pub
 _p1 cpx #1
     bne _p2
-    FAR_POKE_Y $00, $56000
+    ;FAR_POKE_Y $00, $56000
+    STAY_FAR $00, $56000
     ;sta RBUF_PAGE1,y            ; page 1
     jmp _pub
 _p2 cpx #2
     bne _p3
-    FAR_POKE_Y $00, $57000
+    ;FAR_POKE_Y $00, $57000
+    STAY_FAR $00, $57000
     ;sta RBUF_PAGE2,y            ; page 2
     jmp _pub
 _p3
-    FAR_POKE_Y $00, $58000
+    ;FAR_POKE_Y $00, $58000
+    STAY_FAR $00, $58000
     ;sta RBUF_PAGE3,y            ; page 3
 
 _pub:
@@ -1363,6 +1404,7 @@ _pub:
     lda NEXT_HI
     sta RBUF_HEAD_HI
 
+    plp
     clc                         ; success
     rts
 
@@ -1391,21 +1433,25 @@ _not_empty:
     ldx RBUF_TAIL_HI
     cpx #0
     bne _g1
-    FAR_PEEK_Y $00, $55000
+    ;FAR_PEEK_Y $00, $55000
+    LDAY_FAR $00, $055000
     ;lda RBUF_PAGE0,y            ; page 0
     jmp _adv
 _g1 cpx #1
     bne _g2
-    FAR_PEEK_Y $00, $56000
+    ;FAR_PEEK_Y $00, $56000
+    LDAY_FAR $00, $056000
     ;lda RBUF_PAGE1,y            ; page 1
     jmp _adv
 _g2 cpx #2
     bne _g3
-    FAR_PEEK_Y $00, $57000
+    ;FAR_PEEK_Y $00, $57000
+    LDAY_FAR $00, $057000
     ;lda RBUF_PAGE2,y            ; page 2
     jmp _adv
 _g3
-    FAR_PEEK_Y $00, $58000
+    ;FAR_PEEK_Y $00, $58000
+    LDAY_FAR $00, $058000
     ;lda RBUF_PAGE3,y            ; page 3
 
 _adv:
@@ -1418,15 +1464,24 @@ _adv:
     and #$03
     sta RBUF_TAIL_HI
 _ok:
+    lda CHARACTER_MODE
+    beq _ok_done
     pla
-    clc                         ; success
+    jsr CHAR_TRANSLATE
     plp
+    clc
+    rts
+
+_ok_done:
+    pla
+    plp
+    clc                         ; success
     rts
 
 _empty:
     lda #$00
-    sec
     plp
+    sec
     rts
 
 
@@ -1481,11 +1536,6 @@ _cts_ready:
     clc
     rts
 
-;-   lda MEGA65_ETH_CTRL1
-;    and #$80
-;    beq -
-;    rts
-
 ;=============================================================================
 ; Routine to copy packet in TX buffer to Ethernet buffer and do transmit
 ;=============================================================================
@@ -1510,6 +1560,9 @@ php
 sei
     ; inline DMA to copy our buffer to TX buffer
     sta $D707
+    .byte $80          ; enhanced DMA: SRC bits 20–27
+    .byte $00    ; = $04   ← ensure source is bank $04 (your code/data bank)
+
     .byte $81                   ; enhanced dma - dest bits 20-27
     .byte $ff                   ; ----------------------^
     .byte $00                   ; end of job options
@@ -1758,6 +1811,12 @@ BUILD_IPV4_HEADER:
     adc #$00
     sta IPV4_HDR_LEN
 
+    ; dont fragment
+    ; set DF=1 (0x4000) and offset=0, in network order
+    lda #$40
+    sta IPV4_HDR_FLGS_OFFS
+    lda #$00
+    sta IPV4_HDR_FLGS_OFFS+1
 
     jsr CALC_IPV4_CHECKSUM
 
@@ -1780,12 +1839,11 @@ IPV4_HDR_DSCP:      .byte $00                   ; Type of service (Low delay, Hi
 IPV4_HDR_LEN:       .byte $00, $00              ; Length of header + data (16 bits) 0-65535
 IPV4_HDR_IDEN:      .byte $00, $00              ; unique packet id    
 IPV4_HDR_FLGS_OFFS: .byte $00, $00              ; 3 flags, 1 bit each =  reserved (zero), do not fragment, more fragments
-IPV4_HDR_TTL:       .byte $80                   ; time to live hops to dest
+IPV4_HDR_TTL:       .byte $40                   ; time to live hops to dest
 IPV4_HDR_PROTO:     .byte $11                   ; name of protocol for which data to be passed (ICMP=$01, TCP=$06, UDP=$11)
 IPV4_HDR_CHKSM:     .byte $00, $00              ; 16 bit header checksum
 IPV4_HDR_SRC_IP:    .byte $00, $00, $00, $00    ; source IP address
 IPV4_HDR_DST_IP:    .byte $00, $00, $00, $00    ; dest IP address
-IP_HEADER_LEN:      .byte $00
 
 CALC_IPV4_CHECKSUM:
 
@@ -2050,14 +2108,15 @@ _lp_done:
 
     rts
 
-WINUPDATE_THRESHOLD = $01    ; send update when we open by ≥32 bytes
+WINUPDATE_THRESHOLD = $01    ; send update when we open by ≥1 bytes
 
 ; we will max our data payload at 235 bytes which is small, but
 ; fits well with BASIC string sizes (tcp header = 20 + 235 = 255)
 TCP_DATA_PAYLOAD_SIZE:
 .byte $00
+.byte $00
 
-TCP_HEADER_SIZE
+TCP_HEADER_SIZE:
 .byte $00
 
 TCP_DATA_PAYLOAD_WORD_COUNT:
@@ -2326,13 +2385,14 @@ CLEAR_TCP_PAYLOAD:
     ldy #$00
 _lp_copy:
     sta TCP_DATA_PAYLOAD,Y
-    cpy #233
+    cpy #234
     beq _done
     iny
     jmp _lp_copy
 
 _done:
     sta TCP_DATA_PAYLOAD_SIZE
+    sta TCP_DATA_PAYLOAD_SIZE+1
     rts
 
 ; =============================================================================
@@ -2576,6 +2636,7 @@ TCP_HARD_RESET:
 
     lda #$00
     sta TCP_DATA_PAYLOAD_SIZE
+    sta TCP_DATA_PAYLOAD_SIZE+1
 
     ; notify BASIC: set a sticky event flag it can poll
     ; bit0 = RST seen
@@ -2690,7 +2751,8 @@ ETH_MAYBE_WINUPDATE:
     lda #TCP_FLAG_ACK
     jsr ETH_BUILD_TCPIP_PACKET
     bcs _ret
-    jsr ETH_PACKET_SEND
+ jsr ETH_PACKET_SEND
+;;    jsr DEFER_CURRENT_TX
 
     ; Record what we *actually* advertised (also set in BUILD_TCP_HEADER on future TX)
     lda _cur_free_lo
@@ -2714,7 +2776,6 @@ _cur_free_hi: .byte 0
 ;=============================================================================
 *=$4000
 ETH_RCV:
-cld
     ; update ARP cache
     jsr ARP_CACHE_PURGE
 
@@ -2725,14 +2786,7 @@ cld
     rts
 
 _latch_frame:
-    ; Acknowledge the ethernet frame, freeing the buffer up for next RX
-    lda #$01
-    sta MEGA65_ETH_CTRL2
-    lda #$03
-    sta MEGA65_ETH_CTRL2
 
-_filter_packet:
-;==============
 ; --- Early filter using NIC’s 2 status bytes (before any DMA) ---
 ; Buffer layout per MEGA65 doc (per received frame):
 ;   +0 : length LSB
@@ -2742,57 +2796,132 @@ _filter_packet:
 ;        bit6 = 1 → unicast-to-me (matches MACADDR)
 ;        bit7 = 1 → CRC error (bad frame)
 
-    ; Peek meta byte 0 (length LSB) — optional, but handy to have
-    FAR_PEEK $ff, $0de800
+    LDA_FAR $ff, $0de800
     sta _len_lsb
+    LDA_FAR $ff, $0de801
+    sta RX_META1
 
-    ; Peek meta byte 1 (flags + length MSB nibble)
-    FAR_PEEK $ff, $0de801
-    sta ETH_RCV_META
-    and #$0f
+    ; build 16 bit length from meta
+    lda RX_META1
+    and #$0F
     sta _len_msb
+
+    ; drop zero length
+    lda _len_msb
+    ora _len_lsb
+    bne _len_nonzero
+
+    lda #$01
+    sta MEGA65_ETH_CTRL2
+    lda #$03
+    sta MEGA65_ETH_CTRL2
+    rts
+
+_len_nonzero:
 
 _chk_bad_crc:
     ; ---- Drop CRC-bad frames fast (bit7) ----
-    lda ETH_RCV_META
+    lda RX_META1
     and #%10000000
     beq _chk_multicast
+
+    lda #$01
+    sta MEGA65_ETH_CTRL2
+    lda #$03
+    sta MEGA65_ETH_CTRL2
     rts
 
 _chk_multicast:
     ; ---- Drop multicast (bit4) ----
-    lda ETH_RCV_META
+    lda RX_META1
     and #%00010000
     beq _chk_dest_ok
+
+    lda #$01
+    sta MEGA65_ETH_CTRL2
+    lda #$03
+    sta MEGA65_ETH_CTRL2
     rts
 
 _chk_dest_ok:
     ; ---- Keep only broadcast (bit5) OR unicast-to-me (bit6) ----
-    lda ETH_RCV_META
+    lda RX_META1
     and #%01100000            ; isolate bits 6|5
-    beq _accept_packet        ; if either set → keep
+    bne _accept_packet        ; if either set → keep
+
+    lda #$01
+    sta MEGA65_ETH_CTRL2
+    lda #$03
+    sta MEGA65_ETH_CTRL2
     rts
 
 _accept_packet:
-    nop
-    nop
-    nop
+    ; length < 1600?
+;    lda _len_msb
+;    cmp #$06
+;    bcc _do_copy              ; msb < 6  -> definitely < 1600
+;    bne _length_too_big         ; msb > 6  -> definitely >= 1600
 
+;    lda _len_lsb                ; msb == 6, compare low byte
+;    cmp #$40
+;    bcc _do_copy              ; lsb < 0x40 -> < 1600
+
+;_length_too_big:
+;    lda #$01
+;    sta MEGA65_ETH_CTRL2
+;    lda #$03
+;    sta MEGA65_ETH_CTRL2
+;    rts
+; ===
+
+; --- subtract FCS (4 bytes), drop on underflow ---
+    sec
+    lda _len_lsb
+    sbc #$04
+    sta _len_lsb
     lda _len_msb
-    cmp #$06
-    bcc _length_ok              ; msb < 6  -> definitely < 1600
-    bne _length_too_big         ; msb > 6  -> definitely >= 1600
-
-    lda _len_lsb                ; msb == 6, compare low byte
-    cmp #$40
-    bcc _length_ok              ; lsb < 0x40 -> < 1600
-    bcs _length_too_big         ; lsb >= 0x40 -> >= 1600
-
-_length_too_big:
+    sbc #$00
+    sta _len_msb
+    bcs _after_fcs                ; C=1 => no borrow
+    ; underflow (len < 4) → drop
+    lda #$01
+    sta MEGA65_ETH_CTRL2
+    lda #$03
+    sta MEGA65_ETH_CTRL2
     rts
 
-_length_ok:
+_after_fcs:
+    ; --- drop runts: must be >= 14 (Ethernet header) ---
+    lda _len_msb
+    bne _ge14_ok
+    lda _len_lsb
+    cmp #$0E
+    bcs _ge14_ok
+    ; < 14 → drop
+    lda #$01
+    sta MEGA65_ETH_CTRL2
+    lda #$03
+    sta MEGA65_ETH_CTRL2
+    rts
 
+_ge14_ok:
+    ; --- cap to 1614 (0x064E) = 14 hdr + 1600 payload ---
+    lda _len_msb
+    cmp #$06
+    bcc _do_copy                 ; < 0x0600 → safe
+    bne _do_cap                  ; > 0x06xx → cap unconditionally
+    lda _len_lsb
+    cmp #$4E                      ; == 0x06 → check low byte
+    bcc _do_copy                 ; <= 0x064D → safe
+_do_cap:
+    lda #$4E
+    sta _len_lsb
+    lda #$06
+    sta _len_msb
+;===
+_do_copy:
+    php
+    sei
     ; inline DMA to copy ethernet buffer to RX buffer
     sta $D707
     .byte $80                   ; enhanced dma - src bits 20-27
@@ -2808,9 +2937,16 @@ _len_msb:
     .byte $00                   ; command high byte
     .word $0000                 ; modulo (ignored)
 
+    plp
+
+    lda #$01
+    sta MEGA65_ETH_CTRL2
+    lda #$03
+    sta MEGA65_ETH_CTRL2
+
     ; verify dest mac or broadcast
-    jsr ETH_IS_PACKET_FOR_US
-    beq _unknown_packet
+    ;jsr ETH_IS_PACKET_FOR_US
+    ;beq _unknown_packet
 
 _chk_eth_type:
     ; --- classify by EtherType first ---
@@ -2835,30 +2971,25 @@ _is_arp:
     rts                                 ; neither request nor reply → ignore
 
 _call_arp_reply:
-    nop
-    nop
-    nop
     jmp ARP_REPLY
 
 _call_arp_update_cache:
-    nop
-    nop
-    nop
     jmp ARP_UPDATE_CACHE
 
 _is_ipv4:
-    nop
-    nop
-    nop
+    ; IPv4: keep only TCP (protocol = $06). Drop everything else (UDP, ICMP, etc.)
+    lda ETH_RX_FRAME_HEADER+23         ; IPv4 Protocol byte (14 + 9)
+    cmp #$06                           ; TCP?
+    beq _call_incoming_tcp
+    rts
+
+_call_incoming_tcp
     jmp INCOMING_TCP_PACKET
 
 _unknown_packet:
-    nop
-    nop
-    nop
     rts
 
-ETH_RCV_META:
+RX_META1:
     .byte $00
 
 ;=============================================================================
@@ -2916,7 +3047,6 @@ INCOMING_TCP_PACKET:
     and #$0F
     asl
     asl
-    sta IP_HEADER_LEN
     tax                               ; X = ip header length in bytes
 
     ; ------ IP address checks ------
@@ -2972,6 +3102,37 @@ _chk_sip:
 _drop:
     rts
 
+CHAR_TRANSLATE:
+    pha
+    lda CHARACTER_MODE
+    beq _no_translate
+
+    pla             ; get ASCII char back
+
+    ; --- A-Z (0x41–0x5A) need to become PETSCII lowercase (0xC1–0xDA) ---
+    cmp #$41
+    bcc _check_lower
+    cmp #$5B
+    bcs _check_lower
+    ora #$80        ; force bit 7 → makes PETSCII lowercase
+    rts
+
+_check_lower:
+    ; --- a-z (0x61–0x7A) need to become PETSCII uppercase (0x41–0x5A) ---
+    cmp #$61
+    bcc _printable
+    cmp #$7B
+    bcs _printable
+    and #$DF        ; clear bit 5 → fold to uppercase
+    rts
+
+_printable:
+    ; leave digits, symbols, etc. as-is
+    rts
+
+_no_translate:
+    pla
+    rts
 
 ; ==== Ring configuration (no zero-page) ====
 

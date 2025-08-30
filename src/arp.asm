@@ -45,17 +45,17 @@ ARP_REQUEST:
     lda #$01
     sta ETH_TX_FRAME_PAYLOAD+7
     
-    lda ETH_TX_FRAME_SRC_MAC+0     ; SHA - src mac address
+    lda MEGA65_ETH_MAC+0     ; SHA - src mac address
     sta ETH_TX_FRAME_PAYLOAD+8
-    lda ETH_TX_FRAME_SRC_MAC+1
+    lda MEGA65_ETH_MAC+1
     sta ETH_TX_FRAME_PAYLOAD+9
-    lda ETH_TX_FRAME_SRC_MAC+2
+    lda MEGA65_ETH_MAC+2
     sta ETH_TX_FRAME_PAYLOAD+10
-    lda ETH_TX_FRAME_SRC_MAC+3
+    lda MEGA65_ETH_MAC+3
     sta ETH_TX_FRAME_PAYLOAD+11
-    lda ETH_TX_FRAME_SRC_MAC+4
+    lda MEGA65_ETH_MAC+4
     sta ETH_TX_FRAME_PAYLOAD+12
-    lda ETH_TX_FRAME_SRC_MAC+5
+    lda MEGA65_ETH_MAC+5
     sta ETH_TX_FRAME_PAYLOAD+13
 
     lda LOCAL_IP+0                  ; SPA - src IP address
@@ -85,21 +85,55 @@ ARP_REQUEST:
     lda ARP_REQUEST_IP+3
     sta ETH_TX_FRAME_PAYLOAD+27
 
-    lda #$2a                    ; 14+28 = 42 ($2a) byte total packet length
+    ldy #$00
+    lda #$00
+ -  sta ETH_TX_FRAME_PAYLOAD+28,y
+    iny
+    cpy #18
+    bne -
+
+
+    ; 14+28 = 42 + padding = 60 ($3c) byte total packet length
+    lda #$3c
     sta ETH_TX_LEN_LSB
     lda #$00
     sta ETH_TX_LEN_MSB
 
-    jsr ETH_PACKET_SEND
-    lda #$01                    ; set state to ARP_WAITING
+    lda #$01              ; ARP_WAITING
     sta ETH_STATE
-
+    ;jsr ETH_PACKET_SEND
+    jsr DEFER_CURRENT_TX
     rts
 
 ; This routine will send a reply to ARP requests made by other machines 
 ; on the local network.
 
 ARP_REPLY:
+
+    lda ETH_RX_FRAME_PAYLOAD+6     ; OPER MSB
+    bne _not_ours
+    lda ETH_RX_FRAME_PAYLOAD+7     ; OPER LSB
+    cmp #$01                       ; REQUEST?
+    bne _not_ours
+
+    lda ETH_RX_FRAME_PAYLOAD+0
+    cmp #$00
+    bne _not_ours  ; HTYPE msb
+    lda ETH_RX_FRAME_PAYLOAD+1
+    cmp #$01
+    bne _not_ours  ; HTYPE=1
+    lda ETH_RX_FRAME_PAYLOAD+2
+    cmp #$08
+    bne _not_ours
+    lda ETH_RX_FRAME_PAYLOAD+3
+    cmp #$00
+    bne _not_ours  ; PTYPE=0x0800
+    lda ETH_RX_FRAME_PAYLOAD+4
+    cmp #$06
+    bne _not_ours  ; HLEN=6
+    lda ETH_RX_FRAME_PAYLOAD+5
+    cmp #$04
+    bne _not_ours  ; PLEN=4
 
 _check_target_ip:
     ldx #$04                            ; count = 4
@@ -237,9 +271,21 @@ _build_reply:
 ; This is when my machine does a WHO HAS IP 192.168.1.100?
 ARP_UPDATE_CACHE:
 
-    lda #$00
-    sta ETH_STATE
+    ; only drop WAITING if SPA == ARP_REQUEST_IP (reply to our who-has)
+    ldx #$04
+-   dex
+    lda ETH_RX_FRAME_PAYLOAD+14,x   ; sender protocol address (SPA)
+    cmp ARP_REQUEST_IP+0,x
+    bne _not_for_us
+    cpx #$00
+    bne -
+    jmp _do_update
 
+ _not_for_us
+    ; still update cache (helpful), but don't clear WAITING
+    rts ; (no, if its not for us, get rid of it)
+    
+_do_update
     ; find available slot
     ldx #$00
 _loop1
@@ -249,7 +295,7 @@ _loop1
     clc
     adc #$0b                        ; jump 11 bytes ahead to ttl byte
     cmp #$58                        ; > 8 entries... just use slot 0
-    beq _use_slot_zero
+    bcs _use_slot_zero
     tax
     jmp _loop1
     
@@ -257,6 +303,8 @@ _use_slot_zero
     ldx #$00                        ; slot 0 will be used
 
 _found_slot:
+    php
+    sei
     lda #$ff                        ; set slot TTL
     sta ARP_CACHE+0, x
 
@@ -286,6 +334,8 @@ _found_slot:
 
     lda #$00                            ; set state back to IDLE
     sta ETH_STATE
+
+    plp
 
     rts
 
@@ -342,6 +392,7 @@ _next_cache:
     adc #$0b                        ; jump 11 bytes ahead to ttl byte
     cmp #$58                        ; have we gone out of bounds?
     beq _cache_miss
+    bcs _cache_miss
     tax
     jmp _loop1
 
@@ -388,6 +439,7 @@ _next_cache:
     adc #$0b                        ; jump 11 bytes ahead to ttl byte
     cmp #$58                        ; have we gone out of bounds?
     beq _done
+    bcs _done
     tax
     jmp _loop1
 
@@ -410,11 +462,7 @@ ARP_CACHE:
 
 ; Deferred ARP reply frame (42 bytes)
 ARP_REPLY_PACKET:
-    .byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
-    .byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
-    .byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
-    .byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
-    .byte $00, $00
+    .fill 60, $00
 
 ARP_REPLY_PENDING:
     .byte $00
