@@ -1,3 +1,24 @@
+;===================================================================================================
+;
+; MMM     MMM   EEEEEEEEE    GGGGGGGGGG        AAA              III     PPPPPPPPPP
+; MMMM   MMMM   EEE          GGG             AAA AAA            III     PPP     PPP
+; MMM MMM MMM   EEEEEE       GGG  GGGGG     AAA   AAA    --     III     PPP     PPP
+; MMM  M  MMM   EEE          GGG    GGG     AAAAAAAAA    --     III     PPPPPPPPPP
+; MMM  M  MMM   EEE          GGG    GGG     AAA   AAA           III     PPP
+; MMM     MMM   EEEEEEEEEE   GGGGGGGGGG     AAA   AAA           III     PPP
+;
+; BASIC Ethernet Library for the Mega65 Personal Computer
+; 64TASS Assembly (Compiles with v1.60.3243)
+; Released under the PUBLIC DOMAIN - Hack as ye will.
+; Originally developed by ChatGPT, with some occasional assistance from Scott Hutter - 8/30/2025
+;
+;===================================================================================================
+; To load:
+; BLOAD"eth.bin",P($42000),R
+;
+; Uses Bank 4 for code, bank 5 for incoming data ring buffer
+; See jump table and BASIC demo for usage
+;===================================================================================================
 
 .include "macros.asm"
 .include "mega65.asm"
