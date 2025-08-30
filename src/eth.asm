@@ -139,84 +139,6 @@ TIME_WAIT_COUNTER_HI:
 ; $01 = ASCII -> PETSCII (fix case flip)
 CHARACTER_MODE: .byte $00
 
-; Constants for runtime addresses
-IRQ_BASE = $1600
-VEC_TABLE_ADDR = (ETH_VEC_TABLE - ETH_RCV_IRQ) + IRQ_BASE
-CUST_IRQ_ADDR  = (ETH_CUST_IRQ - ETH_RCV_IRQ) + IRQ_BASE
-IRQ_RETURN_ADDR = (ETH_IRQ_RETURN - ETH_RCV_IRQ) + IRQ_BASE
-
-ETH_RCV_IRQ:
-; This is the installer code that runs once via JSR $1600
-.byte $38                                         ; SEC
-.byte $a2, <VEC_TABLE_ADDR                        ; LDX #<vectable
-.byte $a0, >VEC_TABLE_ADDR                        ; LDY #>vectable
-.byte $20, $8d, $ff                               ; JSR $FF8D (VECTOR - read table)
-
-; Copy original IIRQ vector to our JMP instruction
-.byte $ad, <VEC_TABLE_ADDR, >VEC_TABLE_ADDR       ; LDA vectable (IIRQ low)
-.byte $8d, <(IRQ_RETURN_ADDR+1), >(IRQ_RETURN_ADDR+1)  ; STA jmp+1
-.byte $ad, <(VEC_TABLE_ADDR+1), >(VEC_TABLE_ADDR+1)    ; LDA vectable+1 (IIRQ high)
-.byte $8d, <(IRQ_RETURN_ADDR+2), >(IRQ_RETURN_ADDR+2)  ; STA jmp+2
-
-; Write our custom IRQ address to IIRQ vector
-.byte $a9, <CUST_IRQ_ADDR                         ; LDA #<custom_irq
-.byte $8d, <VEC_TABLE_ADDR, >VEC_TABLE_ADDR       ; STA vectable
-.byte $a9, >CUST_IRQ_ADDR                         ; LDA #>custom_irq
-.byte $8d, <(VEC_TABLE_ADDR+1), >(VEC_TABLE_ADDR+1)    ; STA vectable+1
-
-; Install updated vector table
-.byte $18                                         ; CLC
-.byte $a2, <VEC_TABLE_ADDR                        ; LDX #<vectable
-.byte $a0, >VEC_TABLE_ADDR                        ; LDY #>vectable
-.byte $20, $8d, $ff                               ; JSR $FF8D (VECTOR - set table)
-.byte $60                                         ; RTS
-
-; The actual IRQ handler starts here (at offset $27 from $1600 = $1627)
-ETH_CUST_IRQ:
-; KERNAL has already saved A, X, Y, Z, B on stack
-; We just need to save ZP locations we use
-
-.byte $A5, $02                                    ; LDA $02
-.byte $48                                         ; PHA
-.byte $A5, $03                                    ; LDA $03
-.byte $48                                         ; PHA
-.byte $A5, $04                                    ; LDA $04
-.byte $48                                         ; PHA
-.byte $A5, $05                                    ; LDA $05
-.byte $48                                         ; PHA
-
-; Set up JSRFAR parameters
-.byte $A9, EXEC_BANK                              ; LDA #EXEC_BANK
-.byte $85, $02                                    ; STA $02
-.byte $A9, >ETH_RCV                               ; LDA #>ETH_RCV
-.byte $85, $03                                    ; STA $03
-.byte $A9, <ETH_RCV                               ; LDA #<ETH_RCV
-.byte $85, $04                                    ; STA $04
-.byte $A9, $04                                    ; LDA #$04
-.byte $85, $05                                    ; STA $05
-.byte $20, $6E, $FF                               ; JSR $FF6E (JSRFAR)
-
-; Restore ZP locations
-.byte $68                                         ; PLA
-.byte $85, $05                                    ; STA $05
-.byte $68                                         ; PLA
-.byte $85, $04                                    ; STA $04
-.byte $68                                         ; PLA
-.byte $85, $03                                    ; STA $03
-.byte $68                                         ; PLA
-.byte $85, $02                                    ; STA $02
-
-ETH_IRQ_RETURN:
-.byte $4C, $00, $00                               ; JMP $0000 (will be modified)
-
-; Vector table (56 bytes)
-ETH_VEC_TABLE:
-.fill 56, $00
-
-ETH_RCV_IRQ_END:
-
-IRQ_LEN = ETH_RCV_IRQ_END - ETH_RCV_IRQ
-
 .include "random.asm"
 
 MEGA65_IO_ENABLE:
@@ -309,31 +231,7 @@ _clear_buffer:
     sta CONNECT_SYN_SENT
     sta CONNECT_FAIL_LATCH
 
-    ; install IRQ handler if not already installed
-    ;FAR_PEEK $00, $001600
-    ;cmp #$38
-    ;beq _clear_buffer
-
- ;   sta $D707
- ;   .byte $00                   ; end of job options
- ;   .byte $00                   ; copy
- ;   .byte IRQ_LEN, $00          ; length lsb, msb
- ;   .byte <ETH_RCV_IRQ, >ETH_RCV_IRQ, EXEC_BANK   ; src lsb, msb, bank
- ;   .byte $00, $16, $00         ; dest ($1600 in bank 0)
- ;   .byte $00                   ; command high byte
- ;   .word $0000                 ; modulo (ignored)
-
-    ; Manual copy for debugging
-    ldx #$00
-_copy_loop:
-    lda ETH_RCV_IRQ,x
-    sta $01600,x
-    inx
-    cpx #IRQ_LEN
-    bne _copy_loop
-
-    jsr $1600                   ; start rcv irq
-    rts
+   rts
 
 _loop_ctr:
     .byte $00
@@ -525,6 +423,9 @@ _report_only:
 ETH_CONNECT_POLL:
     ; let mainline drain any deferred IRQ work
     jsr ETH_PROCESS_DEFERRED
+
+    ; check for an handle any incoming packets
+    jsr ETH_RCV
 
     lda CONNECT_ACTIVE
     beq _not_connecting
@@ -797,7 +698,7 @@ _epd_done:
     rts
 
 ;=============================================================================
-; TCP state handler  (drop-in)
+; TCP state handler
 ; - Handles RST
 ; - ESTABLISHED: trims overlap, ignores future segs, copies only new bytes,
 ;   ACKs exactly what was stored
@@ -2665,6 +2566,9 @@ ETH_STATUS_POLL:
     jsr ETH_PROCESS_DEFERRED
     jsr ETH_MAYBE_WINUPDATE
 
+    ; check for an handle any incoming packets
+    jsr ETH_RCV
+
     ; 2) Let TIME_WAIT progress while BASIC polls
     lda TCP_STATE
     cmp #TCP_STATE_TIME_WAIT
@@ -3210,8 +3114,6 @@ ETH_TX_TYPE:
     .byte $08, $06
 ETH_TX_FRAME_PAYLOAD:
     .fill 1600, $00
-;ETH_TX_FRAME_PAYLOAD_SIZE
-;    .byte $00, $00
 
 ETH_RX_FRAME_HEADER:
 ETH_RX_FRAME_DEST_MAC:
@@ -3232,4 +3134,4 @@ TCP_RX_DATA_PAYLOAD_SIZE:
 ACK_REPLY_PENDING: .byte 0
 ACK_REPLY_LEN_L:   .byte 0
 ACK_REPLY_LEN_H:   .byte 0
-ACK_REPLY_PACKET:  .fill 60, $00       ; 54 bytes is enough (14+20+20), 60 gives slack
+ACK_REPLY_PACKET:  .fill 60, $00       ; 60 bytes is enough (14+20+20), 60 gives slack
