@@ -3,6 +3,17 @@
 ; it then updates ETH_STATE to ARP_WAITING.  The calling routine should
 ; loop until a reply comes in, or timeout.
 
+; --- ARP retry driver ---
+ARP_STATE_IDLE      = $00
+ARP_STATE_WAIT      = $01
+
+ARP_TIMEOUT_TICKS   = 10      ; how many ETH_STATUS_POLL calls between retries
+ARP_MAX_RETRIES     = 5       ; how many resends before we give up
+
+ARP_STATE:        .byte $00
+ARP_RETRY_TICKS:  .byte $00
+ARP_RETRY_LEFT:   .byte $00
+
 ARP_REQUEST_IP:
     .byte $00, $00, $00, $00
 
@@ -103,6 +114,22 @@ ARP_REQUEST:
     sta ETH_STATE
     ;jsr ETH_PACKET_SEND
     jsr DEFER_CURRENT_TX
+    jsr ETH_PROCESS_DEFERRED
+
+    ; start ARP resend driver
+    lda ARP_STATE
+    cmp #ARP_STATE_WAIT
+    beq _already_waiting          ; if we’re already in a wait cycle, don’t
+                                  ; reset the retry budget
+
+    lda #ARP_MAX_RETRIES
+    sta ARP_RETRY_LEFT
+_already_waiting:
+    lda #ARP_TIMEOUT_TICKS
+    sta ARP_RETRY_TICKS           ; (re)load the timeout for the next resend
+    lda #ARP_STATE_WAIT
+    sta ARP_STATE
+
     rts
 
 ; This routine will send a reply to ARP requests made by other machines 
@@ -283,9 +310,16 @@ ARP_UPDATE_CACHE:
 
  _not_for_us
     ; still update cache (helpful), but don't clear WAITING
-    rts ; (no, if its not for us, get rid of it)
-    
+    jmp _update_cache
+
 _do_update
+
+    lda #ARP_STATE_IDLE
+    sta ARP_STATE
+    lda #$00
+    sta ETH_STATE
+
+_update_cache:
     ; find available slot
     ldx #$00
 _loop1
@@ -332,11 +366,7 @@ _found_slot:
     lda ETH_RX_FRAME_PAYLOAD+13
     sta ARP_CACHE+10, x
 
-    lda #$00                            ; set state back to IDLE
-    sta ETH_STATE
-
     plp
-
     rts
 
 ; This routine is called to query the cache for ARP_QUERY_IP address, 
@@ -444,6 +474,71 @@ _next_cache:
     jmp _loop1
 
 _done:
+    rts
+
+; Drive ARP retries while waiting for resolution.
+; - If cache hit arrives, stop.
+; - If timeout expires and retries remain, resend ARP and reload the timer.
+; - If out of retries, stop and (if connecting) latch a failure bit.
+
+ARP_RETRY_TICK:
+    lda ARP_STATE
+    cmp #ARP_STATE_WAIT
+    beq _in_wait
+    rts
+
+_in_wait:
+    ; --- ensure we look up the original target ---
+    ldx #3
+_copy_req_to_query:
+    lda ARP_REQUEST_IP,x
+    sta ARP_QUERY_IP,x
+    dex
+    bpl _copy_req_to_query
+
+    ; Did cache fill? (hit -> nonzero)
+    jsr ARP_QUERY_CACHE
+    bne _got_it
+
+    ; Not yet; tick down
+    lda ARP_RETRY_TICKS
+    beq _expired
+    dec ARP_RETRY_TICKS
+    rts
+
+_expired:
+    lda ARP_RETRY_LEFT
+    beq _give_up
+
+    dec ARP_RETRY_LEFT
+    lda #ARP_TIMEOUT_TICKS
+    sta ARP_RETRY_TICKS
+    jsr ARP_REQUEST           ; resend
+    rts
+
+_give_up:
+    lda #ARP_STATE_IDLE
+    sta ARP_STATE
+    lda #$00                  ; also release ARP_WAITING
+    sta ETH_STATE
+
+    ; if a non-blocking connect was in flight, surface the failure
+    lda CONNECT_ACTIVE
+    beq _ret
+    lda #$01
+    sta CONNECT_FAIL_LATCH
+    lda TCP_EVENT_FLAG
+    ora #EV_CONNECT_FAIL
+    sta TCP_EVENT_FLAG
+
+_ret:
+    rts
+
+_got_it:
+    lda #ARP_STATE_IDLE
+    sta ARP_STATE
+    lda #$00                ; ETH_STATE = IDLE
+    sta ETH_STATE
     rts
 
 

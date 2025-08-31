@@ -245,6 +245,9 @@ _clear_buffer:
     sta RBUF_HEAD_LO
     sta RBUF_TAIL_HI
     sta RBUF_TAIL_LO
+    sta ARP_STATE
+    sta ARP_RETRY_TICKS
+    sta ARP_RETRY_LEFT
 
     ; Initialize connection state
     sta TCP_EVENT_FLAG
@@ -444,9 +447,8 @@ _report_only:
 ETH_CONNECT_POLL:
     ; let mainline drain any deferred IRQ work
     jsr ETH_PROCESS_DEFERRED
-
-    ; check for an handle any incoming packets
     jsr ETH_RCV
+    jsr ARP_RETRY_TICK
 
     lda CONNECT_ACTIVE
     beq _not_connecting
@@ -500,8 +502,8 @@ _inprog:
     beq _no_syn
     ora #CONN_SYN_SENT
 _no_syn:
-    ldx ETH_STATE                  ; if still waiting on ARP, add that bit
-    cpx #ETH_STATE_ARP_WAITING
+    ldx ARP_STATE
+    cpx #ARP_STATE_WAIT
     bne _ret
     ora #CONN_ARP_WAIT
 _ret:
@@ -637,8 +639,8 @@ _connected:
     ; now we will get the bytes and put them in the payload
     lda _var_len
     sta TCP_DATA_PAYLOAD_SIZE
-    ;lda #$00
-    ;sta TCP_DATA_PAYLOAD_SIZE+1
+    lda #$00
+    sta TCP_DATA_PAYLOAD_SIZE+1
 
     ; use DMA to copy the bytes
     lda #$00
@@ -700,7 +702,7 @@ _check_arp:
     lda #$00
     sta ARP_REPLY_PENDING
 
-    ldx #$2a
+    ldx #$3c
 _epd_copy:
     dex
     lda ARP_REPLY_PACKET,x
@@ -708,7 +710,7 @@ _epd_copy:
     cpx #$00
     bne _epd_copy
     
-    lda #$2a
+    lda #$3c
     sta ETH_TX_LEN_LSB
     lda #$00
     sta ETH_TX_LEN_MSB
@@ -2589,6 +2591,7 @@ ETH_STATUS_POLL:
 
     ; check for an handle any incoming packets
     jsr ETH_RCV
+    jsr ARP_RETRY_TICK
 
     ; 2) Let TIME_WAIT progress while BASIC polls
     lda TCP_STATE
@@ -2887,8 +2890,10 @@ _chk_eth_type:
     jmp _unknown_packet
 
 _is_arp:
-    lda ETH_RX_FRAME_PAYLOAD+6          ; high byte of OPER
-    ora ETH_RX_FRAME_PAYLOAD+7          ; now A = OPER_hi|OPER_lo
+    ; OPER must be 0x0001 (request) or 0x0002 (reply)
+    lda ETH_RX_FRAME_PAYLOAD+6          ; OPER MSB
+    bne _unknown_packet                 ; reject non-zero MSB
+    lda ETH_RX_FRAME_PAYLOAD+7          ; now A = OPER_hi|OPER_lo
     cmp #$01                            ; = 1 (request)?
     beq _call_arp_reply
     cmp #$02                            ; = 2 (reply)?
