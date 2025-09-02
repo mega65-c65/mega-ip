@@ -89,6 +89,9 @@ EXEC_BANK = $04     ; code is running from $42000
     jmp ETH_CONNECT_POLL
     jmp ETH_CONNECT_CANCEL
 
+    jmp ETH_DNS_LOOKUP
+    jmp COPY_ASTR_TO_DNS_HOST
+
 LOCAL_IP:
     .byte 192, 168, 1, 75
 
@@ -449,6 +452,7 @@ ETH_CONNECT_POLL:
     jsr ETH_PROCESS_DEFERRED
     jsr ETH_RCV
     jsr ARP_RETRY_TICK
+    jsr DNS_TICK
 
     lda CONNECT_ACTIVE
     beq _not_connecting
@@ -1591,8 +1595,8 @@ ETH_BUILD_TCPIP_PACKET:
     ; the gateway.
 
     ; if a non-blocking connect is in progress, don't ARP or spin here.
-    lda CONNECT_ACTIVE
-    beq _do_arp_request             ; not connecting => old behavior ok (your tooling)
+    ;lda CONNECT_ACTIVE
+    ;beq _do_arp_request             ; not connecting => old behavior ok (your tooling)
 
     jsr ETH_CHECK_SAME_NET
     beq _use_gateway
@@ -1607,8 +1611,8 @@ _use_remote:
     lda REMOTE_IP+3
     sta ARP_QUERY_IP+3
     jsr ARP_QUERY_CACHE
-    beq _no_mac_yet
-    jmp _IP_found_in_cache
+    bne _IP_found_in_cache 
+    jmp _no_mac_yet
     
 _use_gateway:
     lda GATEWAY_IP+0
@@ -1620,48 +1624,62 @@ _use_gateway:
     lda GATEWAY_IP+3
     sta ARP_QUERY_IP+3
     jsr ARP_QUERY_CACHE
-    beq _no_mac_yet
-    jmp _IP_found_in_cache
+    bne _IP_found_in_cache
 
+; ---- no MAC yet: start ARP (if needed) and return NOT READY ----
 _no_mac_yet:
-    pla                     ; restore flags byte
-    sec                     ; C=1 => caller keeps polling
-    rts
-
-_handle_arp_cache_result:
-    bne _IP_found_in_cache          ; if found in cache, skip ahead
-                                    ; otherwise we need to do an ARP_REQUEST
-
-_do_arp_request:                    ; use the IP we looked up in cache and do an ARP_REQUEST
-    lda ARP_QUERY_IP+0
-    sta ARP_REQUEST_IP+0
-    lda ARP_QUERY_IP+1
-    sta ARP_REQUEST_IP+1
-    lda ARP_QUERY_IP+2
-    sta ARP_REQUEST_IP+2
-    lda ARP_QUERY_IP+3
-    sta ARP_REQUEST_IP+3
-    
-    lda #$00
-    sta ETH_STATE
-    jsr ARP_REQUEST
-
-    ; at this point, interrupts are disabled, but we need to re-enable them so an
-    ; ARP request can be sent and the response dealt with.  There should be better
-    ; ways to handle this though.  It also assumes there will be an ARP response
-    ; for now, thats ok but real world, a failure will lock the machine.
-    cli
-
-_arp_reply_loop:                    ; wait for ARP reply
+    ; If we aren't already waiting, mark waiting and kick ARP
     lda ETH_STATE
     cmp #ETH_STATE_ARP_WAITING
-    beq _arp_reply_loop
+    beq _already_waiting
 
-    ; disable interrupts
-    sei
+    lda #ETH_STATE_ARP_WAITING
+    sta ETH_STATE
 
-    jsr ARP_QUERY_CACHE             ; cache should be populated now, so query again
-    jmp _handle_arp_cache_result    ; jump back up to confirm and query again if needed
+    ldx #3
+-   lda ARP_QUERY_IP,x
+    sta ARP_REQUEST_IP,x
+    dex
+    bpl -
+
+    jsr ARP_REQUEST
+
+_already_waiting:
+    pla                 ; restore A if the caller pushed it earlier
+    sec                 ; C=1 → not ready; caller must retry later
+    rts
+
+;_handle_arp_cache_result:
+;    bne _IP_found_in_cache          ; if found in cache, skip ahead
+                                    ; otherwise we need to do an ARP_REQUEST
+
+;_do_arp_request:                    ; use the IP we looked up in cache and do an ARP_REQUEST
+;    lda ARP_QUERY_IP+0
+;    sta ARP_REQUEST_IP+0
+;    lda ARP_QUERY_IP+1
+;    sta ARP_REQUEST_IP+1
+;    lda ARP_QUERY_IP+2
+;    sta ARP_REQUEST_IP+2
+;    lda ARP_QUERY_IP+3
+;    sta ARP_REQUEST_IP+3
+    
+;    lda #$00
+;    sta ETH_STATE
+;    jsr ARP_REQUEST
+
+    ; mark that we’re awaiting ARP, then kick it and return NOT READY
+;    lda #ETH_STATE_ARP_WAITING      ; <- don't write #$00 here
+;    sta ETH_STATE
+
+;    jsr ARP_REQUEST                 ; sends the ARP probe
+
+    ; DO NOT cli/sei here, and DO NOT spin.
+    ; Caller must poll ETH_STATUS_POLL (which calls ETH_RCV) and retry cache.
+ ;   sec                             ; C=1 => not ready yet
+ ;   rts
+
+ ;   jsr ARP_QUERY_CACHE             ; cache should be populated now, so query again
+ ;   jmp _handle_arp_cache_result    ; jump back up to confirm and query again if needed
 
     ; we now have the IP address in the cache and can continue building the packet
     ; ETH_TX_FRAME_DEST_MAC will be auto populated if cache hit
@@ -2592,6 +2610,7 @@ ETH_STATUS_POLL:
     ; check for an handle any incoming packets
     jsr ETH_RCV
     jsr ARP_RETRY_TICK
+    jsr DNS_TICK
 
     ; 2) Let TIME_WAIT progress while BASIC polls
     lda TCP_STATE
@@ -2697,12 +2716,127 @@ _cur_free_hi: .byte 0
 
 
 .include "arp.asm"
+.include "dns.asm"
 ;.include "dhcp.asm"
+
+host_str:
+    .byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+    .byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+    .byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+    .byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+    .byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+    .byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+    .byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+    .byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+
+ETH_DNS_LOOKUP:
+; Kick a new lookup
+    lda #<host_str
+    ldx #>host_str
+    jsr DNS_RESOLVE_START
+    bcs resolve_fail          ; carry set means input label too long etc.
+
+; Poll until done/fail (drive your normal net pollers in the loop)
+resolve_wait:
+    jsr DNS_POLL              ; A = 0 idle, 1 wait, 2 done, 3 fail
+    cmp #DNS_STATE_DONE
+    beq resolved
+    cmp #DNS_STATE_FAIL
+    beq resolve_fail
+
+    ; your regular network polling (must include DNS_TICK and RX processing)
+    jsr ETH_STATUS_POLL       ; or your driver tick, which calls DNS_TICK
+    ;jsr ETH_RCV              ; must end up calling DNS_UDP_IN for UDP frames
+    jmp resolve_wait
+
+resolved:
+    ; IPv4 result is here:
+    ;   DNS_RESULT_IP[0..3]
+    lda DNS_RESULT_IP+0
+    sta REMOTE_IP+0
+    lda DNS_RESULT_IP+1
+    sta REMOTE_IP+1
+    lda DNS_RESULT_IP+2
+    sta REMOTE_IP+2
+    lda DNS_RESULT_IP+3
+    sta REMOTE_IP+3
+    ; ... use it (open TCP/UDP to that IP, etc.)
+    ; Optional: you can start another resolve immediately with DNS_RESOLVE_START
+    lda #$01
+    rts
+
+resolve_fail:
+    lda #$00
+    sta REMOTE_IP+0
+    sta REMOTE_IP+1
+    sta REMOTE_IP+2
+    sta REMOTE_IP+3
+    ; handle failure (timeout, truncated, invalid, etc.)
+    lda #$00
+    rts
+
+COPY_ASTR_TO_DNS_HOST:
+
+    ; get size of A$ if defined
+    FAR_PEEK $00, $FD60
+
+    ; if zero length, exit
+    beq _exit
+
+    ; stash size otherwise
+    sta _var_len
+    lda #$00
+    sta _var_len+1            ; DMA length MSB = 0
+
+    ; get address
+    FAR_PEEK $00, $FD61
+    sta _var_addr
+
+    FAR_PEEK $00, $FD62
+    sta _var_addr+1
+
+    ; now we will get the bytes and put them in the payload
+    lda _var_len
+    sta TCP_DATA_PAYLOAD_SIZE
+    lda #$00
+    sta TCP_DATA_PAYLOAD_SIZE+1
+
+    ; use DMA to copy the bytes
+    lda #$00
+    sta $D707
+    .byte $80                                   ; enhanced dma - src bits 20-27
+    .byte $00   ; src hi
+    .byte $81                                   ; enhanced dma - dest bits 20-27
+    .byte $00   ; dest hi
+    .byte $00                                   ; end of job options
+    .byte $00                                   ; copy
+_var_len:                                   
+    .byte $00 ; <\length,
+    .byte $00 ; >\length                    ; length lsb, msb
+_var_addr:
+    .byte $00, $00, $01                     ; src lsb, msb, bank 1 for string var data
+_dest_addr:
+    .byte <host_str, >host_str, EXEC_BANK             ; dest lsb, msb, bank
+    .byte $00                                   ; command high byte
+    .word $0000                                 ; modulo (ignored)
+    
+    ;lda _var_len
+    ;clc
+    ;adc #$01
+    ;tay
+
+    ; add zero to end of the string
+    lda #$00
+    ldy _var_len
+    sta host_str, y
+
+_exit:
+    rts
 
 ;=============================================================================
 ; Main IRQ / Incoming data routine
 ;=============================================================================
-*=$4000
+;*=$4000
 ETH_RCV:
     ; update ARP cache
     jsr ARP_CACHE_PURGE
@@ -2911,7 +3045,12 @@ _is_ipv4:
     lda ETH_RX_FRAME_HEADER+23         ; IPv4 Protocol byte (14 + 9)
     cmp #$06                           ; TCP?
     beq _call_incoming_tcp
+    cmp #$11                            ; UDP?
+    beq _maybe_udp
     rts
+
+_maybe_udp:
+    jmp DNS_UDP_IN                     ; let DNS parser look (drops if not for us)
 
 _call_incoming_tcp
     jmp INCOMING_TCP_PACKET
