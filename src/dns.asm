@@ -284,6 +284,7 @@ _hn_abs:                    ; self-modified: LDA $xxxx,Y
     iny
     bne _next
     inc _hn_abs+2
+    inc _hn_abs2+2
     jmp _next
 
 _dot:
@@ -369,6 +370,7 @@ _dot_normal:
     iny
     bne _next
     inc _hn_abs+2
+    inc _hn_abs2+2
     jmp _next
 
 _end:
@@ -624,14 +626,12 @@ _sipchk:
 inc DEBUG
 
     ; ---- Patch ABS bases to DNS payload (IP+IHL+8) ----
+    ; this avoids the use of zero page
     lda #<ETH_RX_FRAME_PAYLOAD+UDP_DATA_BASE
     clc
     adc ihl
     sta _rd_dnsid_hi+1
     sta _rd_dnsid_lo+1
-    ;sta _rd_qbyte+1
-    ;sta _rd_ans_name+1
-    ;sta _rd_ans_name2+1
     sta _rd_type_hi+1
     sta _rd_type_lo+1
     sta _rd_class_hi+1
@@ -659,9 +659,6 @@ inc DEBUG
     adc #$00
     sta _rd_dnsid_hi+2
     sta _rd_dnsid_lo+2
-    ;sta _rd_qbyte+2
-    ;sta _rd_ans_name+2
-    ;sta _rd_ans_name2+2
     sta _rd_type_hi+2
     sta _rd_type_lo+2
     sta _rd_class_hi+2
@@ -680,7 +677,6 @@ inc DEBUG
     sta _rd_flags_hi+2
     sta _rd_flags_hi2+2
     sta _rd_flags_lo+2
-    sta _rd_nbyte+2
     sta _rd_nbyte+2
     sta _rd_peek+2
     sta _rd_win+2 
@@ -704,23 +700,24 @@ inc DEBUG
     ; Flags sanity: QR=1, TC=0, RCODE=0
     ldy #2
 _rd_flags_hi: 
-    .byte $B9, $00, $00
-    and #%10000000
-    beq _not_dns            ; not a response
+    .byte $B9, $00, $00     ; QR bit check.  Query (0) or Response (1)
+    and #%10000000          
+    beq _not_dns            ; not a response, bail
     ldy #2
 _rd_flags_hi2: 
-    .byte $B9, $00, $00
+    .byte $B9, $00, $00     ; get TC (truncated) setting
     and #%00000010
-    bne _not_dns               ; truncated -> silently ignore truncated replies 
+    bne _not_dns            ; truncated -> silently ignore truncated replies 
     ldy #3
 _rd_flags_lo:   
-    .byte $B9, $00, $00
-    and #$0F
+    .byte $B9, $00, $00     ; get RCODE (Response Code) 0=No Error, 1=Format Error, 2=Server Failed to Process, 
+    and #$0F                ; 3=Domain Doesnt Exist, 4=Not Implemented,5=Svr Refused
     bne _fail               ; non-zero RCODE -> fail
 
 inc DEBUG
 
-    ; ---- Get ANCOUNT (answers to scan) ----
+    ; Get ANCOUNT - 16 bit field that tells how many Resource Records
+    ; are in the Answer section of the message
     ldy #6
 _rd_anc_hi: 
     .byte $B9, $00, $00
@@ -742,27 +739,28 @@ _lo_only:
 inc DEBUG
 
 _have_ans:
-    ; ==== Skip Question using the same NAME skipper ====
+    ; ==== Skip Original Question using the same NAME skipper ====
+    ; QTYPE = 1 for IPV4, QCLASS = 1 for Internet
     ldy #12                    ; start of QNAME in DNS payload
     jsr _DNS_SKIP_NAME
     bcs _fail                  ; malformed QNAME -> fail
 
-    ; QTYPE (2) + QCLASS (2)
+    ; advance beyond QTYPE (2 bytes) and QCLASS (2 bytes)
     jsr _ADV_INY               ; QTYPE hi
     jsr _ADV_INY               ; QTYPE lo
     jsr _ADV_INY               ; QCLASS hi
     jsr _ADV_INY               ; QCLASS lo
 
-; Y is at supposed start of first Answer NAME
-; Expected = 12 + DNS_QNAME_LEN + 4
+    ; Y is at supposed start of first Answer NAME
+    ; Expected = 12 + DNS_QNAME_LEN + 4
     lda DNS_QNAME_LEN
     clc
     adc #12+4
-    sta TMP0               ; expected low (fits in one byte for small names)
-    sty TMP1               ; actual Y
+    sta TMP0                    ; expected low (fits in one byte for small names)
+    sty TMP1                    ; actual Y
     ; log both to inspect
-    sta DNS_EXP_ANS_Y
-    sty DNS_ACT_ANS_Y
+    sta DNS_EXP_ANS_Y           ; <--- DEBUG
+    sty DNS_ACT_ANS_Y           ; <--- DEBUG
 
 
 inc DEBUG
@@ -772,10 +770,10 @@ inc DEBUG
 
     ; Y now at first Answer NAME
     ; ================== ANSWER SCAN LOOP ==================
-; after you’ve skipped the question and Y is at the Answer NAME
 _next_answer:
 
-; --- dump 6 bytes starting at BASE+Y into DNS_WIN[0..5] ---
+    ; DEBUG Start
+    ; --- dump 6 bytes starting at BASE+Y into DNS_WIN[0..5] ---
     tya
     pha
     ldx #0
@@ -789,11 +787,12 @@ _rd_win:                          ; LDA abs,Y (patched above)
     bne _dwin
     pla
     tay
+    ; DEBUG End
 
-_rd_peek:                            ; LDA abs,Y (patch same as _rd_nbyte)
+_rd_peek:                           ; LDA abs,Y (patch same as _rd_nbyte)
     .byte $B9, $00, $00
- sta ANS_DBG_BYTE           ; <--- NEW: log the first answer octet
-sty ANS_DBG_Y              ; <--- NEW: log the Y at answer start
+    sta ANS_DBG_BYTE                ; <--- DEBUG: log the first answer octet
+    sty ANS_DBG_Y                   ; <--- DEBUG: log the Y at answer start
 
     and #$C0
     cmp #$C0
@@ -812,27 +811,27 @@ _after_name:
 
 inc DEBUG
     ; ============================================================
-    ; TYPE (2)
+    ; TYPE (2) - 1=ipv4, 5=CNAME
 _rd_type_hi: 
     .byte $B9, $00, $00
-sta DNS_DBG_TYPE_HI
+    sta DNS_DBG_TYPE_HI             ; <--- DEBUG
     jsr _ADV_INY
 _rd_type_lo: 
     .byte $B9, $00, $00
-sta DNS_DBG_TYPE_LO
-    sta tmp_type                   ; save type lo
+    sta DNS_DBG_TYPE_LO             ; <--- DEBUG
+    sta tmp_type                    ; save type lo
 
     ; ============================================================
-    ; CLASS (2)
+    ; CLASS (2) - 1=internet
     jsr _ADV_INY
 _rd_class_hi: 
     .byte $B9, $00, $00
-sta DNS_DBG_CLASS_HI
+    sta DNS_DBG_CLASS_HI            ; <--- DEBUG
     jsr _ADV_INY
 _rd_class_lo: 
     .byte $B9, $00, $00
-sta DNS_DBG_CLASS_LO
-    sta tmp_class_lo               ; save class lo
+    sta DNS_DBG_CLASS_LO            ; <--- DEBUG
+    sta tmp_class_lo                ; save class lo
 
     ; move to first TTL byte
     jsr _ADV_INY
@@ -849,12 +848,12 @@ inc DEBUG
     ; RDLEN (2)
 _rd_rdlen_hi: 
     .byte $B9, $00, $00
-sta DNS_DBG_RDLEN_HI
+    sta DNS_DBG_RDLEN_HI            ; <--- DEBUG
     sta tmp_rdlen_hi
     jsr _ADV_INY
 _rd_rdlen_lo: 
     .byte $B9, $00, $00
-sta DNS_DBG_RDLEN_LO    
+    sta DNS_DBG_RDLEN_LO            ; <--- DEBUG   
     sta tmp_rdlen_lo
 
     ; Fast path: TYPE=A (1), CLASS=IN (1), RDLEN=4
@@ -907,10 +906,10 @@ _maybe_cname:
     cmp #$05
     bne _skip_rdata
 lda #$AA
-sta DEBUG              ; “entered CNAME branch”
+sta DEBUG                       ; DEBUG - “entered CNAME branch”
     lda tmp_class_lo
     cmp #$01
-    bne _skip_rdata           ; only process IN CNAMEs
+    bne _skip_rdata             ; only process IN CNAMEs
 
     ; Save current Y, then move to first RDATA byte
     sty y_save
@@ -1089,8 +1088,8 @@ _c_done_zero:
     jmp _c_ok
 
 _c_malformed:
-lda #$50
-sta DEBUG
+    lda #$50
+    sta DEBUG                   ; <--- DEBUG
     jmp _fail
 
 _c_ok:
@@ -1107,6 +1106,8 @@ _cskip16:
     beq _cskip_done
     jsr _ADV_INY
     dec TMP0
+    lda TMP0
+    cmp #$FF        ; did underflow?
     bne _cskip16
     dec TMP1
     jmp _cskip16
@@ -1149,8 +1150,8 @@ _id_ok:
     rts
 
 _cname_sent
-lda #$30
-sta DEBUG
+    lda #$30
+    sta DEBUG                   ; <--- DEBUG
     rts
 
     ; Skip RDATA using 16-bit length in TMP1:TMP0
@@ -1167,6 +1168,8 @@ _skip16:
     beq _skip_done
     jsr _ADV_INY
     dec TMP0
+    lda TMP0
+    cmp #$FF                    ; did low underflow?
     bne _skip16
     dec TMP1
     jmp _skip16
@@ -1207,7 +1210,7 @@ _id_ok2:
 _cname_sent2
     rts
 
-; ---------------- FAIL/NOT-DNS EXITS ----------------
+    ; ---------------- FAIL/NOT-DNS EXITS ----------------
 _fail:
     lda #DNS_STATE_FAIL
     sta DNS_STATE
@@ -1219,26 +1222,25 @@ _not_dns:
 ; === Skip a DNS NAME at BASE+Y (labels and/or compression). 
 ; On return: Y = first byte after NAME, C=0 OK, C=1 malformed
 _DNS_SKIP_NAME:
-    clc                             ; default to success
+    clc                         ; default to success
 
-_rd_nbyte:                         ; LDA abs,Y (patched to DNS base)
+_rd_nbyte:                      ; LDA abs,Y (patched to DNS base)
     .byte $B9, $00, $00
 
-sta DNS_DBG_BYTE           ; log offending octet
-    sty DNS_DBG_Y              ; log Y (offset within DNS payload)
+    sta DNS_DBG_BYTE            ; DEBUG - log offending octet
+    sty DNS_DBG_Y               ; DEBUG - log Y (offset within DNS payload)
 
 
     tax
-    beq _name_zero                 ; 00 => end of name
+    beq _name_zero              ; 00 => end of name
 
     txa
     and #$C0
-    beq _name_label                ; 00xxxxxx => length byte (1..63)
+    beq _name_label             ; 00xxxxxx => length byte (1..63)
     cmp #$C0
-    beq _name_ptr                  ; 11xxxxxx => 2-byte pointer
+    beq _name_ptr               ; 11xxxxxx => 2-byte pointer
 
-     ; 01xxxxxx or 10xxxxxx => invalid
-                                ; 01xxxxxx or 10xxxxxx => invalid
+    ; 01xxxxxx or 10xxxxxx => invalid
     ; invalid top bits case
     ; A currently holds (X & $C0), but we want the raw byte that caused it.
     txa
@@ -1273,7 +1275,7 @@ _name_zero:
     rts
 
 _bad:
-; A currently holds length (X & $3F) or 0.
+    ; A currently holds length (X & $3F) or 0.
     txa
     sta DNS_FAIL_BYTE
     sty DNS_FAIL_Y
@@ -1287,9 +1289,6 @@ _ADV_INY:
     ; Y wrapped → advance the high byte of every ABS base you'll use next
     inc _rd_dnsid_hi+2
     inc _rd_dnsid_lo+2
-    ;inc _rd_qbyte+2
-    ;inc _rd_ans_name+2
-    ;inc _rd_ans_name2+2
     inc _rd_type_hi+2
     inc _rd_type_lo+2
     inc _rd_class_hi+2
@@ -1329,36 +1328,36 @@ _dns_ofs_flags      = UDP_DATA_BASE + 2
 _dns_ofs_ancount    = UDP_DATA_BASE + 6
 _dns_ofs_qdcount    = UDP_DATA_BASE + 4
 
-ihl:                .byte 0
-ans_left:           .byte 0
-tmp_type:           .byte 0
-tmp_class_lo:       .byte 0
-tmp_rdlen_hi:       .byte 0
-tmp_rdlen_lo:       .byte 0
-expected_port_hi:   .byte 0
-q_out:              .byte 0
-q_guard:            .byte 0
-lbl_len:            .byte 0
-seen_cname:         .byte 0
-y_save:             .byte 0
-ptr_hi:             .byte 0
-ptr_lo:             .byte 0
-lbl_cnt:            .byte 0
-TMP0:               .byte 0
-TMP1:               .byte 0
+ihl:                .byte $00
+ans_left:           .byte $00
+tmp_type:           .byte $00
+tmp_class_lo:       .byte $00
+tmp_rdlen_hi:       .byte $00
+tmp_rdlen_lo:       .byte $00
+expected_port_hi:   .byte $00
+q_out:              .byte $00
+q_guard:            .byte $00
+lbl_len:            .byte $00
+seen_cname:         .byte $00
+y_save:             .byte $00
+ptr_hi:             .byte $00
+ptr_lo:             .byte $00
+lbl_cnt:            .byte $00
+TMP0:               .byte $00
+TMP1:               .byte $00
 
-DNS_DBG_Y:     .byte 0
-DNS_DBG_BYTE:  .byte 0
-ANS_DBG_Y:    .byte 0
-ANS_DBG_BYTE: .byte 0
-DNS_EXP_ANS_Y: .byte 0
-DNS_ACT_ANS_Y: .byte 0
-DNS_FAIL_BYTE: .byte 0
-DNS_FAIL_Y: .byte 0
-DNS_WIN: .byte 0,0,0,0,0,0
-DNS_DBG_TYPE_HI:  .byte 0
-DNS_DBG_TYPE_LO:  .byte 0
-DNS_DBG_CLASS_HI: .byte 0
-DNS_DBG_CLASS_LO: .byte 0
-DNS_DBG_RDLEN_HI: .byte 0
-DNS_DBG_RDLEN_LO: .byte 0
+DNS_DBG_Y:          .byte $00
+DNS_DBG_BYTE:       .byte $00
+ANS_DBG_Y:          .byte $00
+ANS_DBG_BYTE:       .byte $00
+DNS_EXP_ANS_Y:      .byte $00
+DNS_ACT_ANS_Y:      .byte $00
+DNS_FAIL_BYTE:      .byte $00
+DNS_FAIL_Y:         .byte $00
+DNS_WIN:            .byte $00, $00, $00, $00, $00, $00
+DNS_DBG_TYPE_HI:    .byte $00
+DNS_DBG_TYPE_LO:    .byte $00
+DNS_DBG_CLASS_HI:   .byte $00
+DNS_DBG_CLASS_LO:   .byte $00
+DNS_DBG_RDLEN_HI:   .byte $00
+DNS_DBG_RDLEN_LO:   .byte $00

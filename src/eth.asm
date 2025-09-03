@@ -91,6 +91,7 @@ EXEC_BANK = $04     ; code is running from $42000
 
     jmp ETH_DNS_LOOKUP
     jmp COPY_ASTR_TO_DNS_HOST
+    jmp ETH_GET_DNS_RESULT_IP
 
 LOCAL_IP:
     .byte 192, 168, 1, 75
@@ -1273,14 +1274,14 @@ RBUF_PUT:
     lda RBUF_HEAD_HI
     sta HHI
 
-    ; next = head + 1 (10-bit)
+    ; next = head + 1 (11-bit)
     clc
     lda HLO
     adc #1
     sta NEXT_LO
     lda HHI
     adc #0
-    and #$03
+    and #$07
     sta NEXT_HI
 
     ; full? (next == tail)
@@ -1298,32 +1299,41 @@ _full:
     rts
 
 _not_full:
+    ; 2k buffer in bank 5
     ; write data at page(HHI) : offset(HLO)
     ldy HLO
     pla                         ; A = data byte
     ldx HHI
     cpx #0
     bne _p1
-    ;FAR_POKE_Y $00, $55000
-    STAY_FAR $00, $55000
-    ;sta RBUF_PAGE0,y            ; page 0
+    STAY_FAR $00, $50000        ; page 0         
     jmp _pub
 _p1 cpx #1
     bne _p2
-    ;FAR_POKE_Y $00, $56000
-    STAY_FAR $00, $56000
-    ;sta RBUF_PAGE1,y            ; page 1
+    STAY_FAR $00, $50100        ; page 1          
     jmp _pub
 _p2 cpx #2
     bne _p3
-    ;FAR_POKE_Y $00, $57000
-    STAY_FAR $00, $57000
-    ;sta RBUF_PAGE2,y            ; page 2
+    STAY_FAR $00, $50200        ; page 2          
     jmp _pub
-_p3
-    ;FAR_POKE_Y $00, $58000
-    STAY_FAR $00, $58000
-    ;sta RBUF_PAGE3,y            ; page 3
+_p3 cpx #3
+    bne _p4
+    STAY_FAR $00, $50300        ; page 3         
+    jmp _pub
+_p4 cpx #4
+    bne _p5
+    STAY_FAR $00, $50400        ; page 4          
+    jmp _pub
+_p5 cpx #5
+    bne _p6
+    STAY_FAR $00, $50500        ; page 5          
+    jmp _pub
+_p6 cpx #6
+    bne _p7
+    STAY_FAR $00, $50600        ; page 6          
+    jmp _pub  
+_p7 
+    STAY_FAR $00, $50700        ; page 7  
 
 _pub:
     ; publish head = next
@@ -1356,40 +1366,50 @@ RBUF_GET:
     beq _empty
 
 _not_empty:
+    ; 2k buffer in bank 5
     ; read from page(TAIL_HI) : offset(TAIL_LO)
     ldy RBUF_TAIL_LO
     ldx RBUF_TAIL_HI
     cpx #0
     bne _g1
-    ;FAR_PEEK_Y $00, $55000
-    LDAY_FAR $00, $055000
-    ;lda RBUF_PAGE0,y            ; page 0
+    LDAY_FAR $00, $050000       ; page 0           
     jmp _adv
 _g1 cpx #1
     bne _g2
-    ;FAR_PEEK_Y $00, $56000
-    LDAY_FAR $00, $056000
-    ;lda RBUF_PAGE1,y            ; page 1
+    LDAY_FAR $00, $050100       ; page 1           
     jmp _adv
 _g2 cpx #2
     bne _g3
-    ;FAR_PEEK_Y $00, $57000
-    LDAY_FAR $00, $057000
-    ;lda RBUF_PAGE2,y            ; page 2
+    LDAY_FAR $00, $050200       ; page 2           
     jmp _adv
-_g3
-    ;FAR_PEEK_Y $00, $58000
-    LDAY_FAR $00, $058000
-    ;lda RBUF_PAGE3,y            ; page 3
+_g3 cpx #3
+    bne _g4
+    LDAY_FAR $00, $050300       ; page 3          
+    jmp _adv
+_g4 cpx #4
+    bne _g5
+    LDAY_FAR $00, $050400       ; page 4           
+    jmp _adv
+_g5 cpx #5
+    bne _g6
+    LDAY_FAR $00, $050500       ; page 5           
+    jmp _adv
+_g6 cpx #6
+    bne _g7
+    LDAY_FAR $00, $050600       ; page 6           
+    jmp _adv
+_g7 
+    LDAY_FAR $00, $050700       ; page 7           
+       
 
 _adv:
     pha
-    ; tail = tail + 1 (10-bit)
+    ; tail = tail + 1 (11-bit)
     inc RBUF_TAIL_LO
     bne _ok
     inc RBUF_TAIL_HI
     lda RBUF_TAIL_HI
-    and #$03
+    and #$07
     sta RBUF_TAIL_HI
 _ok:
     lda CHARACTER_MODE
@@ -1428,7 +1448,7 @@ RBUF_IS_FULL:
     sta NEXT_LO
     lda HHI
     adc #0
-    and #$03
+    and #$07
     sta NEXT_HI
     jsr READ_TAIL_ATOMIC
     lda NEXT_LO
@@ -1944,7 +1964,7 @@ BUILD_TCP_HEADER:
     sta FREE_LO
     lda TMP_TAIL_HI
     sbc TMP_HEAD_HI
-    and #$03                          ; keep to 10-bit pages 0..3
+    and #$07                          ; 11-bit pages 0..7
     sta FREE_HI
 
     ; subtract 1 (mod 1024)
@@ -1954,7 +1974,7 @@ BUILD_TCP_HEADER:
     sta FREE_LO
     lda FREE_HI
     sbc #0
-    and #$03
+    and #$07
     sta FREE_HI
 
     ; Write TCP window (16-bit, network order high:low in your struct)
@@ -2663,7 +2683,7 @@ ETH_MAYBE_WINUPDATE:
     sta _cur_free_lo
     lda TMP_TAIL_HI
     sbc TMP_HEAD_HI
-    and #$03
+    and #$07
     sta _cur_free_hi
 
     ; cur_free -= 1
@@ -2834,9 +2854,19 @@ _exit:
     rts
 
 ;=============================================================================
-; Main IRQ / Incoming data routine
+; ETH_GET_DNS_RESULT_IP
+; Returns the DNS result in a/x/y/z (useful for RREG A,X,Y,Z from BASIC)
 ;=============================================================================
-;*=$4000
+ETH_GET_DNS_RESULT_IP:
+    lda DNS_RESULT_IP
+    ldx DNS_RESULT_IP+1
+    ldy DNS_RESULT_IP+2
+    ldz DNS_RESULT_IP+3
+    rts
+
+;=============================================================================
+; Network recieve polling routine
+;=============================================================================
 ETH_RCV:
     ; update ARP cache
     jsr ARP_CACHE_PURGE
@@ -3203,13 +3233,6 @@ _no_translate:
     pla
     rts
 
-; ==== Ring configuration (no zero-page) ====
-
-RBUF_PAGE0      = RBUF_BASE + $000
-RBUF_PAGE1      = RBUF_BASE + $100
-RBUF_PAGE2      = RBUF_BASE + $200
-RBUF_PAGE3      = RBUF_BASE + $300
-
 ; Producer (IRQ) publishes HEAD; consumer (mainline) publishes TAIL
 RBUF_HEAD_LO:   .byte 0
 RBUF_HEAD_HI:   .byte 0                  ; 0..3
@@ -3253,8 +3276,6 @@ _again:
     bne _again
     rts
 
-;RBUF_BASE: .fill 1024, $00                  ; 1 KiB aligned (4 pages)
-RBUF_BASE = $0000
 
 ; Ethernet frame structures
 ;
