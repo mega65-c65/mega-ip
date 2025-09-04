@@ -1,4 +1,4 @@
-Ethernet TCPIP Library for BASIC on the MEGA65
+# Ethernet TCPIP Library for BASIC on the MEGA65
 
 *Pull requests are very very welcome.
 
@@ -8,7 +8,7 @@ See the included d81 file for usage.  Refer to the BASIC code on how to set conn
 
 https://files.mega65.org?id=f5c206da-9fef-4a07-a54d-6149d8105a44
 
-Usage:
+## Usage:
 
 1) Load the ML library
 In your BASIC65 program, load the code to bank 4 at the start of your program:
