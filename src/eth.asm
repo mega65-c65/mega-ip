@@ -99,6 +99,12 @@ EXEC_BANK = $04     ; code is running from $42000
     jmp ETH_TCP_LISTEN_STOP
     jmp ETH_ACCEPT_POLL
 
+    jmp ETH_DHCP_START
+    jmp ETH_DHCP_POLL
+    jmp ETH_GET_DHCP_STATE
+    
+    jmp ETH_SET_PRIMARY_DNS
+
 
 .include "random.asm"
 
@@ -262,6 +268,17 @@ ETH_SET_SUBNET_MASK:
 ETH_SET_REMOTE_PORT:
     sta REMOTE_PORT+0
     stx REMOTE_PORT+1
+    rts
+
+;=============================================================================
+; Set primary DNS
+;=============================================================================
+ETH_SET_PRIMARY_DNS:
+    sta PRIMARY_DNS+0
+    stx PRIMARY_DNS+1
+    sty PRIMARY_DNS+2
+    tza
+    sta PRIMARY_DNS+3
     rts
 
 ;=============================================================================
@@ -2700,7 +2717,7 @@ _cur_free_hi: .byte 0
 
 .include "arp.asm"
 .include "dns.asm"
-;.include "dhcp.asm"
+.include "dhcp.asm"
 
 ;=============================================================================
 ; Initiate a DNS lookup request
@@ -2895,6 +2912,14 @@ _chk_bad_crc:
     rts
 
 _chk_multicast:
+
+    ; While DHCP is running, or LISTENer is active, dont filter multicast
+    lda DHCP_IN_PROGRESS
+    bne _chk_dest_ok
+
+    lda TCP_LISTEN_ENABLED
+    bne _chk_dest_ok
+    
     ; ---- Drop multicast (bit4) ----
     lda RX_META1
     and #%00010000
@@ -2912,13 +2937,20 @@ _chk_dest_ok:
     and #%01100000            ; isolate bits 6|5
     bne _accept_packet        ; if either set → keep
 
-    lda #$01
+    ; ---- NEW: while DHCP is running, don't rely on meta bits ----
+    lda DHCP_IN_PROGRESS
+    beq _reject_by_meta       ; if not running DHCP, reject like before
+    jmp _accept_packet        ; accept → copy → IP/UDP demux will decide
+
+_reject_by_meta:
+    lda #$01                  ; ack + drop
     sta MEGA65_ETH_CTRL2
     lda #$03
     sta MEGA65_ETH_CTRL2
     rts
 
 _accept_packet:
+inc DHCP_RX_ACCEPTS
     ; --- subtract FCS (4 bytes), drop on underflow ---
     sec
     lda _len_lsb
@@ -3024,18 +3056,42 @@ _call_arp_update_cache:
     jmp ARP_UPDATE_CACHE
 
 _is_ipv4:
-    ; IPv4: keep only TCP (protocol = $06). Drop everything else (UDP, ICMP, etc.)
-    lda ETH_RX_FRAME_HEADER+23         ; IPv4 Protocol byte (14 + 9)
+    ; IPv4 protocol dispatch
+    lda ETH_RX_FRAME_HEADER+23         ; Protocol (14 + 9)
     cmp #$06                           ; TCP?
     beq _call_incoming_tcp
-    cmp #$11                            ; UDP?
-    beq _maybe_udp
+    cmp #$11                           ; UDP?
+    beq _udp_demux
     rts
 
-_maybe_udp:
-    jmp DNS_UDP_IN                     ; let DNS parser look (drops if not for us)
+    ; --- UDP demux (DHCP first, then DNS) ---
+_udp_demux:
+    ; Compute IHL in bytes: IHL field is low nibble of first IP byte, units of 4 bytes
+    lda ETH_RX_FRAME_HEADER+14         ; Version/IHL at start of IP header
+    and #$0F
+    asl                                ; *4
+    asl
+    sta DHCP_IP_IHL_BYTES
+    tay                                ; Y = IHL in bytes (typically 20)
 
-_call_incoming_tcp
+    ; Check UDP destination port (at UDP header offset +2)
+    lda ETH_RX_FRAME_PAYLOAD+2,y       ; dst port high
+    cmp #>(UDP_PORT_DHCP_CLIENT)       ; 68
+    bne _udp_maybe_dns
+    lda ETH_RX_FRAME_PAYLOAD+3,y       ; dst port low
+    cmp #<(UDP_PORT_DHCP_CLIENT)
+    bne _udp_maybe_dns
+
+    ; DHCP → handle and return
+inc DHCP_UDP68_HITS    
+    jsr DHCP_ON_UDP
+    rts
+
+_udp_maybe_dns:
+    ; Not DHCP(68) — let your DNS handler decide (it already drops non-DNS)
+    jmp DNS_UDP_IN
+
+_call_incoming_tcp:
     jmp INCOMING_TCP_PACKET
 
 _unknown_packet:
@@ -3370,6 +3426,8 @@ TCP_LISTEN_PORT:        .byte $00, $00              ; ---- Passive-accept (singl
 TCP_LISTEN_STATE:       .byte $00                   ; 0=idle, 1=LISTEN, 2=SYN_RCVD
 TCP_ACCEPT_FLAGS:       .byte $00                   ; bit0=accepted, bit1=fail
 TCP_LISTEN_ENABLED:     .byte $00                   ; 0=off, 1=on
+
+ALLOW_MULTICAST         .byte $00
 
 RX_COPY_REM_LO:         .byte 0
 RX_COPY_REM_HI:         .byte 0
