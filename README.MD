@@ -8,6 +8,12 @@ See the included d81 file for usage.  Refer to the BASIC code on how to set conn
 
 https://files.mega65.org?id=f5c206da-9fef-4a07-a54d-6149d8105a44
 
+ALSO:  SOME ADDRESSES MAY HAVE CHANGED.  PLEASE REFER TO THE BASIC EXAMPLES FOR CORRECT ADDRESSES!
+
+## Tools and credits
+* "petcat" and "c1541" are part of the VICE emulation package
+* 64TASS is available from sourceforge and is included here for build simplicity
+
 ## Usage:
 
 1) Load the ML library
