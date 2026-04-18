@@ -7,12 +7,16 @@
 ARP_STATE_IDLE      = $00
 ARP_STATE_WAIT      = $01
 
-ARP_TIMEOUT_TICKS   = 10      ; how many ETH_STATUS_POLL calls between retries
-ARP_MAX_RETRIES     = 5       ; how many resends before we give up
+; Ticks are gated by VIC-II raster wraps (see ARP_RETRY_TICK), so one tick
+; is roughly one half-frame (~8-16 ms) regardless of how fast the caller
+; polls. 30 ticks ≈ 250-300 ms between retries; 8 retries ≈ 2-2.4 s total.
+ARP_TIMEOUT_TICKS   = 30
+ARP_MAX_RETRIES     = 8
 
 ARP_STATE:        .byte $00
 ARP_RETRY_TICKS:  .byte $00
 ARP_RETRY_LEFT:   .byte $00
+ARP_LAST_RASTER:  .byte $00
 
 ARP_REQUEST_IP:
     .byte $00, $00, $00, $00
@@ -127,6 +131,8 @@ ARP_REQUEST:
 _already_waiting:
     lda #ARP_TIMEOUT_TICKS
     sta ARP_RETRY_TICKS           ; (re)load the timeout for the next resend
+    lda MEGA65_VICII_RSTR_CMP     ; reset raster baseline so ticks are
+    sta ARP_LAST_RASTER           ; measured from this resend forward
     lda #ARP_STATE_WAIT
     sta ARP_STATE
 
@@ -500,10 +506,22 @@ _copy_req_to_query:
     jsr ARP_QUERY_CACHE
     bne _got_it
 
+    ; Rate-limit: only count this tick if the raster has wrapped since
+    ; the last counted tick. Keeps retry spacing bounded below by real
+    ; time (~8-16 ms/tick) even if the caller polls in a tight loop.
+    lda MEGA65_VICII_RSTR_CMP
+    cmp ARP_LAST_RASTER
+    bcs _no_tick_yet              ; current >= last → no wrap, skip tick
+    sta ARP_LAST_RASTER           ; wrap detected → rebase and tick
+
     ; Not yet; tick down
     lda ARP_RETRY_TICKS
     beq _expired
     dec ARP_RETRY_TICKS
+    rts
+
+_no_tick_yet:
+    sta ARP_LAST_RASTER           ; track high-water mark for wrap detect
     rts
 
 _expired:
