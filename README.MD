@@ -59,7 +59,7 @@ For any TCPIP connection, you need to provide:
 95 PRINT"TIMED OUT":END        <--- Give up
 ```
 
-6) Connection is now established, you can transmit and recieve data
+6) Connection is now established, you can transmit and receive data
 
 The library automatically uses the A$ variable for sending strings:
 
