@@ -1,4 +1,4 @@
-; *=$1600
+*=$1600
 
 XORSHIFT32STATE:
     .byte $01, $00, $00, $00
@@ -12,33 +12,16 @@ RAND32_VALUE:
 
 RAND32_SEED:
 
-    jsr RAND32_READ_HW
+    lda $D41B
     sta XORSHIFT32STATE+0
-    jsr RAND32_READ_HW
+    lda $D41B
     sta XORSHIFT32STATE+1
-    jsr RAND32_READ_HW
+    lda $D41B
     sta XORSHIFT32STATE+2
-    jsr RAND32_READ_HW
+    lda $D41B
     sta XORSHIFT32STATE+3
 
     jsr RAND32
-    rts
-
-RAND32_READ_HW:
-    ldx #$ff
-_wait_entropy:
-    bit $D7FE
-    bpl _have_entropy
-    dex
-    bne _wait_entropy
-
-    lda MEGA65_VICII_RSTR_CMP
-    eor XORSHIFT32STATE+0
-    inc XORSHIFT32STATE+0
-    rts
-
-_have_entropy:
-    lda $D7EF
     rts
 
 RAND32:

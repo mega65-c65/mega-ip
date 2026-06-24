@@ -7,16 +7,18 @@
 ARP_STATE_IDLE      = $00
 ARP_STATE_WAIT      = $01
 
-; Ticks are gated by VIC-II raster wraps (see ARP_RETRY_TICK), so one tick
-; is roughly one half-frame (~8-16 ms) regardless of how fast the caller
-; polls. 30 ticks ≈ 250-300 ms between retries; 8 retries ≈ 2-2.4 s total.
-ARP_TIMEOUT_TICKS   = 30
+; Ticks are caller polls. BASIC naturally polls slowly, and ML samples call
+; from a frame loop, so retries stay deterministic without raster phase issues.
+ARP_TIMEOUT_TICKS   = 15
 ARP_MAX_RETRIES     = 8
 
 ARP_STATE:        .byte $00
 ARP_RETRY_TICKS:  .byte $00
 ARP_RETRY_LEFT:   .byte $00
-ARP_LAST_RASTER:  .byte $00
+ARP_LAST_RASTER_LO: .byte $00
+ARP_LAST_RASTER_HI: .byte $00
+ARP_CUR_RASTER_LO:  .byte $00
+ARP_CUR_RASTER_HI:  .byte $00
 
 ARP_REQUEST_IP:
     .byte $00, $00, $00, $00
@@ -131,8 +133,11 @@ ARP_REQUEST:
 _already_waiting:
     lda #ARP_TIMEOUT_TICKS
     sta ARP_RETRY_TICKS           ; (re)load the timeout for the next resend
-    lda MEGA65_VICII_RSTR_CMP     ; reset raster baseline so ticks are
-    sta ARP_LAST_RASTER           ; measured from this resend forward
+    jsr ARP_READ_RASTER
+    lda ARP_CUR_RASTER_LO
+    sta ARP_LAST_RASTER_LO
+    lda ARP_CUR_RASTER_HI
+    sta ARP_LAST_RASTER_HI
     lda #ARP_STATE_WAIT
     sta ARP_STATE
 
@@ -326,6 +331,34 @@ _do_update
     sta ETH_STATE
 
 _update_cache:
+    ; First replace an existing live entry for this IP.
+    ldx #$00
+_find_existing:
+    lda ARP_CACHE+0, x
+    beq _next_existing
+    lda ARP_CACHE+1, x
+    cmp ETH_RX_FRAME_PAYLOAD+14
+    bne _next_existing
+    lda ARP_CACHE+2, x
+    cmp ETH_RX_FRAME_PAYLOAD+15
+    bne _next_existing
+    lda ARP_CACHE+3, x
+    cmp ETH_RX_FRAME_PAYLOAD+16
+    bne _next_existing
+    lda ARP_CACHE+4, x
+    cmp ETH_RX_FRAME_PAYLOAD+17
+    beq _found_slot
+
+_next_existing:
+    txa
+    clc
+    adc #$0b
+    cmp #$58
+    bcs _find_available
+    tax
+    jmp _find_existing
+
+_find_available:
     ; find available slot
     ldx #$00
 _loop1
@@ -487,6 +520,14 @@ _done:
 ; - If timeout expires and retries remain, resend ARP and reload the timer.
 ; - If out of retries, stop and (if connecting) latch a failure bit.
 
+ARP_READ_RASTER:
+    lda MEGA65_VICII_RSTR_CMP
+    sta ARP_CUR_RASTER_LO
+    lda MEGA65_VICII_CTRL1
+    and #$80
+    sta ARP_CUR_RASTER_HI
+    rts
+
 ARP_RETRY_TICK:
     lda ARP_STATE
     cmp #ARP_STATE_WAIT
@@ -506,22 +547,11 @@ _copy_req_to_query:
     jsr ARP_QUERY_CACHE
     bne _got_it
 
-    ; Rate-limit: only count this tick if the raster has wrapped since
-    ; the last counted tick. Keeps retry spacing bounded below by real
-    ; time (~8-16 ms/tick) even if the caller polls in a tight loop.
-    lda MEGA65_VICII_RSTR_CMP
-    cmp ARP_LAST_RASTER
-    bcs _no_tick_yet              ; current >= last → no wrap, skip tick
-    sta ARP_LAST_RASTER           ; wrap detected → rebase and tick
-
-    ; Not yet; tick down
+    ; Tick once per caller poll. BASIC is naturally slow, and ML samples poll
+    ; from their frame loop, so this is more reliable than sampling raster wrap.
     lda ARP_RETRY_TICKS
     beq _expired
     dec ARP_RETRY_TICKS
-    rts
-
-_no_tick_yet:
-    sta ARP_LAST_RASTER           ; track high-water mark for wrap detect
     rts
 
 _expired:

@@ -37,6 +37,7 @@ DHCP_STATE_OFFER_SEEN       = $02
 DHCP_STATE_REQUEST_SENT     = $03
 DHCP_STATE_BOUND            = $04
 DHCP_STATE_FAILED           = $7F
+DHCP_TICK_FRAMES            = 6
 
 ; BOOTP/DHCP fixed header sizes
 BOOTP_FIXED_SIZE            = 236          ; up to 'options' field
@@ -46,6 +47,9 @@ DHCP_IN_PROGRESS:           .byte 0
 DHCP_STATE:                 .byte $00
 DHCP_RETRY_TICKS:           .byte $00
 DHCP_RETRY_BACKOFF:         .byte $20      ; ~3–4s initial (you tick at 100ms)
+DHCP_FRAME_TICKS:           .byte $00
+DHCP_LAST_RASTER_LO:        .byte $00
+DHCP_LAST_RASTER_HI:        .byte $00
 DHCP_XID:                   .byte $12,$34,$56,$78
 DHCP_SERVER_ID:             .byte $00,$00,$00,$00
 DHCP_OFFER_IP:              .byte $00,$00,$00,$00  ; yiaddr from OFFER
@@ -76,6 +80,11 @@ DHCP_RX_ACCEPTS: .byte 0
 DHCP_UDP68_HITS: .byte 0
 DHCP_ACK_SEEN: .byte 0
 DHCP_NAK_SEEN: .byte 0
+DHCP_DEBUG_STAGE: .byte 0
+DHCP_DISCOVER_TX_OK: .byte 0
+DHCP_DISCOVER_TX_FAIL: .byte 0
+DHCP_REQUEST_TX_OK: .byte 0
+DHCP_REQUEST_TX_FAIL: .byte 0
 
 ;=============================================================================
 ; Start DHCP (non-blocking). Safe to call any time; it will restart if needed
@@ -85,6 +94,15 @@ ETH_DHCP_START:
     ; clear from previous run
     lda #$00
     sta dhcp_msg_type
+    sta DHCP_RX_ACCEPTS
+    sta DHCP_UDP68_HITS
+    sta DHCP_ACK_SEEN
+    sta DHCP_NAK_SEEN
+    sta DHCP_DEBUG_STAGE
+    sta DHCP_DISCOVER_TX_OK
+    sta DHCP_DISCOVER_TX_FAIL
+    sta DHCP_REQUEST_TX_OK
+    sta DHCP_REQUEST_TX_FAIL
     ldy #$00
 _loop:
     sta DHCP_SERVER_ID,y
@@ -122,14 +140,27 @@ _xid_ok:
     sta DHCP_RETRY_TICKS
     lda #$20
     sta DHCP_RETRY_BACKOFF
+    lda #DHCP_TICK_FRAMES
+    sta DHCP_FRAME_TICKS
+    jsr ARP_READ_RASTER
+    lda ARP_CUR_RASTER_LO
+    sta DHCP_LAST_RASTER_LO
+    lda ARP_CUR_RASTER_HI
+    sta DHCP_LAST_RASTER_HI
 
     lda #1
     sta DHCP_IN_PROGRESS
 
     jsr DHCP_SEND_DISCOVER
+    bcs _start_tx_busy
     lda #DHCP_STATE_DISCOVER_SENT
     sta DHCP_STATE
+    rts
 
+_start_tx_busy:
+    lda #DHCP_STATE_OFF
+    sta DHCP_STATE
+    jsr DHCP_RETRY_SOON
     rts
 
 ;=============================================================================
@@ -160,8 +191,8 @@ DHCP_TICK:
     cmp #DHCP_STATE_FAILED
     beq _done
 
-    ; simple 100ms tick backoff
-    jsr ETH_WAIT_100MS
+    jsr DHCP_FRAME_TICK
+    bcc _done
     inc DHCP_RETRY_TICKS
     lda DHCP_RETRY_TICKS
     cmp DHCP_RETRY_BACKOFF
@@ -171,6 +202,8 @@ DHCP_TICK:
     sta DHCP_RETRY_TICKS
 
     lda DHCP_STATE
+    cmp #DHCP_STATE_OFF
+    beq _resend_discover
     cmp #DHCP_STATE_DISCOVER_SENT
     beq _resend_discover
     cmp #DHCP_STATE_OFFER_SEEN
@@ -181,15 +214,39 @@ DHCP_TICK:
 
 _resend_discover:
     jsr DHCP_SEND_DISCOVER
+    bcs _retry_tx_soon
+    lda #DHCP_STATE_DISCOVER_SENT
+    sta DHCP_STATE
     jsr DHCP_BACKOFF
     rts
 
 _resend_request:
     jsr DHCP_SEND_REQUEST
+    bcs _retry_tx_soon
+    lda #DHCP_STATE_REQUEST_SENT
+    sta DHCP_STATE
     jsr DHCP_BACKOFF
     rts
 
+_retry_tx_soon:
+    jsr DHCP_RETRY_SOON
+    rts
+
 _done:
+    rts
+
+DHCP_FRAME_TICK:
+    lda DHCP_FRAME_TICKS
+    beq _dhcp_emit_tick
+    dec DHCP_FRAME_TICKS
+    beq _dhcp_emit_tick
+    clc
+    rts
+
+_dhcp_emit_tick:
+    lda #DHCP_TICK_FRAMES
+    sta DHCP_FRAME_TICKS
+    sec
     rts
 
 ;=============================================================================
@@ -205,6 +262,16 @@ DHCP_BACKOFF:
 +   sta DHCP_RETRY_BACKOFF
     rts
 
+
+DHCP_RETRY_SOON:
+    ; TX busy/not-ready is local controller timing, not a network timeout.
+    ; Retry on the next DHCP tick without increasing the network backoff.
+    lda DHCP_RETRY_BACKOFF
+    beq +
+    sec
+    sbc #$01
++   sta DHCP_RETRY_TICKS
+    rts
 
 ;=============================================================================
 ; DHCP DISCOVER
@@ -303,6 +370,14 @@ _bcast_fill:
     bne _bcast_fill
 
     jsr ETH_PACKET_SEND
+    bcs _discover_tx_fail
+    inc DHCP_DISCOVER_TX_OK
+    clc
+    rts
+
+_discover_tx_fail:
+    inc DHCP_DISCOVER_TX_FAIL
+    sec
     rts
 
 
@@ -363,6 +438,23 @@ DHCP_SEND_REQUEST:
     cpy #4
     bne -
 _skip_svid:
+    ; Repeat the parameter request list in REQUEST. Some DHCP servers use this
+    ; packet, not just DISCOVER, to decide which config options to include.
+    lda #DHCP_OPT_PARAM_REQ_LIST
+    jsr opt_put_code
+    lda #$05
+    jsr opt_put_len
+    lda #DHCP_OPT_SUBNET_MASK
+    jsr opt_put_byte
+    lda #DHCPopt_router
+    jsr opt_put_byte
+    lda #DHCPopt_dns
+    jsr opt_put_byte
+    lda #DHCP_OPT_LEASE_TIME
+    jsr opt_put_byte
+    lda #$1a
+    jsr opt_put_byte                    ; interface MTU
+
     ; 61 = client id (01+MAC)
     lda #$3d
     jsr opt_put_code
@@ -412,6 +504,14 @@ _bcast_fill:
     bne _bcast_fill
 
     jsr ETH_PACKET_SEND
+    bcs _request_tx_fail
+    inc DHCP_REQUEST_TX_OK
+    clc
+    rts
+
+_request_tx_fail:
+    inc DHCP_REQUEST_TX_FAIL
+    sec
     rts
 
 ;=============================================================================
@@ -569,8 +669,12 @@ UDP_WRITE_LENGTH_AND_CHECKSUM:
     ; IPv4 header checksum (over first 20 bytes)
     jsr UDP_CALC_IPHDR_CHECKSUM
 
-    ; UDP checksum (pseudo header + UDP hdr + data)
-    jsr UDP_CALC_CHECKSUM
+    ; IPv4 permits a zero UDP checksum. Keeping DHCP checksums zero avoids
+    ; servers silently dropping a REQUEST if an odd-length checksum path is
+    ; wrong, while retaining the required IPv4 header checksum above.
+    lda #$00
+    sta ETH_TX_FRAME_PAYLOAD+20+6
+    sta ETH_TX_FRAME_PAYLOAD+20+7
     rts
 
 ;=============================================================================
@@ -799,15 +903,21 @@ sum_fold_ffff:
 ; Expects IPv4 + UDP already validated by your RX path.
 ;=============================================================================
 DHCP_ON_UDP:
+    lda #$01
+    sta DHCP_DEBUG_STAGE
 
     ldy DHCP_IP_IHL_BYTES        ; Y = IP header length in bytes
 
     ; Verify BOOTP op=2 (reply)
+    lda #$02
+    sta DHCP_DEBUG_STAGE
     lda ETH_RX_FRAME_PAYLOAD+8+0,y
     cmp #BOOTP_OP_BOOTREPLY
     bne _out
 
     ; Check XID matches ours
+    lda #$03
+    sta DHCP_DEBUG_STAGE
     lda ETH_RX_FRAME_PAYLOAD+8+$04,y
     cmp DHCP_XID+0
     bne _out
@@ -822,6 +932,8 @@ DHCP_ON_UDP:
     bne _out
 
     ; yiaddr → candidate IP (for OFFER/ACK)
+    lda #$04
+    sta DHCP_DEBUG_STAGE
     lda ETH_RX_FRAME_PAYLOAD+8+$10,y
     sta DHCP_OFFER_IP+0
     lda ETH_RX_FRAME_PAYLOAD+8+$11,y
@@ -832,6 +944,8 @@ DHCP_ON_UDP:
     sta DHCP_OFFER_IP+3
 
     ; Must have magic cookie
+    lda #$05
+    sta DHCP_DEBUG_STAGE
     lda ETH_RX_FRAME_PAYLOAD+8+236,y
     cmp #DHCP_MAGIC_0
     bne _out
@@ -846,9 +960,13 @@ DHCP_ON_UDP:
     bne _out
 
     ; Parse options TLV
+    lda #$06
+    sta DHCP_DEBUG_STAGE
     jsr DHCP_PARSE_OPTIONS
 
     ; Branch by message type
+    lda #$07
+    sta DHCP_DEBUG_STAGE
     lda dhcp_msg_type
     cmp #DHCPOFFER
     beq _got_offer
@@ -859,6 +977,9 @@ DHCP_ON_UDP:
     rts
 
 _got_offer:
+    lda #$08
+    sta DHCP_DEBUG_STAGE
+
     ; record server id if present; then send REQUEST
     lda #DHCP_STATE_OFFER_SEEN
     sta DHCP_STATE
@@ -883,14 +1004,22 @@ _got_offer:
 
 _srv_ok:
     jsr DHCP_SEND_REQUEST
+    bcs _offer_request_tx_busy
     lda #DHCP_STATE_REQUEST_SENT
     sta DHCP_STATE
     lda #$00
     sta DHCP_RETRY_TICKS
     rts
 
+_offer_request_tx_busy:
+    jsr DHCP_RETRY_SOON
+    rts
+
 _got_ack:
-inc DHCP_ACK_SEEN
+    inc DHCP_ACK_SEEN
+    lda #$09
+    sta DHCP_DEBUG_STAGE
+
     ; apply config: LOCAL_IP, SUBNET_MASK, ROUTER (gateway), DNS
     ldy #0
 -   lda DHCP_OFFER_IP,y
@@ -914,7 +1043,10 @@ inc DHCP_ACK_SEEN
     rts
 
 _got_nak:
-inc DHCP_NAK_SEEN
+    inc DHCP_NAK_SEEN
+    lda #$0a
+    sta DHCP_DEBUG_STAGE
+
     lda #DHCP_STATE_FAILED
     sta DHCP_STATE
 
@@ -1089,6 +1221,18 @@ _opt_msg:
     jsr DHCP_OPTS_RD_A
     sta dhcp_msg_type
     iny
+    lda _len
+    sec
+    sbc #1
+    tax
+_opt_msg_skip_extra:
+    cpx #0
+    beq _next
+    cpy DHCP_OPTS_MAXY
+    bcs _done
+    iny
+    dex
+    bne _opt_msg_skip_extra
     jmp _next
 
 _opt_svid:

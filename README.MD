@@ -8,7 +8,8 @@ See the included d81 file for usage.  Refer to the BASIC code on how to set conn
 
 https://files.mega65.org?id=f5c206da-9fef-4a07-a54d-6149d8105a44
 
-ALSO:  SOME ADDRESSES MAY HAVE CHANGED.  PLEASE REFER TO THE BASIC EXAMPLES FOR CORRECT ADDRESSES!
+The public SYS jump table is the supported interface. Internal data addresses
+are not part of the API; use the getters below instead of PEEK/POKE.
 
 ## Tools and credits
 * "petcat" and "c1541" are part of the VICE emulation package
@@ -77,4 +78,61 @@ The library automatically uses the A$ variable for sending strings:
 
 TODO: document statuses, DNS lookup, and Listener mode
 
+## Public jump table
 
+These calls are made after loading `eth.bin` at `P($42000)`. The address shown
+is the BASIC `SYS` address.
+
+| Address | Routine | Notes |
+| --- | --- | --- |
+| `$42000` | Initialize/reset Ethernet | Full controller reset |
+| `$42003` | Set gateway IP | `SYS addr,a,b,c,d` |
+| `$42006` | Set local IP | `SYS addr,a,b,c,d` |
+| `$42009` | Set local port | `SYS addr,hi,lo` |
+| `$4200c` | Set remote IP | `SYS addr,a,b,c,d` |
+| `$4200f` | Set remote port | `SYS addr,hi,lo` |
+| `$42012` | Set subnet mask | `SYS addr,a,b,c,d` |
+| `$42015` | Set character translation | `0` C/G, `1` ASCII |
+| `$4201b` | Send BASIC `A$` | BASIC string send path |
+| `$4201e` | Receive one byte | `RREG A`; carry set means empty for ML callers |
+| `$42021` | TCP disconnect | Graceful close when established |
+| `$42024` | Status poll/network pump | Call regularly |
+| `$42027` | Connect start | Non-blocking |
+| `$4202a` | Connect poll | `RREG A` status bits |
+| `$4202d` | Connect cancel | Abort in-flight connect |
+| `$42030` | DNS lookup from `A$` | BASIC compatibility wrapper |
+| `$42033` | Get DNS result IP | `RREG A,X,Y,Z` |
+| `$42036` | Get DNS state | `RREG A` |
+| `$42039` | Listen start | `SYS addr,port_hi,port_lo` |
+| `$4203c` | Listen stop | |
+| `$4203f` | Accept poll | `RREG A` status bits |
+| `$42042` | DHCP start | Non-blocking |
+| `$42045` | DHCP poll | `RREG A` state |
+| `$42048` | Get DHCP state | `RREG A` |
+| `$4204b` | Set primary DNS | `SYS addr,a,b,c,d` |
+| `$4204e` | Get local IP | `RREG A,X,Y,Z` |
+| `$42051` | Get gateway IP | `RREG A,X,Y,Z` |
+| `$42054` | Get subnet mask | `RREG A,X,Y,Z` |
+| `$42057` | Get primary DNS | `RREG A,X,Y,Z` |
+| `$4205a` | Get remote IP | `RREG A,X,Y,Z` |
+| `$4205d` | Force TCP closed | For demos/listeners that need immediate reuse |
+| `$42060` | Get ABI info | `A/X=major/minor`, feature bits in `Y/Z` |
+| `$42063` | DNS start from `A$` | Non-blocking; `RREG A`, 1 means started |
+
+ML-only helper entries live at `$47000+` in bank 4. They do not replace the
+BASIC-facing calls; they add buffer and byte-oriented entry points for assembly
+programs.
+
+| Address | Purpose | Notes |
+| --- | --- | --- |
+| `$47000` | TCP send byte | `A=byte` |
+| `$47003` | DNS lookup buffer | Blocking compatibility wrapper |
+| `$47006` | ML-safe init | Lightweight init/reset helper |
+| `$47009` | DHCP debug | `A/X/Y/Z = RX, UDP68, stage, msg` |
+| `$4700c` | DHCP TX debug | `A/X/Y/Z = discover ok/fail, request ok/fail` |
+| `$4700f` | DNS start buffer | Legacy `A/X=ptr, Y=bank, Z=len` |
+| `$47012` | DNS debug | `A/X/Y/Z = state, stage, tx ok, tx fail` |
+| `$47015` | DNS debug 2 | `A/X/Y/Z = rx, arp waits, parse fails, port hi` |
+| `$47018` | DNS start buffer, bank-1 workspace | `A/X=ptr, Y=len` when called locally or through `$4701b`; source must stay in physical `$12000-$1f7ff` |
+| `$4701b` | ML staged dispatcher | `ml-term` uses this for argument-bearing far calls; args staged at bank-4 `$71c0` |
+| `$4701e` | ML receive byte | `X=1, A=byte` when data is available; `X=0` when empty |

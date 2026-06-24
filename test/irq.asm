@@ -37,6 +37,12 @@ vector = $ff8d
 
 custom_irq:
 
+    pha
+    txa
+    pha
+    tya 
+    pha
+
     lda #$04
     sta $02
     lda #$40
@@ -48,6 +54,12 @@ custom_irq:
     sta $05
 
     jsr $ff6e       ; jsrfar calls subroutine @ $44000
+
+    pla 
+    tay
+    pla
+    tax
+    pla
 
 custom_irq_return:
     jmp $0000

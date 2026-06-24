@@ -49,5 +49,5 @@
   560 a$="</body>":sys $4201b
   570 a$="</html>":sys $4201b
   580 sys $42021:sleep1:rem close connection
-  590 poke$44bf8,0:rem set tcp-state to closed
+  590 sys $4205d:rem force tcp state closed
   620 goto 350

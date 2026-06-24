@@ -27,14 +27,15 @@
   360 if a$="d" or a$="D" then begin
   370 :print " - Attempting DHCP autoconfig...":print
   380 :sys $42042                           : rem start dhcp request
+  385 :a=-1
   390 :fort=1to20000
   400 ::sys $42024:sys $42045:rreg b        : rem poll for dhcp response
   410 ::if b<>a and b=1 then print"..DISCOVER sent":a=b
   420 ::if b<>a and b=2 then print"..OFFER seen":a=b
   430 ::if b<>a and b=3 then print"..REQUEST sent":a=b
   440 ::if b<>a and b=4 then print"..IP Bound":a=b
-  450 ::if a=4 then 640
-  520 ::if a=127 then 540
+  450 ::if b=4 then 640
+  520 ::if b=127 then 540
   530 :next
   540 :print:print"{red}..DHCP timeout.{wht}":sleep 2:gosub 250:goto 330
   550 bend
@@ -47,13 +48,14 @@
   620 bend
   630 goto 350
   640 rem == use established settings ======================================
+  645 sys $4205d                    : rem clear tcp/arp state, keep dhcp config
   650 gosub 250
   654 print"{wht}"
   655 print " {CBM-A}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{CBM-S}"
-  660 print "   Local IP       : ";:pk=$44bdf:gosub1720:print x$
-  670 print " {$a0} Default Gateway: ";:pk=$44beb:gosub1720:print x$
-  680 print "   Subnet Mask    : ";:pk=$44bef:gosub1720:print x$
-  690 print " {$a0} Primary DNS    : ";:pk=$44bf3:gosub1720:print x$
+  660 print "   Local IP       : ";:sys $4204e:gosub1720:print x$
+  670 print " {$a0} Default Gateway: ";:sys $42051:gosub1720:print x$
+  680 print "   Subnet Mask    : ";:sys $42054:gosub1720:print x$
+  690 print " {$a0} Primary DNS    : ";:sys $42057:gosub1720:print x$
   700 print " {CBM-Z}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{SHIFT-*}{CBM-X}"
   710 rcursor px,py
   720 print chr$(27)+"@";
@@ -71,10 +73,15 @@
   840 goto 810
   850 rem == dns resolution =================================================
   860 print:input"{wht} - DNS Host Name    :",a$
-  870 print:print"{wht} - Resolving host '"+a$+"'";:sys $42030 : rem dns lookup a$
-  880 bt=ti
-  890 sleep2:sys $42024:sys $42036:rreg a       :rem poll and check for reply
-  900 if a=1 then print".";:goto 890
+  870 print:print"{wht} - Resolving host '"+a$+"'";:sys $42063:rreg a : rem dns start a$
+  875 if a=0 then print:print"{lred} - Bad host name.{wht}":sleep 3:cursor px,py:goto640
+  880 bt=ti:dp=0
+  890 sys $42024:sys $42036:rreg a       :rem poll and check for reply
+  900 if a=1 then dp=dp+1:if dp>60 then print".";:dp=0
+  905 if a=1 and ti-bt<600 then 890
+  906 if a=1 then print:print"{lred} - Timed out.{wht}":sleep 3:cursor px,py:goto640
+  907 if a=0 and ti-bt<600 then 890
+  908 if a=0 then print:print"{lred} - Timed out.{wht}":sleep 3:cursor px,py:goto640
   910 if a=2 then begin
   920 :rem retrieve the ip address
   930 :sys $42033:rreg a,x,y,z:ip(0)=a:ip(1)=x:ip(2)=y:ip(3)=z
@@ -126,11 +133,11 @@
  1390 sprite 0,1 : rem enable cursor sprite
  1400 rcursor cx,cy:movspr 0,24+(cx*4),50+(cy*8)
  1410 gosub 1630
- 1420 get a$:if a$<>"" then sys$4201b:if ec=1 then printa$;:rcursor cx,cy:movspr 0,24+(cx*4),50+(cy*8)
+ 1420 get a$:if a$="" then 1470
  1430 if a$="{CTRL-W}" then print:printxx$:sys $42021:sleep 3:an=0:an$="":goto 640:rem disconnect
- 1440 if a$="{f1}" then gosub 1590
- 1450 if a$="{f5}" then gosub 1650
- 1460 rem a$=ti$:sys$42018
+ 1440 if a$="{f1}" then gosub 1590:goto1470
+ 1450 if a$="{f5}" then gosub 1650:goto1470
+ 1460 sys$4201b:if ec=1 then printa$;:rcursor cx,cy:movspr 0,24+(cx*4),50+(cy*8)
  1470 sys $4201e:rreg a:if a=0 or a=10 then 1570  : rem get incoming byte
  1480 if a=27 then an=1:goto 1570
  1490 if a=91 and an=1 then an=2:goto 1570
@@ -141,7 +148,7 @@
  1540 bend
  1550 print chr$(a);:rcursor cx,cy:movspr 0,24+(cx*4),50+(cy*8)
  1560 ifa=34thenprint chr$(27);chr$(27);
- 1570 sys $42024:rreg a:if a=1 then print:print xx$:goto250 : rem status poll
+ 1570 sys $42024:rreg a:if a=1 then print:print xx$:sleep 3:an=0:an$="":goto640 : rem status poll
  1580 goto 1420
  1590 rem == switch terminal modes =========================================
  1600 if m=0 then m=1:goto 1620
@@ -156,9 +163,9 @@
  1690 ip$=mid$(str$(ip(0)),2)+"."+mid$(str$(ip(1)),2)+"."
  1700 ip$=ip$+mid$(str$(ip(2)),2)+"."+mid$(str$(ip(3)),2)
  1710 return
- 1720 rem == reassemble peek val      =====================================
- 1730 x$=mid$(str$(peek(pk)),2)+"."+mid$(str$(peek(pk+1)),2)+"."
- 1740 x$=x$+mid$(str$(peek(pk+2)),2)+"."+mid$(str$(peek(pk+3)),2)
+ 1720 rem == reassemble rreg ip      =====================================
+ 1730 rreg a,x,y,z:ip(0)=a:ip(1)=x:ip(2)=y:ip(3)=z
+ 1740 gosub1680:x$=ip$
  1750 return
  1760 rem == ansi code handling ===========================================
  1770 ap$=left$(an$,len(an$)-1):ac$=right$(an$,1):an$=""
