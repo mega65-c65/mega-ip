@@ -115,9 +115,18 @@ is the BASIC `SYS` address.
 | `$42054` | Get subnet mask | `RREG A,X,Y,Z` |
 | `$42057` | Get primary DNS | `RREG A,X,Y,Z` |
 | `$4205a` | Get remote IP | `RREG A,X,Y,Z` |
-| `$4205d` | Force TCP closed | For demos/listeners that need immediate reuse |
+| `$4205d` | Force TCP closed | Clears transient session state, keeps DHCP config |
 | `$42060` | Get ABI info | `A/X=major/minor`, feature bits in `Y/Z` |
 | `$42063` | DNS start from `A$` | Non-blocking; `RREG A`, 1 means started |
+
+`$42024` is also the TCP transmit pump. It retires ACKed outbound data,
+retransmits unacknowledged data on a frame-paced timeout, and returns non-zero
+for TCP events or closed state. Current event bits are: `$01` reset/closed,
+`$02` peer FIN, `$04` local close complete, `$08` TIME_WAIT done, `$10` connect
+fail, `$20` TX timeout.
+
+The receive path also answers ordinary IPv4 ICMP echo requests, so another
+machine on the network can `ping` the MEGA65 while the stack is being polled.
 
 ML-only helper entries live at `$47000+` in bank 4. They do not replace the
 BASIC-facing calls; they add buffer and byte-oriented entry points for assembly
@@ -134,5 +143,5 @@ programs.
 | `$47012` | DNS debug | `A/X/Y/Z = state, stage, tx ok, tx fail` |
 | `$47015` | DNS debug 2 | `A/X/Y/Z = rx, arp waits, parse fails, port hi` |
 | `$47018` | DNS start buffer, bank-1 workspace | `A/X=ptr, Y=len` when called locally or through `$4701b`; source must stay in physical `$12000-$1f7ff` |
-| `$4701b` | ML staged dispatcher | `ml-term` uses this for argument-bearing far calls; args staged at bank-4 `$71c0` |
+| `$4701b` | ML staged dispatcher | Argument-bearing far calls; args staged at bank-4 `$71c0` |
 | `$4701e` | ML receive byte | `X=1, A=byte` when data is available; `X=0` when empty |

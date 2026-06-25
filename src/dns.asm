@@ -39,10 +39,11 @@ DNS_FRAME_TICKS:        .byte $00
 DNS_LAST_RASTER_LO:     .byte $00
 DNS_LAST_RASTER_HI:     .byte $00
 
-; message id + client port (ephemeral: $C000 | client_hi)
+; message id + client port (ephemeral: $C000-$DFFF)
 DNS_MSG_ID_HI:          .byte $00
 DNS_MSG_ID_LO:          .byte $00
-DNS_CLIENT_PORT_HI:     .byte $31   ; starts at $31 → $C131, increment each query
+DNS_CLIENT_PORT_HI:     .byte $31
+DNS_CLIENT_PORT_LO:     .byte $53
 
 ; packed QNAME buffer (max 128)
 DNS_QNAME:              .fill 128, $00
@@ -50,13 +51,16 @@ DNS_QNAME_LEN:          .byte $00
 
 DNS_ARP_DEFERS:         .byte 40   ; ~40 quick defers then give up
 
-DEBUG:                  .byte $00
 DNS_DEBUG_STAGE:        .byte $00
 DNS_QUERY_TX_OK:        .byte $00
 DNS_QUERY_TX_FAIL:      .byte $00
 DNS_RX_HITS:            .byte $00
 DNS_ARP_WAIT_COUNT:     .byte $00
 DNS_PARSE_FAILS:        .byte $00
+DNS_RAW_RX_COUNT:       .byte $00
+DNS_IPV4_RX_COUNT:      .byte $00
+DNS_UDP_RX_COUNT:       .byte $00
+DNS_NOT_FOR_US_COUNT:   .byte $00
 
 ;===========================================================
 ; BUILD + SEND a UDP/IPv4 packet in ETH_TX_FRAME_*
@@ -227,12 +231,12 @@ _qcpy:
     sta ETH_TX_FRAME_PAYLOAD+20+UDP_HDR_LEN_HI
 
     ; ---- UDP header fields ----
-    ; src port = ($C0 | (DNS_CLIENT_PORT_HI & $3F)) : $00
+    ; src port = ($C0 | (DNS_CLIENT_PORT_HI & $1F)) : rotating low byte
     lda DNS_CLIENT_PORT_HI
-    and #$3F
+    and #$1F
     ora #$C0
     sta ETH_TX_FRAME_PAYLOAD+20+UDP_HDR_SRC_HI
-    lda #$00
+    lda DNS_CLIENT_PORT_LO
     sta ETH_TX_FRAME_PAYLOAD+20+UDP_HDR_SRC_LO
 
     ; dst port = 53
@@ -300,7 +304,6 @@ _hn_abs:                    ; self-modified: LDA $xxxx,Y
     bcc _char_ok
 
     sty DNS_ARP_WAIT_COUNT
-    lda DEBUG
     sta DNS_PARSE_FAILS
     jmp _toolong
 
@@ -434,7 +437,7 @@ _toolong:
     rts
 
 DNS_HOST_CHAR_TO_ASCII:
-    sta DEBUG
+    sta TMP0
     cmp #$80
     bcc DNS_HOST_NOT_HIGH_BIT
     and #$7F
@@ -470,6 +473,7 @@ DNS_HOST_NOT_DIGIT:
     cmp #'-'
     beq DNS_HOST_OK_CHAR
 DNS_HOST_BAD_CHAR:
+    lda TMP0
     sec
     rts
 
@@ -559,6 +563,10 @@ DNS_RESOLVE_START:
     sta DNS_RX_HITS
     sta DNS_ARP_WAIT_COUNT
     sta DNS_PARSE_FAILS
+    sta DNS_RAW_RX_COUNT
+    sta DNS_IPV4_RX_COUNT
+    sta DNS_UDP_RX_COUNT
+    sta DNS_NOT_FOR_US_COUNT
     sta DNS_RESULT_IP+0
     sta DNS_RESULT_IP+1
     sta DNS_RESULT_IP+2
@@ -577,7 +585,14 @@ DNS_RESOLVE_START:
 
 _pack_ok:
 
-    inc DNS_CLIENT_PORT_HI          ; <<< move the rotation here
+    inc DNS_CLIENT_PORT_HI
+    lda DNS_CLIENT_PORT_LO
+    clc
+    adc #$3D
+    sta DNS_CLIENT_PORT_LO
+    bcc _dns_port_ok
+    inc DNS_CLIENT_PORT_HI
+_dns_port_ok:
 
     lda #DNS_MAX_RETRIES
     sta DNS_RETRY_LEFT
@@ -678,6 +693,31 @@ _tick_done:
     rts
 
 DNS_FRAME_TICK:
+    jsr ARP_READ_RASTER
+
+    lda ARP_CUR_RASTER_HI
+    cmp DNS_LAST_RASTER_HI
+    bcc _dns_frame_elapsed
+    bne _dns_no_frame
+
+    lda ARP_CUR_RASTER_LO
+    cmp DNS_LAST_RASTER_LO
+    bcc _dns_frame_elapsed
+
+_dns_no_frame:
+    lda ARP_CUR_RASTER_LO
+    sta DNS_LAST_RASTER_LO
+    lda ARP_CUR_RASTER_HI
+    sta DNS_LAST_RASTER_HI
+    clc
+    rts
+
+_dns_frame_elapsed:
+    lda ARP_CUR_RASTER_LO
+    sta DNS_LAST_RASTER_LO
+    lda ARP_CUR_RASTER_HI
+    sta DNS_LAST_RASTER_HI
+
     lda DNS_FRAME_TICKS
     beq _dns_emit_tick
     dec DNS_FRAME_TICKS
@@ -712,14 +752,14 @@ DNS_UDP_IN:
     ; UDP destination port must match our rotating DNS client port.
     ldy ihl
     lda DNS_CLIENT_PORT_HI
-    and #$3F
+    and #$1F
     ora #$C0
     sta expected_port_hi
     lda ETH_RX_FRAME_PAYLOAD+2,y
     cmp expected_port_hi
     bne DNS2_NOT_DNS
     lda ETH_RX_FRAME_PAYLOAD+3,y
-    cmp #$00
+    cmp DNS_CLIENT_PORT_LO
     bne DNS2_NOT_DNS
 
     lda #$11
@@ -794,10 +834,17 @@ DNS2_SRC_CHECK:
     jsr DNS2_READ_BYTE
     sta DNS2_ANS_LEFT
 
-    ; Skip NSCOUNT and ARCOUNT.
-    lda #$04
-    ldx #$00
-    jsr DNS2_SKIP_BYTES
+    ; NSCOUNT.
+    jsr DNS2_READ_BYTE
+    sta DNS2_NS_HI
+    jsr DNS2_READ_BYTE
+    sta DNS2_NS_LEFT
+
+    ; ARCOUNT.
+    jsr DNS2_READ_BYTE
+    sta DNS2_AR_HI
+    jsr DNS2_READ_BYTE
+    sta DNS2_AR_LEFT
 
 DNS2_SKIP_QUESTIONS:
     lda DNS2_QD_LEFT
@@ -865,19 +912,7 @@ DNS2_CHECK_A:
     cmp #$04
     bne DNS2_SKIP_RDATA
 
-    jsr DNS2_READ_BYTE
-    sta DNS_RESULT_IP+0
-    jsr DNS2_READ_BYTE
-    sta DNS_RESULT_IP+1
-    jsr DNS2_READ_BYTE
-    sta DNS_RESULT_IP+2
-    jsr DNS2_READ_BYTE
-    sta DNS_RESULT_IP+3
-    lda #DNS_STATE_DONE
-    sta DNS_STATE
-    lda #$20
-    sta DNS_DEBUG_STAGE
-    rts
+    jmp DNS2_ACCEPT_A
 
 DNS2_CHECK_CNAME:
     lda DNS2_CLASS_HI
@@ -897,15 +932,130 @@ DNS2_SKIP_RDATA:
     dec DNS2_ANS_LEFT
     bne DNS2_ANSWER_LOOP
     lda seen_cname
-    bne DNS2_REQUERY_CNAME
+    bne DNS2_PREP_AUTHORITY
 
 DNS2_FAIL:
     inc DNS_PARSE_FAILS
-    lda #$f0
-    sta DNS_DEBUG_STAGE
     lda #DNS_STATE_FAIL
     sta DNS_STATE
 DNS2_NOT_DNS:
+    rts
+
+DNS2_ACCEPT_A:
+    jsr DNS2_READ_BYTE
+    sta DNS_RESULT_IP+0
+    jsr DNS2_READ_BYTE
+    sta DNS_RESULT_IP+1
+    jsr DNS2_READ_BYTE
+    sta DNS_RESULT_IP+2
+    jsr DNS2_READ_BYTE
+    sta DNS_RESULT_IP+3
+    lda #DNS_STATE_DONE
+    sta DNS_STATE
+    lda #$20
+    sta DNS_DEBUG_STAGE
+    rts
+
+DNS2_PREP_AUTHORITY:
+    lda DNS2_NS_HI
+    beq DNS2_NS_LOW_ONLY
+    lda #$FF
+    sta DNS2_NS_LEFT
+DNS2_NS_LOW_ONLY:
+    lda DNS2_NS_LEFT
+    beq DNS2_PREP_ADDITIONAL
+
+    lda #$17
+    sta DNS_DEBUG_STAGE
+
+DNS2_AUTHORITY_LOOP:
+    jsr DNS2_SKIP_RR
+    bcs DNS2_FAIL
+    dec DNS2_NS_LEFT
+    bne DNS2_AUTHORITY_LOOP
+
+DNS2_PREP_ADDITIONAL:
+    lda DNS2_AR_HI
+    beq DNS2_AR_LOW_ONLY
+    lda #$FF
+    sta DNS2_AR_LEFT
+DNS2_AR_LOW_ONLY:
+    lda DNS2_AR_LEFT
+    beq DNS2_REQUERY_CNAME
+
+    lda #$16
+    sta DNS_DEBUG_STAGE
+
+DNS2_ADDITIONAL_LOOP:
+    jsr DNS2_SKIP_NAME
+    bcs DNS2_FAIL
+
+    jsr DNS2_READ_BYTE
+    sta DNS2_TYPE_HI
+    jsr DNS2_READ_BYTE
+    sta DNS2_TYPE_LO
+    jsr DNS2_READ_BYTE
+    sta DNS2_CLASS_HI
+    jsr DNS2_READ_BYTE
+    sta DNS2_CLASS_LO
+
+    lda #$04
+    ldx #$00
+    jsr DNS2_SKIP_BYTES
+
+    jsr DNS2_READ_BYTE
+    sta DNS2_RDLEN_HI
+    jsr DNS2_READ_BYTE
+    sta DNS2_RDLEN_LO
+
+    lda DNS2_TYPE_HI
+    bne DNS2_SKIP_AR_RDATA
+    lda DNS2_TYPE_LO
+    cmp #$01
+    bne DNS2_SKIP_AR_RDATA
+    lda DNS2_CLASS_HI
+    bne DNS2_SKIP_AR_RDATA
+    lda DNS2_CLASS_LO
+    cmp #$01
+    bne DNS2_SKIP_AR_RDATA
+    lda DNS2_RDLEN_HI
+    bne DNS2_SKIP_AR_RDATA
+    lda DNS2_RDLEN_LO
+    cmp #$04
+    bne DNS2_SKIP_AR_RDATA
+
+    jmp DNS2_ACCEPT_A
+
+DNS2_SKIP_AR_RDATA:
+    lda DNS2_RDLEN_LO
+    ldx DNS2_RDLEN_HI
+    jsr DNS2_SKIP_BYTES
+    dec DNS2_AR_LEFT
+    bne DNS2_ADDITIONAL_LOOP
+    jmp DNS2_REQUERY_CNAME
+
+DNS2_SKIP_RR:
+    jsr DNS2_SKIP_NAME
+    bcs DNS2_SKIP_RR_BAD
+
+    ; TYPE(2) + CLASS(2) + TTL(4)
+    lda #$08
+    ldx #$00
+    jsr DNS2_SKIP_BYTES
+
+    jsr DNS2_READ_BYTE
+    sta DNS2_RDLEN_HI
+    jsr DNS2_READ_BYTE
+    sta DNS2_RDLEN_LO
+
+    lda DNS2_RDLEN_LO
+    ldx DNS2_RDLEN_HI
+    jsr DNS2_SKIP_BYTES
+    clc
+    rts
+
+DNS2_SKIP_RR_BAD:
+    sec
     rts
 
 DNS2_SKIP_NAME:
@@ -1009,6 +1159,10 @@ DNS2_FLAGS_LO:      .byte $00
 DNS2_QD_LEFT:       .byte $00
 DNS2_ANS_HI:        .byte $00
 DNS2_ANS_LEFT:      .byte $00
+DNS2_NS_HI:         .byte $00
+DNS2_NS_LEFT:       .byte $00
+DNS2_AR_HI:         .byte $00
+DNS2_AR_LEFT:       .byte $00
 DNS2_TYPE_HI:       .byte $00
 DNS2_TYPE_LO:       .byte $00
 DNS2_CLASS_HI:      .byte $00

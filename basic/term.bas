@@ -75,9 +75,9 @@
   860 print:input"{wht} - DNS Host Name    :",a$
   870 print:print"{wht} - Resolving host '"+a$+"'";:sys $42063:rreg a : rem dns start a$
   875 if a=0 then print:print"{lred} - Bad host name.{wht}":sleep 3:cursor px,py:goto640
-  880 bt=ti:dp=0
+  880 bt=ti
   890 sys $42024:sys $42036:rreg a       :rem poll and check for reply
-  900 if a=1 then dp=dp+1:if dp>60 then print".";:dp=0
+  900 rem quiet dns wait
   905 if a=1 and ti-bt<600 then 890
   906 if a=1 then print:print"{lred} - Timed out.{wht}":sleep 3:cursor px,py:goto640
   907 if a=0 and ti-bt<600 then 890
@@ -87,10 +87,8 @@
   930 :sys $42033:rreg a,x,y,z:ip(0)=a:ip(1)=x:ip(2)=y:ip(3)=z
   940 :gosub1680:print". Resolved to ";ip$:goto1110
   950 bend
-  960 if a=3 then begin
-  970 :wt=ti-bt:print".";: rem wait time
-  980 :if wt<20 then 890 : rem check again
-  990 :print:print"{lred} - Timed out.{wht}":sleep 3:cursor px,py:goto640
+ 960 if a=3 then begin
+  970 :print:print"{lred} - Lookup failed.{wht}":sleep 3:cursor px,py:goto640
  1000 bend
  1010 rem == validate ip address ===========================================
  1020 ip$="":print:input"{wht} - Remote IP Address:",ip$:x=0
@@ -134,9 +132,9 @@
  1400 rcursor cx,cy:movspr 0,24+(cx*4),50+(cy*8)
  1410 gosub 1630
  1420 get a$:if a$="" then 1470
- 1430 if a$="{CTRL-W}" then print:printxx$:sys $42021:sleep 3:an=0:an$="":goto 640:rem disconnect
+ 1430 if a$="{CTRL-W}" or a$="{f7}" then print:printxx$:sys $42021:sys $4205d:sleep 3:an=0:an$="":goto 640:rem disconnect
  1440 if a$="{f1}" then gosub 1590:goto1470
- 1450 if a$="{f5}" then gosub 1650:goto1470
+ 1450 if a$="{f3}" or a$="{f5}" then gosub 1650:goto1470
  1460 sys$4201b:if ec=1 then printa$;:rcursor cx,cy:movspr 0,24+(cx*4),50+(cy*8)
  1470 sys $4201e:rreg a:if a=0 or a=10 then 1570  : rem get incoming byte
  1480 if a=27 then an=1:goto 1570
@@ -148,7 +146,8 @@
  1540 bend
  1550 print chr$(a);:rcursor cx,cy:movspr 0,24+(cx*4),50+(cy*8)
  1560 ifa=34thenprint chr$(27);chr$(27);
- 1570 sys $42024:rreg a:if a=1 then print:print xx$:sleep 3:an=0:an$="":goto640 : rem status poll
+ 1570 sys $42024:rreg a:if a=0 then 1580 : rem status poll
+ 1575 print:print xx$:sys $42024:sys $4205d:sleep 3:an=0:an$="":goto640
  1580 goto 1420
  1590 rem == switch terminal modes =========================================
  1600 if m=0 then m=1:goto 1620

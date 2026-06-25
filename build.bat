@@ -1,26 +1,30 @@
 @echo off
 cls
-del /q *.bin 2>nul
-del /q *.lst 2>nul
+
+if not exist target mkdir target
+
+del /q target\*.bin 2>nul
+del /q target\*.lst 2>nul
+del /q target\*.prg 2>nul
+del /q target\*.d81 2>nul
+
+rem Remove legacy build outputs from before target\ was used.
+del /q eth.bin 2>nul
+del /q eth.lst 2>nul
 del /q *.prg 2>nul
 del /q megaip.d81 2>nul
 del /q basic\term.prg 2>nul
 del /q basic\webserver.prg 2>nul
-del /q ml-samples\ml-term.prg 2>nul
-del /q ml-samples\ml-term.lst 2>nul
 
-.\64tass.exe .\src\eth.asm --nostart -L eth.lst -o eth.bin
+.\64tass.exe .\src\eth.asm --nostart -L target\eth.lst -o target\eth.bin
 
-.\64tass.exe --cbm-prg .\ml-samples\ml-term.asm -L ml-samples\ml-term.lst -o ml-samples\ml-term.prg
+.\c1541.exe -format megaip,wr d81 target\megaip.d81
 
-.\c1541.exe -format megaip,wr d81 megaip.d81
+.\petcat.exe -w65 -o target\webserver.prg -- basic\webserver.bas
+.\petcat.exe -w65 -o target\term.prg -- basic\term.bas
 
-.\petcat.exe -w65 -o basic\webserver.prg -- basic\webserver.bas
-.\petcat.exe -w65 -o basic\term.prg -- basic\term.bas
-
-.\c1541.exe megaip.d81 -write basic\term.prg term.prg
-.\c1541.exe megaip.d81 -write basic\cursor.bin cursor
-.\c1541.exe megaip.d81 -write basic\webserver.prg webserver.prg
-.\c1541.exe megaip.d81 -write ml-samples\ml-term.prg ml-term.prg
-.\c1541.exe megaip.d81 -write eth.bin
+.\c1541.exe target\megaip.d81 -write target\term.prg term.prg
+.\c1541.exe target\megaip.d81 -write basic\cursor.bin cursor
+.\c1541.exe target\megaip.d81 -write target\webserver.prg webserver.prg
+.\c1541.exe target\megaip.d81 -write target\eth.bin eth.bin
 
