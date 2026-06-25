@@ -118,6 +118,7 @@ is the BASIC `SYS` address.
 | `$4205d` | Force TCP closed | Clears transient session state, keeps DHCP config |
 | `$42060` | Get ABI info | `A/X=major/minor`, feature bits in `Y/Z` |
 | `$42063` | DNS start from `A$` | Non-blocking; `RREG A`, 1 means started |
+| `$42066` | TCP TX idle | `RREG A`, 1 means queue empty and no unacked data |
 
 `$42024` is also the TCP transmit pump. It retires ACKed outbound data,
 retransmits unacknowledged data on a frame-paced timeout, and returns non-zero

@@ -3,7 +3,7 @@
   120 rem = v.01
   130 rem = written by xlar54 and chatgpt :)
   140 rem ===================================================================
-  150 dsave"@web server"          : rem save any changes
+  150 rem startup should not write to the disk image
   160 bload"eth.bin",p($42000),r  : rem load library to bank 4
   170 background 0:border 0       : rem set screen colors
   180 rem == set up screen ==================================================
@@ -24,6 +24,7 @@
   321 rem jmp $43cc
   322 rem  stop
   323 rem poke $4470e,$4c:poke $4470f,$20:poke $44710,$47: rem bypass filters
+  330 sys $42015,1:rem send ascii to browser
   340 print:print" - Listening for connections on port 80"
   350 sys$42039,0,80                           : rem start listener
   360 sys $42024:sys$4202a:sys $4203f:rreg a:  : rem poll listener state
@@ -37,17 +38,34 @@
   440 sys $42009, mh,ml                            : rem random local port
   450 return
   460 rem == send a webpage =============================================
-  470 vc=vc+1:print"..client"
-  480 a$="<html>":sys $4201b
-  490 a$="<body>":sys $4201b
-  500 a$="<h1>a mega65 webserver running from basic!</h1>":sys $4201b
-  510 a$="<p>this is a demo of a simple web server running ":sys $4201b
-  520 a$="on a mega65 personal computer.  The server is ":sys $4201b
-  530 a$="written in basic65, with a machine language networking":sys $4201b
-  540 a$=" library.</p>":sys $4201b
-  550 a$="<p>you are visitor #"+str$(vc)+" to the page.</p>":sys $4201b
-  560 a$="</body>":sys $4201b
-  570 a$="</html>":sys $4201b
-  580 sys $42021:sleep1:rem close connection
-  590 sys $4205d:rem force tcp state closed
-  620 goto 350
+  470 vc=vc+1:print"..client":cr$=chr$(13)+chr$(10):f$="index.html":gosub 900
+  480 if instr(rq$,"/ABOUT.HTML")>0 then f$="about.html"
+  490 sys $42015,1:a$="HTTP/1.0 200 OK"+cr$+"Content-Type: text/html"+cr$+"Connection: close"+cr$+cr$:gosub 700
+  500 sys $42015,0:gosub 800:sys $42015,1
+  510 gosub 730:sys $42021:gosub 730:sleep1:rem close connection
+  520 sys $4205d:rem force tcp state closed
+  530 goto 350
+  700 sys $4201b
+  710 for wt=1 to 3000:sys $42024:sys $42066:rreg a:if a=1 then return
+  720 next wt:return
+  730 for wt=1 to 6000:sys $42024:sys $42066:rreg a:if a=1 then return
+  740 next wt:return
+  800 rem == stream html file in max tcp-sized chunks =======================
+  810 open 2,8,2,f$+",s,r"
+  820 a$=""
+  830 for i=1 to 235
+  840 get#2,b$:if st<>0 then 880
+  850 a$=a$+b$
+  860 next i
+  870 gosub 700:goto 820
+  880 if len(a$)>0 then gosub 700
+  890 close 2:return
+  900 rem == read first http request line ==================================
+  910 rq$=""
+  920 for rt=1 to 800
+  930 sys $42024:sys $4201e:rreg a
+  940 if a=0 then 980
+  950 if a=13 or a=10 then 990
+  960 if len(rq$)<120 then rq$=rq$+chr$(a)
+  980 next rt
+  990 return

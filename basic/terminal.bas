@@ -3,9 +3,9 @@
   120 rem = v.01
   130 rem = written by xlar54 and chatgpt :)
   140 rem ===================================================================
-  150 dsave"@term"                : rem save any changes
+  150 rem startup should not write to the disk image
   160 bload"eth.bin",p($42000),r  : rem load library to bank 4
-  170 sprite load"cursor"         : rem load the cursor sprite
+  170 gosub2490                   : rem install embedded cursor sprite
   180 background 0:border 0       : rem set screen colors
   190 key 1,chr$(133)             : rem redefine f1 to toggle xlate mode
   200 key 3,chr$(135)             : rem redefine f3 to toggle echo mode
@@ -237,6 +237,14 @@
  2430 if x<>3 then x=0:return
  2440 t$="":ct=0
  2450 fort=1tolen(oc$)
- 2460 :if mid$(oc$,t,1)="." then oc(ct)=val(t$):ct=ct+1:t$="":else t$=t$+mid$(oc$,t,1)
- 2470 nextt:oc(ct)=val(t$)
- 2480 x=1:return
+  2460 :if mid$(oc$,t,1)="." then oc(ct)=val(t$):ct=ct+1:t$="":else t$=t$+mid$(oc$,t,1)
+  2470 nextt:oc(ct)=val(t$)
+  2480 x=1:return
+  2490 rem == install 4x8 block cursor sprite ===============================
+  2500 restore 2600
+  2510 for i=0 to 63:read b:poke $0600+i,b:next
+  2520 return
+  2600 data 240,0,0,240,0,0,240,0,0,240,0,0,240,0,0,240
+  2610 data 0,0,240,0,0,240,0,0,0,0,0,0,0,0,0,0
+  2620 data 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+  2630 data 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0

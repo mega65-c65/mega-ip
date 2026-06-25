@@ -94,32 +94,34 @@
    - Send gratuitous ARP after DHCP bind.
    - Replace slot-0 overwrite with a better cache replacement policy.
 
-## Proposed ASM Refactor
+## ASM Refactor
 
-Split the current stack into smaller files once behavior is stable enough to move safely:
+Initial behavior-preserving extraction has started. Keep future moves mechanical:
+same include order, same labels, same fixed `* =` placements, and a clean build after
+each group.
 
-- `src/api.asm`
+- `src/api.asm` - extracted
   Public jump table, BASIC/ML ABI, getters, and setters.
 
 - `src/eth.asm`
   MEGA65 Ethernet controller access, DMA RX/TX, frame send/receive, and MAC filtering.
 
-- `src/ipv4.asm`
+- `src/ipv4.asm` - extracted
   IPv4 parse/validate/build, checksum, total-length checks, and fragment policy.
 
-- `src/tcp.asm`
+- `src/tcp.asm` - partially extracted
   TCP state machine and segment receive handling.
 
-- `src/tcp_tx.asm`
+- `src/tcp_tx.asm` - extracted
   Send queue, ACK retirement, retransmit logic, and peer window handling.
 
 - `src/tcp_seq.asm`
   32-bit modular sequence helpers and segment acceptability tests.
 
-- `src/icmp.asm`
+- `src/icmp.asm` - extracted
   Echo replies and future ICMP error handling.
 
-- `src/rbuf.asm`
+- `src/rbuf.asm` - extracted
   RX ring buffer.
 
 - `src/checksum.asm`

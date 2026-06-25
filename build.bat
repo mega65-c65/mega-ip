@@ -14,6 +14,7 @@ del /q eth.lst 2>nul
 del /q *.prg 2>nul
 del /q megaip.d81 2>nul
 del /q basic\term.prg 2>nul
+del /q basic\terminal.prg 2>nul
 del /q basic\webserver.prg 2>nul
 
 .\64tass.exe .\src\eth.asm --nostart -L target\eth.lst -o target\eth.bin
@@ -21,10 +22,10 @@ del /q basic\webserver.prg 2>nul
 .\c1541.exe -format megaip,wr d81 target\megaip.d81
 
 .\petcat.exe -w65 -o target\webserver.prg -- basic\webserver.bas
-.\petcat.exe -w65 -o target\term.prg -- basic\term.bas
+.\petcat.exe -w65 -o target\terminal.prg -- basic\terminal.bas
 
-.\c1541.exe target\megaip.d81 -write target\term.prg term.prg
-.\c1541.exe target\megaip.d81 -write basic\cursor.bin cursor
-.\c1541.exe target\megaip.d81 -write target\webserver.prg webserver.prg
+.\c1541.exe target\megaip.d81 -write target\terminal.prg terminal
+.\c1541.exe target\megaip.d81 -write target\webserver.prg webserver
 .\c1541.exe target\megaip.d81 -write target\eth.bin eth.bin
-
+.\c1541.exe target\megaip.d81 -write basic\index.html index.html,s
+.\c1541.exe target\megaip.d81 -write basic\about.html about.html,s
