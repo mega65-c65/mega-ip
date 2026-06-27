@@ -75,15 +75,20 @@ _save_last_ack:
     cpx #$04
     bne _save_last_ack
 
-    ldx #$00
-_ack_cmp:
-    lda SEG_ACK,x
-    cmp TX_UNACK_EXPECT_ACK,x
-    bcc _ret
-    bne _acked
-    inx
-    cpx #$04
-    bne _ack_cmp
+    ; RFC-style ACK bounds for stop-and-wait data:
+    ; SND.UNA < SEG.ACK <= SND.NXT, and it must cover this segment.
+    jsr TCP_SEQ_CMP_SEG_ACK_TX_UNACK_SEQ
+    beq _ret
+    bmi _ret
+
+    jsr TCP_SEQ_CMP_SEG_ACK_LOCAL_ISN
+    beq _ack_not_future
+    bmi _ack_not_future
+    rts
+
+_ack_not_future:
+    jsr TCP_SEQ_CMP_SEG_ACK_TX_EXPECT
+    bmi _ret
 
 _acked:
     inc TCP_TX_ACK_MATCH_DBG

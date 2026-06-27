@@ -871,20 +871,9 @@ _not_retx_synack:
     sta RX_COPY_REM_HI
 
     ; ----------------- compare SEG.SEQ vs RCV.NXT (REMOTE_ISN) -----------------
-    lda SEG_SEQ+0
-    cmp REMOTE_ISN+0
-    bne _cmp_done
-    lda SEG_SEQ+1
-    cmp REMOTE_ISN+1
-    bne _cmp_done
-    lda SEG_SEQ+2
-    cmp REMOTE_ISN+2
-    bne _cmp_done
-    lda SEG_SEQ+3
-    cmp REMOTE_ISN+3
-_cmp_done:
-    bcc _seg_in_past         ; SEG.SEQ <  RCV.NXT → overlap on left
-    beq _seg_in_order        ; SEG.SEQ == RCV.NXT → in-order
+    jsr TCP_SEQ_CMP_SEG_SEQ_REMOTE
+    bmi _seg_in_past         ; SEG.SEQ <  RCV.NXT -> overlap on left
+    beq _seg_in_order        ; SEG.SEQ == RCV.NXT -> in-order
     ; SEG.SEQ > RCV.NXT → out-of-order future → dup-ACK current RCV.NXT
 _seg_in_future:
     lda #$00
@@ -1668,6 +1657,7 @@ _IP_found_in_cache:
     clc
     rts
 
+.include "checksum.asm"
 .include "ipv4.asm"
 
 ;=============================================================================
@@ -2812,21 +2802,32 @@ _after_fcs:
     rts
 
 _ge14_ok:
-    ; --- cap to 1614 (0x064E) = 14 hdr + 1600 payload ---
+    ; --- drop frames larger than our 14-byte header + 1600-byte payload buffer ---
     lda _len_msb
     cmp #$06
     bcc _do_copy                 ; < 0x0600 → safe
-    bne _do_cap                  ; > 0x06xx → cap unconditionally
+    bne _drop_oversize
     lda _len_lsb
     cmp #$4E                      ; == 0x06 → check low byte
     bcc _do_copy                 ; <= 0x064D → safe
-_do_cap:
-    lda #$4E
-    sta _len_lsb
-    lda #$06
-    sta _len_msb
+_drop_oversize:
+    lda #$01
+    sta MEGA65_ETH_CTRL2
+    lda #$03
+    sta MEGA65_ETH_CTRL2
+    rts
 
 _do_copy:
+    lda _len_lsb
+    sta ETH_RX_FRAME_LEN_L
+    sec
+    sbc #14
+    sta ETH_RX_PAYLOAD_LEN_L
+    lda _len_msb
+    sta ETH_RX_FRAME_LEN_H
+    sbc #0
+    sta ETH_RX_PAYLOAD_LEN_H
+
     php
     sei
     ; inline DMA to copy ethernet buffer to RX buffer
@@ -2900,6 +2901,9 @@ _call_arp_update_cache:
     jmp ARP_UPDATE_CACHE
 
 _is_ipv4:
+    jsr IPV4_VALIDATE_RX
+    bcs _unknown_packet
+
     lda DNS_STATE
     cmp #DNS_STATE_WAIT
     bne +
@@ -2951,6 +2955,9 @@ _udp_maybe_dns:
     jmp DNS_UDP_IN
 
 _call_incoming_tcp:
+    jsr TCP_RX_CHECKSUM_OK
+    bcs _unknown_packet
+
     inc CONNECT_TCP_DISPATCH_DBG
     lda ETH_RX_FRAME_PAYLOAD
     and #$0F
@@ -3049,19 +3056,6 @@ _restore_done:
 CHAR_TRANSLATE:
     jmp CHAR_TRANSLATE_IMPL
 
-
-    ; --- A-Z (0x41–0x5A) need to become PETSCII lowercase (0xC1–0xDA) ---
-    ora #$80        ; force bit 7 → makes PETSCII lowercase
-
-_check_lower:
-    ; --- a-z (0x61–0x7A) need to become PETSCII uppercase (0x41–0x5A) ---
-    and #$DF        ; clear bit 5 → fold to uppercase
-
-_printable:
-    ; leave digits, symbols, etc. as-is
-
-_no_translate:
-
 ;=============================================================================
 ; Convert outgoing BASIC/PETSCII payload to ASCII when CHARACTER_MODE=1.
 ;=============================================================================
@@ -3099,6 +3093,8 @@ _petscii_maybe_lower:
 
 _petscii_ascii_done:
     rts
+
+.include "tcp_seq.asm"
 
 ;=============================================================================
 ; Temporary Storage
@@ -3148,6 +3144,10 @@ OFF_HI:                 .byte 0
 ETH_RX_TCP_FLAGS:       .byte $00                   ; recieved tcp pack flags
 ETH_TX_LEN_LSB:         .byte $00
 ETH_TX_LEN_MSB:         .byte $00
+ETH_RX_FRAME_LEN_L:     .byte $00                   ; copied Ethernet frame length, excluding FCS
+ETH_RX_FRAME_LEN_H:     .byte $00
+ETH_RX_PAYLOAD_LEN_L:   .byte $00                   ; copied Ethernet payload length, excluding header/FCS
+ETH_RX_PAYLOAD_LEN_H:   .byte $00
 TIME_WAIT_COUNTER_LO:   .byte $58                   ; 2×MSL = 60 s → 600 ticks of 100 ms → 0x0258
 TIME_WAIT_COUNTER_HI:   .byte $02
 CHARACTER_MODE:         .byte $00                   ; $00 = C= gfx (no translation), $01 = ASCII->PETSCII
@@ -3429,6 +3429,7 @@ CHAR_TRANSLATE_IMPL:
     bcc _char_check_lower
     cmp #$5B
     bcs _char_check_lower
+    ora #$80                    ; ASCII A-Z ($41-$5A) -> PETSCII upper ($C1-$DA)
     rts
 
 _char_check_lower:
@@ -3436,8 +3437,7 @@ _char_check_lower:
     bcc _char_printable
     cmp #$7B
     bcs _char_printable
-    and #$DF
-    ora #$80
+    and #$DF                    ; ASCII a-z ($61-$7A) -> PETSCII lower ($41-$5A)
     rts
 
 _char_printable:

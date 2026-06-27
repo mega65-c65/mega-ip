@@ -76,123 +76,156 @@ IPV4_HDR_DST_IP:    .byte $00, $00, $00, $00    ; dest IP address
 ; Routine to calculate the ipv4 checksum
 ;=============================================================================
 CALC_IPV4_CHECKSUM:
-
-    ; clear results
-    lda #$00
-    sta _reslo
-    sta _reshi
-    sta _resex
-
-    ; 1) Zero out the checksum field
     lda #$00
     sta IPV4_HDR_CHKSM
-    lda #$00
     sta IPV4_HDR_CHKSM+1
 
-    ; 3) Sum each of the ten 16-bit words (20 bytes total)
-    ldx #$00                ; counter as we sum bytes
-    ldy #$00                ; Y = offset into IPV4_HEADER (0,2,4,...,18)
+    lda #<IPV4_HEADER
+    sta CHECKSUM_PTR_LO
+    lda #>IPV4_HEADER
+    sta CHECKSUM_PTR_HI
+    lda #20
+    sta CHECKSUM_LEN_LO
+    lda #$00
+    sta CHECKSUM_LEN_HI
+    jsr CHECKSUM_ONES_COMP
 
-_sum_word:
-    lda IPV4_HEADER,Y
-    sta _num1hi
-    iny
-    lda IPV4_HEADER,y
-    sta _num1lo
-    iny
-    lda IPV4_HEADER,Y
-    sta _num2hi
-    iny
-    lda IPV4_HEADER,Y
-    sta _num2lo
-    jsr _addwords
+    lda CHECKSUM_RESULT_HI
+    sta IPV4_HDR_CHKSM
+    lda CHECKSUM_RESULT_LO
+    sta IPV4_HDR_CHKSM+1
+    rts
 
-_loop
-    lda _reslo
-    sta _num1lo
-    lda _reshi
-    sta _num1hi
+;=============================================================================
+; Validate copied inbound IPv4 packet at ETH_RX_FRAME_PAYLOAD.
+; Out: C=0 valid, C=1 invalid/drop.
+;=============================================================================
+IPV4_VALIDATE_RX:
+    ; Ethernet payload must hold the minimum IPv4 header.
+    lda ETH_RX_PAYLOAD_LEN_H
+    bne _ipv4_rx_payload_ge20
+    lda ETH_RX_PAYLOAD_LEN_L
+    cmp #20
+    bcc _ipv4_rx_bad
 
-    iny
-    lda IPV4_HEADER,Y
-    sta _num2hi
-    iny
-    lda IPV4_HEADER,Y
-    sta _num2lo
-    jsr _addwords
+_ipv4_rx_payload_ge20:
+    ; IPv4 version.
+    lda ETH_RX_FRAME_PAYLOAD+0
+    and #$f0
+    cmp #$40
+    bne _ipv4_rx_bad
 
-    inx
-    cpx #$08
-    beq _add_overflow
-    jmp _loop
+    ; IHL is 32-bit words. Minimum IPv4 header is 5 words = 20 bytes.
+    lda ETH_RX_FRAME_PAYLOAD+0
+    and #$0f
+    cmp #5
+    bcc _ipv4_rx_bad
+    asl
+    asl
+    sta IPV4_RX_IHL_BYTES
 
-_add_overflow:
-    lda _reslo               ; add overflow byte 24 back into the result
-    sta _num1lo
-    lda _reshi
-    sta _num1hi
-    lda _resex
+    ; IP total length must be at least IHL.
+    lda ETH_RX_FRAME_PAYLOAD+2
+    sta IPV4_RX_TOTAL_HI
+    lda ETH_RX_FRAME_PAYLOAD+3
+    sta IPV4_RX_TOTAL_LO
+    lda IPV4_RX_TOTAL_HI
+    bne _ipv4_rx_total_ge_ihl
+    lda IPV4_RX_TOTAL_LO
+    cmp IPV4_RX_IHL_BYTES
+    bcc _ipv4_rx_bad
+
+_ipv4_rx_total_ge_ihl:
+    ; IP total length must fit in the copied Ethernet payload.
+    lda ETH_RX_PAYLOAD_LEN_H
+    cmp IPV4_RX_TOTAL_HI
+    bcc _ipv4_rx_bad
+    bne _ipv4_rx_total_in_frame
+    lda ETH_RX_PAYLOAD_LEN_L
+    cmp IPV4_RX_TOTAL_LO
+    bcc _ipv4_rx_bad
+
+_ipv4_rx_total_in_frame:
+    ; No fragment reassembly yet: allow only unfragmented packets. DF is OK.
+    lda ETH_RX_FRAME_PAYLOAD+6
+    and #$bf
+    ora ETH_RX_FRAME_PAYLOAD+7
+    bne _ipv4_rx_bad
+
+    jsr IPV4_RX_CHECKSUM_OK
+    bcs _ipv4_rx_bad
+
     clc
-    adc _num1lo
-    sta _num1lo
-    lda _num1hi
-    adc #$00
-    sta _num1hi
-
-    ; end-around carry if that addition overflowed
-    bcc _ipv4_no_final_carry
-    inc _num1lo
-    bne _ipv4_no_final_carry
-    inc _num1hi
-
-_ipv4_no_final_carry:
-    lda _num1lo              ; move result to 2nd value
-    sta _num2lo
-    lda _num1hi
-    sta _num2hi
-    lda #$ff                ; subtract value from $ffff
-    sta _num1lo
-    sta _num1hi
-    jsr _subwords           ; final in reslo/reshi
-
-    lda _reshi              ; move to header
-    sta IPV4_HDR_CHKSM
-    lda _reslo
-    sta IPV4_HDR_CHKSM+1
     rts
 
-_addwords
-    clc				; clear carry
-	lda _num1lo
-	adc _num2lo
-	sta _reslo			; store sum of LSBs
-	lda _num1hi
-	adc _num2hi			; add the MSBs using carry from
-	sta _reshi			; the previous calculation
-    lda _resex
-    adc #$00
-    sta _resex
+_ipv4_rx_bad:
+    sec
     rts
 
-_subwords:
+;=============================================================================
+; Validate inbound IPv4 header checksum over the received IHL.
+; Out: C=0 checksum OK, C=1 invalid.
+;=============================================================================
+IPV4_RX_CHECKSUM_OK:
     lda #$00
-    sta _reslo
-    sta _reshi
-    sta _resex
+    sta IPV4_RX_SUM_LO
+    sta IPV4_RX_SUM_HI
+    sta IPV4_RX_WORD_HI
+    sta IPV4_RX_WORD_LO
 
-    sec				    ; set carry for borrow purpose
-	lda _num1lo
-	sbc _num2lo			; perform subtraction on the LSBs
-	sta _reslo
-	lda _num1hi			; do the same for the MSBs, with carry
-	sbc _num2hi			; set according to the previous result
-	sta _reshi
-	rts
+    lda IPV4_RX_IHL_BYTES
+    lsr
+    sta IPV4_RX_WORDS_LEFT
+    ldy #$00
 
-_num1lo: .byte $00
-_num1hi: .byte $00
-_num2lo: .byte $00
-_num2hi: .byte $00
-_reslo: .byte $00
-_reshi: .byte $00
-_resex: .byte $00
+_ipv4_rx_sum_loop:
+    lda IPV4_RX_WORDS_LEFT
+    beq _ipv4_rx_sum_done
+
+    lda ETH_RX_FRAME_PAYLOAD,y
+    sta IPV4_RX_WORD_HI
+    iny
+    lda ETH_RX_FRAME_PAYLOAD,y
+    sta IPV4_RX_WORD_LO
+    iny
+
+    clc
+    lda IPV4_RX_SUM_LO
+    adc IPV4_RX_WORD_LO
+    sta IPV4_RX_SUM_LO
+    lda IPV4_RX_SUM_HI
+    adc IPV4_RX_WORD_HI
+    sta IPV4_RX_SUM_HI
+    bcc _ipv4_rx_no_carry
+    inc IPV4_RX_SUM_LO
+    bne _ipv4_rx_no_carry
+    inc IPV4_RX_SUM_HI
+    bne _ipv4_rx_no_carry
+    inc IPV4_RX_SUM_LO
+
+_ipv4_rx_no_carry:
+    dec IPV4_RX_WORDS_LEFT
+    jmp _ipv4_rx_sum_loop
+
+_ipv4_rx_sum_done:
+    lda IPV4_RX_SUM_HI
+    cmp #$ff
+    bne _ipv4_rx_sum_bad
+    lda IPV4_RX_SUM_LO
+    cmp #$ff
+    bne _ipv4_rx_sum_bad
+    clc
+    rts
+
+_ipv4_rx_sum_bad:
+    sec
+    rts
+
+IPV4_RX_IHL_BYTES:  .byte $00
+IPV4_RX_TOTAL_HI:   .byte $00
+IPV4_RX_TOTAL_LO:   .byte $00
+IPV4_RX_WORDS_LEFT: .byte $00
+IPV4_RX_WORD_HI:    .byte $00
+IPV4_RX_WORD_LO:    .byte $00
+IPV4_RX_SUM_HI:     .byte $00
+IPV4_RX_SUM_LO:     .byte $00

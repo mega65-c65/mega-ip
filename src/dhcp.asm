@@ -64,13 +64,6 @@ DHCP_OPTS_BASE_LO           .byte 0
 DHCP_OPTS_BASE_HI           .byte 0
 DHCP_OPTS_MAXY              .byte 0
 pl_len:                     .byte 0,0
-n2hi:                       .byte 0
-n2lo:                       .byte 0
-sum_hi:                     .byte 0
-sum_lo:                     .byte 0
-sum_ex:                     .byte 0
-rem_lo:                     .byte 0
-rem_hi:                     .byte 0
 opt_mask:                   .byte 0,0,0,0
 opt_router:                 .byte 0,0,0,0
 opt_dns:                    .byte 0,0,0,0
@@ -682,68 +675,23 @@ UDP_WRITE_LENGTH_AND_CHECKSUM:
 ;=============================================================================
 UDP_CALC_IPHDR_CHECKSUM:
     lda #$00
-    sta sum_hi
-    sta sum_lo
-    sta sum_ex
-    ldy #0
-    ldx #10            ; 10 words
-_lpih:
-    lda ETH_TX_FRAME_PAYLOAD,y      ; hi
-    sta n2hi
-    iny
-    lda ETH_TX_FRAME_PAYLOAD,y      ; lo
-    sta n2lo
-    iny
-    jsr sum_add
-    dex
-    bne _lpih
-    jsr sum_fold_ffff
-    lda sum_hi
     sta ETH_TX_FRAME_PAYLOAD+10
-    lda sum_lo
     sta ETH_TX_FRAME_PAYLOAD+11
-    rts
 
-; ---- 16-bit adder with carry tracking (sum_lo/sum_hi/sum_ex) ----
-sum_add:
-    clc
-    lda sum_lo
-    adc n2lo
-    sta sum_lo
-    lda sum_hi
-    adc n2hi
-    sta sum_hi
-    lda sum_ex
-    adc #$00
-    sta sum_ex
-    rts
+    lda #<ETH_TX_FRAME_PAYLOAD
+    sta CHECKSUM_PTR_LO
+    lda #>ETH_TX_FRAME_PAYLOAD
+    sta CHECKSUM_PTR_HI
+    lda #20
+    sta CHECKSUM_LEN_LO
+    lda #$00
+    sta CHECKSUM_LEN_HI
+    jsr CHECKSUM_ONES_COMP
 
-sum_fold_ffff:
-    ; add overflow byte back in, then 1's complement
-    lda sum_lo
-    sta n2lo
-    lda sum_hi
-    sta n2hi
-    lda sum_ex
-    clc
-    adc n2lo
-    sta n2lo
-    lda n2hi
-    adc #$00
-    sta n2hi
-    ; end-around carry if needed
-    bcc +
-    inc n2lo
-    bne +
-    inc n2hi
-+
-    lda #$ff
-    sec
-    sbc n2hi
-    sta sum_hi
-    lda #$ff
-    sbc n2lo
-    sta sum_lo
+    lda CHECKSUM_RESULT_HI
+    sta ETH_TX_FRAME_PAYLOAD+10
+    lda CHECKSUM_RESULT_LO
+    sta ETH_TX_FRAME_PAYLOAD+11
     rts
 
 

@@ -23,9 +23,11 @@ del /q basic\webserver.prg 2>nul
 
 .\petcat.exe -w65 -o target\webserver.prg -- basic\webserver.bas
 .\petcat.exe -w65 -o target\terminal.prg -- basic\terminal.bas
+.\petcat.exe -w65 -o target\irc.prg -- basic\irc.bas
 
 .\c1541.exe target\megaip.d81 -write target\terminal.prg terminal
 .\c1541.exe target\megaip.d81 -write target\webserver.prg webserver
+.\c1541.exe target\megaip.d81 -write target\irc.prg irc
 .\c1541.exe target\megaip.d81 -write target\eth.bin eth.bin
 .\c1541.exe target\megaip.d81 -write basic\index.html index.html,s
 .\c1541.exe target\megaip.d81 -write basic\about.html about.html,s

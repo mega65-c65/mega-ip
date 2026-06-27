@@ -2,44 +2,59 @@
 
 ## High Priority
 
-1. Add a real inbound IPv4 validation layer.
-   - Validate version/IHL.
-   - Validate IPv4 total length against the actual captured frame length.
-   - Verify IPv4 header checksum.
-   - Drop fragments unless/until reassembly is implemented.
-   - Use this to protect ICMP, DNS, DHCP, and TCP from malformed packet lengths.
+1. Add RFC 793 TCP segment acceptability checks.
+   - Validate incoming segment sequence numbers against `RCV.NXT` and the receive window.
+   - Keep duplicate/past segment ACK behavior.
+   - Decide how much out-of-order support is worth implementing for this stack.
 
-2. Verify inbound TCP checksums.
-   - Drop bad TCP segments before they affect state.
-   - Do not ACK, reset, or copy payload from a segment with a bad checksum.
-
-3. Fix TCP sequence and ACK comparisons.
-   - Use modular 32-bit sequence comparisons.
-   - Enforce ACK bounds, including `SEG.ACK <= SND.NXT`.
-   - Add RFC 793 segment acceptability checks against `RCV.NXT` and the receive window.
-
-4. Make RST handling RFC-safe.
+2. Make RST handling RFC-safe.
    - Do not accept blind RSTs.
    - Validate RST sequence numbers before tearing down a connection.
    - Emit RST for closed or unmatched TCP segments where appropriate.
 
-5. Add intentional ISN generation.
+3. Add intentional ISN generation.
    - Restore randomness intentionally, not as unused dead code.
    - Mix a hardware/random source with timer/raster state and connection tuple data.
    - Use it for both active open and passive open.
 
-6. Store the actual RX frame length globally.
-   - Make the copied frame length available to IPv4, ICMP, DNS, DHCP, and TCP.
-   - Use it for all bounds checks.
-
-7. Implement DHCP lease lifecycle.
+4. Implement DHCP lease lifecycle.
    - Use option 51 lease time.
    - Add T1/T2 renewal and rebind behavior.
    - Preserve the currently stable DHCP path while adding this.
 
-8. Update ARP cache from ARP requests.
+5. Update ARP cache from ARP requests.
    - Merge sender SHA/SPA from ARP requests into the cache before replying.
    - This follows RFC 826 behavior.
+
+## Completed
+
+1. Added accepted RX frame length storage.
+   - Stores copied Ethernet frame length excluding FCS.
+   - Stores copied Ethernet payload length for protocol bounds checks.
+   - Drops over-buffer Ethernet frames instead of parsing truncated data.
+
+2. Added a real inbound IPv4 validation layer.
+   - Validates version/IHL.
+   - Validates IPv4 total length against the copied Ethernet payload length.
+   - Verifies IPv4 header checksum.
+   - Drops fragments unless/until reassembly is implemented.
+   - Gates ICMP, DNS, DHCP, and TCP dispatch behind this validation.
+
+3. Added inbound TCP checksum verification.
+   - Verifies pseudo-header, TCP header, options, and payload checksum.
+   - Bounds TCP header length against the validated IPv4 total length.
+   - Drops bad TCP segments before they affect TCP state or buffers.
+
+4. Added modular TCP sequence comparison helpers.
+   - Added `src/tcp_seq.asm` in the fixed gap before the BASIC-visible data block.
+   - Uses signed 32-bit sequence deltas for `SEG.SEQ` vs `RCV.NXT`.
+   - Uses bounded ACK retirement: `SND.UNA < SEG.ACK <= SND.NXT`.
+   - Retires pending data only when the ACK covers the pending segment.
+
+5. Centralized IPv4 header checksum generation.
+   - Added `src/checksum.asm` with a shared one's-complement checksum helper.
+   - `ipv4.asm` and DHCP IPv4-header checksum generation now use the shared helper.
+   - Removed DHCP's duplicate local IPv4 checksum adder/folder scratch code.
 
 ## Medium Priority
 
@@ -115,8 +130,8 @@ each group.
 - `src/tcp_tx.asm` - extracted
   Send queue, ACK retirement, retransmit logic, and peer window handling.
 
-- `src/tcp_seq.asm`
-  32-bit modular sequence helpers and segment acceptability tests.
+- `src/tcp_seq.asm` - extracted
+   32-bit modular sequence helpers and segment acceptability tests.
 
 - `src/icmp.asm` - extracted
   Echo replies and future ICMP error handling.
@@ -124,17 +139,14 @@ each group.
 - `src/rbuf.asm` - extracted
   RX ring buffer.
 
-- `src/checksum.asm`
-  Shared checksum helpers for IP, TCP, UDP, and ICMP.
+- `src/checksum.asm` - extracted
+  Shared one's-complement checksum helper. IPv4 and DHCP header checksums use it.
 
 - Keep existing focused modules:
   `src/arp.asm`, `src/dns.asm`, `src/dhcp.asm`, `src/macros.asm`, and `src/mega65.asm`.
 
 Suggested order:
 
-1. Extract files without behavior changes.
-2. Add inbound IPv4 validation.
-3. Add inbound TCP checksum verification.
-4. Add modular TCP sequence helpers.
-5. Harden RST and TCP segment acceptability.
-6. Revisit DHCP lease renewal and DNS bounds checks.
+1. Harden RST and TCP segment acceptability.
+2. Revisit TCP close-state ACK validation.
+3. Revisit DHCP lease renewal and DNS bounds checks.

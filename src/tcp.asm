@@ -235,3 +235,197 @@ _chk_sip:
 
 _drop:
     rts
+
+;=============================================================================
+; Validate inbound TCP checksum over pseudo-header + TCP segment.
+; Out: C=0 valid, C=1 invalid/drop.
+;=============================================================================
+TCP_RX_CHECKSUM_OK:
+    lda #$00
+    sta TCP_RX_SUM_LO
+    sta TCP_RX_SUM_HI
+    sta TCP_RX_WORD_HI
+    sta TCP_RX_WORD_LO
+
+    ; TCP length = IPv4 total length - IPv4 header length.
+    lda IPV4_RX_TOTAL_LO
+    sec
+    sbc IPV4_RX_IHL_BYTES
+    sta TCP_RX_LEN_LO
+    lda IPV4_RX_TOTAL_HI
+    sbc #$00
+    sta TCP_RX_LEN_HI
+    bcs _tcp_rx_len_nonnegative
+    jmp _tcp_rx_bad
+
+_tcp_rx_len_nonnegative:
+    lda TCP_RX_LEN_HI
+    bne _tcp_rx_len_ge_min
+    lda TCP_RX_LEN_LO
+    cmp #20
+    bcc _tcp_rx_bad
+
+_tcp_rx_len_ge_min:
+    ; TCP segment pointer = IP payload base + IHL.
+    lda #<ETH_RX_FRAME_PAYLOAD
+    clc
+    adc IPV4_RX_IHL_BYTES
+    sta TCP_RX_PTR_LO
+    lda #>ETH_RX_FRAME_PAYLOAD
+    adc #$00
+    sta TCP_RX_PTR_HI
+
+    ; TCP data offset must be at least 20 bytes and fit within TCP length.
+    lda TCP_RX_PTR_LO
+    clc
+    adc #12
+    sta _tcp_rx_offset_read+1
+    lda TCP_RX_PTR_HI
+    adc #$00
+    sta _tcp_rx_offset_read+2
+_tcp_rx_offset_read:
+    lda $ffff
+    and #$f0
+    lsr
+    lsr
+    lsr
+    lsr
+    asl
+    asl
+    sta TCP_RX_HDR_LEN
+    cmp #20
+    bcc _tcp_rx_bad
+
+    lda TCP_RX_LEN_HI
+    bne _tcp_rx_hdr_fits
+    lda TCP_RX_LEN_LO
+    cmp TCP_RX_HDR_LEN
+    bcc _tcp_rx_bad
+
+_tcp_rx_hdr_fits:
+    ; Pseudo-header: source IP.
+    lda ETH_RX_FRAME_PAYLOAD+12
+    sta TCP_RX_WORD_HI
+    lda ETH_RX_FRAME_PAYLOAD+13
+    sta TCP_RX_WORD_LO
+    jsr TCP_RX_ADD_WORD
+    lda ETH_RX_FRAME_PAYLOAD+14
+    sta TCP_RX_WORD_HI
+    lda ETH_RX_FRAME_PAYLOAD+15
+    sta TCP_RX_WORD_LO
+    jsr TCP_RX_ADD_WORD
+
+    ; Pseudo-header: destination IP.
+    lda ETH_RX_FRAME_PAYLOAD+16
+    sta TCP_RX_WORD_HI
+    lda ETH_RX_FRAME_PAYLOAD+17
+    sta TCP_RX_WORD_LO
+    jsr TCP_RX_ADD_WORD
+    lda ETH_RX_FRAME_PAYLOAD+18
+    sta TCP_RX_WORD_HI
+    lda ETH_RX_FRAME_PAYLOAD+19
+    sta TCP_RX_WORD_LO
+    jsr TCP_RX_ADD_WORD
+
+    ; Pseudo-header: zero + protocol.
+    lda #$00
+    sta TCP_RX_WORD_HI
+    lda #IP_PROTO_TCP
+    sta TCP_RX_WORD_LO
+    jsr TCP_RX_ADD_WORD
+
+    ; Pseudo-header: TCP length.
+    lda TCP_RX_LEN_HI
+    sta TCP_RX_WORD_HI
+    lda TCP_RX_LEN_LO
+    sta TCP_RX_WORD_LO
+    jsr TCP_RX_ADD_WORD
+
+    ; Sum TCP segment, padding odd byte with zero.
+_tcp_rx_sum_loop:
+    lda TCP_RX_LEN_HI
+    ora TCP_RX_LEN_LO
+    beq _tcp_rx_sum_done
+
+    jsr TCP_RX_READ_BYTE
+    sta TCP_RX_WORD_HI
+    jsr TCP_RX_DEC_LEN
+
+    lda TCP_RX_LEN_HI
+    ora TCP_RX_LEN_LO
+    beq _tcp_rx_odd_byte
+
+    jsr TCP_RX_READ_BYTE
+    sta TCP_RX_WORD_LO
+    jsr TCP_RX_DEC_LEN
+    bra _tcp_rx_add_segment_word
+
+_tcp_rx_odd_byte:
+    lda #$00
+    sta TCP_RX_WORD_LO
+
+_tcp_rx_add_segment_word:
+    jsr TCP_RX_ADD_WORD
+    bra _tcp_rx_sum_loop
+
+_tcp_rx_sum_done:
+    lda TCP_RX_SUM_HI
+    cmp #$ff
+    bne _tcp_rx_bad
+    lda TCP_RX_SUM_LO
+    cmp #$ff
+    bne _tcp_rx_bad
+    clc
+    rts
+
+_tcp_rx_bad:
+    sec
+    rts
+
+TCP_RX_READ_BYTE:
+    lda TCP_RX_PTR_LO
+    sta _tcp_rx_read_abs+1
+    lda TCP_RX_PTR_HI
+    sta _tcp_rx_read_abs+2
+_tcp_rx_read_abs:
+    lda $ffff
+    inc TCP_RX_PTR_LO
+    bne _tcp_rx_read_done
+    inc TCP_RX_PTR_HI
+_tcp_rx_read_done:
+    rts
+
+TCP_RX_DEC_LEN:
+    lda TCP_RX_LEN_LO
+    bne _tcp_rx_dec_low
+    dec TCP_RX_LEN_HI
+_tcp_rx_dec_low:
+    dec TCP_RX_LEN_LO
+    rts
+
+TCP_RX_ADD_WORD:
+    clc
+    lda TCP_RX_SUM_LO
+    adc TCP_RX_WORD_LO
+    sta TCP_RX_SUM_LO
+    lda TCP_RX_SUM_HI
+    adc TCP_RX_WORD_HI
+    sta TCP_RX_SUM_HI
+    bcc _tcp_rx_add_done
+    inc TCP_RX_SUM_LO
+    bne _tcp_rx_add_done
+    inc TCP_RX_SUM_HI
+    bne _tcp_rx_add_done
+    inc TCP_RX_SUM_LO
+_tcp_rx_add_done:
+    rts
+
+TCP_RX_LEN_LO:  .byte $00
+TCP_RX_LEN_HI:  .byte $00
+TCP_RX_PTR_LO:  .byte $00
+TCP_RX_PTR_HI:  .byte $00
+TCP_RX_HDR_LEN: .byte $00
+TCP_RX_WORD_HI: .byte $00
+TCP_RX_WORD_LO: .byte $00
+TCP_RX_SUM_HI:  .byte $00
+TCP_RX_SUM_LO:  .byte $00
