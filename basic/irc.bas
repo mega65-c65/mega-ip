@@ -21,7 +21,7 @@
 250 rem == gather connection settings ==
 255 print:pp$=" - Server: ":df$="irc.libera.chat":gosub 1360:sv$=an$
 260 pp$=" - Port: ":df$="6667":gosub 1360:po$=an$
-265 pp$=" - Channel (Optional): ":df$="":gosub 1360:ch$=an$
+265 pp$=" - Channel (Optional): ":df$="#mega65":gosub 1360:ch$=an$
 270 pp$=" - Nick: ":df$="":gosub 1360:nk$=an$:if nk$="" then 270
 275 pp$=" - NickServ Pwd (Optional) : ":df$="":mk=1:gosub 1360:pw$=an$:mk=0
 300 rem == resolve the server name ==
