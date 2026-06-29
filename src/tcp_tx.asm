@@ -66,6 +66,8 @@ TCP_TX_ACK_CHECK:
     lda ETH_RX_TCP_FLAGS
     and #TCP_FLAG_ACK
     beq _ret
+    jsr TCP_SEQ_CMP_SEG_SEQ_REMOTE
+    bne _ret
     inc TCP_TX_ACK_SEEN_DBG
     ldx #$00
 _save_last_ack:
