@@ -59,4 +59,9 @@ foreach ($file in Get-ChildItem -Path "src" -Filter "*.asm") {
     }
 }
 
+$ringStorage = Select-String -Path "src\*.asm" -Pattern '^\s*RING_BUFFER:\s*$'
+if ($ringStorage) {
+    Fail-Layout ("RX ring payload must stay in bank 5, not assembled into bank 4 ({0}: {1})." -f $ringStorage[0].Path, $ringStorage[0].LineNumber)
+}
+
 Write-Output ("Layout OK (DEBUG={0}): API `$2000-`${1:x4}, state/buffers/runtime `$2100-`${2:x4}, helper tables preserved." -f $Debug, $api.End, $runtime.End)

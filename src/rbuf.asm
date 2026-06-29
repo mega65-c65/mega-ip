@@ -45,19 +45,22 @@ _full:
     rts
 
 _not_full:
-    ; 2k buffer in bank 5
-    ; write data at page(HHI) : offset(HLO)
-    ldy HLO
-    lda #<RING_BUFFER
-    sta _rbuf_sta+1
-    lda #>RING_BUFFER
+    ; 2 KB RX ring payload lives in physical bank 5.  Build a 28-bit
+    ; pointer to RING_BUFFER_BASE + (HHI << 8), then index by HLO.
+    lda #<RING_BUFFER_BASE
+    sta RBUF_PTR_LO
+    lda #>RING_BUFFER_BASE
     clc
-    adc HHI                      ; select page 0..7
-    sta _rbuf_sta+2
+    adc HHI
+    sta RBUF_PTR_HI
+    lda #RING_BUFFER_BANK
+    sta RBUF_PTR_BANK
+    lda #RING_BUFFER_BANK_HI
+    sta RBUF_PTR_TOP
 
+    ldz HLO
     pla                          ; A = data byte
-_rbuf_sta:
-    .byte $99, $00, $00          ; STA abs,Y (patched above)
+    sta [RBUF_PTR_LO],z
 
 _pub:
     ; publish head = next
@@ -90,17 +93,20 @@ RBUF_GET:
     beq _empty
 
 _not_empty:
-    ; ---- read A from RING_BUFFER + (TAIL_HI<<8) + TAIL_LO ----
-    ldy RBUF_TAIL_LO
-    lda #<RING_BUFFER
-    sta _rbuf_lda+1
-    lda #>RING_BUFFER
+    ; Read from physical bank-5 RING_BUFFER_BASE + (TAIL_HI << 8) + TAIL_LO.
+    lda #<RING_BUFFER_BASE
+    sta RBUF_PTR_LO
+    lda #>RING_BUFFER_BASE
     clc
-    adc RBUF_TAIL_HI
-    sta _rbuf_lda+2
+    adc RBUF_TAIL_HI             ; select page 0..7
+    sta RBUF_PTR_HI
+    lda #RING_BUFFER_BANK
+    sta RBUF_PTR_BANK
+    lda #RING_BUFFER_BANK_HI
+    sta RBUF_PTR_TOP
 
-_rbuf_lda:
-    .byte $B9, $00, $00          ; LDA abs,Y (patched above)
+    ldz RBUF_TAIL_LO
+    lda [RBUF_PTR_LO],z
     pha
 
     ; tail = tail + 1 (11-bit)

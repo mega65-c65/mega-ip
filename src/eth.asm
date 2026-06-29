@@ -82,6 +82,13 @@ ICMP_TYPE_ECHO_REQUEST      = $08
 ; This code is loaded to bank 4, starting at $2000 (BLOAD"eth.bin",P($42000),R)
 ; The reason is so that the standard MAP for BASIC remains in effect.
 EXEC_BANK = $04     ; code is running from $42000
+RING_BUFFER_BANK = $05
+RING_BUFFER_BANK_HI = $00
+RING_BUFFER_BASE = $0000
+RBUF_PTR_LO = $fb
+RBUF_PTR_HI = $fc
+RBUF_PTR_BANK = $fd
+RBUF_PTR_TOP = $fe
 ; Build with -D DEBUG=1 for diagnostics or -D DEBUG=0 for production.
 STATE_BLOCK_BASE = $2100
 ML_EXTENSION_TABLE_BASE = $7000
@@ -94,7 +101,7 @@ BASIC_DEBUG_TABLE_BASE = $7200
 ;=============================================================================
 ; PEEK-visible state and packet buffers
 ;=============================================================================
-; BASIC-facing state comes first, followed by the large packet/ring/TX buffers.
+; BASIC-facing state comes first, followed by the large packet/TX buffers.
 ; Keep this block directly after the public jump table unless callers are updated.
 * = STATE_BLOCK_BASE
 LOCAL_IP:               .byte 192, 168, 1, 75
@@ -226,12 +233,10 @@ RX_CANARY:
 TCP_RX_DATA_PAYLOAD_SIZE:
     .byte $00, $00
 
-;=============================================================================
-; INCOMING DATA RING BUFFER
-;=============================================================================
-
-RING_BUFFER:
-    .fill 2048, $00
+; The incoming data ring payload lives in physical bank 5 at
+; RING_BUFFER_BANK:RING_BUFFER_BASE. Only the head/tail indexes stay here.
+; RBUF_PUT/RBUF_GET access the payload with 28-bit [$fb],z addressing, which
+; avoids changing BASIC's MAP and reclaims the 2 KB payload from bank 4.
 
 ;=============================================================================
 ; OUTGOING TCP DATA QUEUE
