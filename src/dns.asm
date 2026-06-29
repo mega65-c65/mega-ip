@@ -783,6 +783,24 @@ DNS2_SRC_CHECK:
 
     lda #$12
     sta DNS_DEBUG_STAGE
+    lda #$00
+    sta DNS2_BOUNDS_FAIL
+
+    ; DNS payload length = UDP length - 8 byte UDP header.
+    lda ETH_RX_FRAME_PAYLOAD+UDP_HDR_LEN_LO,y
+    sec
+    sbc #UDP_DATA_BASE
+    sta DNS2_SKIP_LO
+    lda ETH_RX_FRAME_PAYLOAD+UDP_HDR_LEN_HI,y
+    sbc #$00
+    bcc DNS2_FAIL
+    sta DNS2_SKIP_HI
+    bne DNS2_UDP_LEN_OK
+    lda DNS2_SKIP_LO
+    cmp #$0c
+    bcc DNS2_FAIL
+
+DNS2_UDP_LEN_OK:
     ; Reader base = first byte of DNS payload.
     lda #<ETH_RX_FRAME_PAYLOAD+UDP_DATA_BASE
     clc
@@ -793,6 +811,13 @@ DNS2_SRC_CHECK:
     adc #$00
     sta DNS2_BASE_HI
     sta DNS2_RD_HI
+    lda DNS2_BASE_LO
+    clc
+    adc DNS2_SKIP_LO
+    sta DNS2_END_LO
+    lda DNS2_BASE_HI
+    adc DNS2_SKIP_HI
+    sta DNS2_END_HI
 
     ; Transaction ID.
     jsr DNS2_READ_BYTE
@@ -854,6 +879,7 @@ DNS2_SKIP_QUESTIONS:
     lda #$04
     ldx #$00
     jsr DNS2_SKIP_BYTES
+    bcs DNS2_FAIL
     dec DNS2_QD_LEFT
     jmp DNS2_SKIP_QUESTIONS
 
@@ -886,6 +912,7 @@ DNS2_ANSWER_LOOP:
     lda #$04
     ldx #$00
     jsr DNS2_SKIP_BYTES
+    bcs DNS2_FAIL
 
     jsr DNS2_READ_BYTE
     sta DNS2_RDLEN_HI
@@ -929,6 +956,7 @@ DNS2_SKIP_RDATA:
     lda DNS2_RDLEN_LO
     ldx DNS2_RDLEN_HI
     jsr DNS2_SKIP_BYTES
+    bcs DNS2_FAIL
     dec DNS2_ANS_LEFT
     bne DNS2_ANSWER_LOOP
     lda seen_cname
@@ -950,6 +978,8 @@ DNS2_ACCEPT_A:
     sta DNS_RESULT_IP+2
     jsr DNS2_READ_BYTE
     sta DNS_RESULT_IP+3
+    lda DNS2_BOUNDS_FAIL
+    bne DNS2_FAIL
     lda #DNS_STATE_DONE
     sta DNS_STATE
     lda #$20
@@ -1002,6 +1032,7 @@ DNS2_ADDITIONAL_LOOP:
     lda #$04
     ldx #$00
     jsr DNS2_SKIP_BYTES
+    bcs DNS2_FAIL
 
     jsr DNS2_READ_BYTE
     sta DNS2_RDLEN_HI
@@ -1030,6 +1061,7 @@ DNS2_SKIP_AR_RDATA:
     lda DNS2_RDLEN_LO
     ldx DNS2_RDLEN_HI
     jsr DNS2_SKIP_BYTES
+    bcs DNS2_FAIL
     dec DNS2_AR_LEFT
     bne DNS2_ADDITIONAL_LOOP
     jmp DNS2_REQUERY_CNAME
@@ -1042,6 +1074,7 @@ DNS2_SKIP_RR:
     lda #$08
     ldx #$00
     jsr DNS2_SKIP_BYTES
+    bcs DNS2_SKIP_RR_BAD
 
     jsr DNS2_READ_BYTE
     sta DNS2_RDLEN_HI
@@ -1051,6 +1084,9 @@ DNS2_SKIP_RR:
     lda DNS2_RDLEN_LO
     ldx DNS2_RDLEN_HI
     jsr DNS2_SKIP_BYTES
+    bcs DNS2_SKIP_RR_BAD
+    lda DNS2_BOUNDS_FAIL
+    bne DNS2_SKIP_RR_BAD
     clc
     rts
 
@@ -1082,11 +1118,14 @@ DNS2_NAME_LABEL:
     beq DNS2_NAME_BAD
     ldx #$00
     jsr DNS2_SKIP_BYTES
+    bcs DNS2_NAME_BAD
     jmp DNS2_NAME_LOOP
 
 DNS2_NAME_POINTER:
     jsr DNS2_READ_BYTE
 DNS2_NAME_DONE:
+    lda DNS2_BOUNDS_FAIL
+    bne DNS2_NAME_BAD
     clc
     rts
 
@@ -1097,23 +1136,54 @@ DNS2_NAME_BAD:
 DNS2_SKIP_BYTES:
     sta DNS2_SKIP_LO
     stx DNS2_SKIP_HI
-DNS2_SKIP_LOOP:
-    lda DNS2_SKIP_LO
-    ora DNS2_SKIP_HI
+    lda DNS2_RD_LO
+    clc
+    adc DNS2_SKIP_LO
+    sta DNS2_PTR_LO
+    lda DNS2_RD_HI
+    adc DNS2_SKIP_HI
+    bcs DNS2_SKIP_BAD
+    sta DNS2_PTR_HI
+    lda DNS2_PTR_HI
+    cmp DNS2_END_HI
+    bcc DNS2_SKIP_DONE
+    bne DNS2_SKIP_BAD
+    lda DNS2_PTR_LO
+    cmp DNS2_END_LO
     beq DNS2_SKIP_DONE
-    jsr DNS2_ADV_PTR
-    lda DNS2_SKIP_LO
-    bne DNS2_SKIP_DEC_LO
-    dec DNS2_SKIP_HI
-DNS2_SKIP_DEC_LO:
-    dec DNS2_SKIP_LO
-    jmp DNS2_SKIP_LOOP
+    bcs DNS2_SKIP_BAD
 
 DNS2_SKIP_DONE:
+    lda DNS2_PTR_LO
+    sta DNS2_RD_LO
+    lda DNS2_PTR_HI
+    sta DNS2_RD_HI
     clc
     rts
 
+DNS2_SKIP_BAD:
+    lda #$01
+    sta DNS2_BOUNDS_FAIL
+    sec
+    rts
+
 DNS2_READ_BYTE:
+    lda DNS2_RD_HI
+    cmp DNS2_END_HI
+    bcc DNS2_READ_OK
+    bne DNS2_READ_BAD
+    lda DNS2_RD_LO
+    cmp DNS2_END_LO
+    bcc DNS2_READ_OK
+
+DNS2_READ_BAD:
+    lda #$01
+    sta DNS2_BOUNDS_FAIL
+    lda #$00
+    sec
+    rts
+
+DNS2_READ_OK:
     lda DNS2_RD_LO
     sta DNS2_READ_ABS+1
     lda DNS2_RD_HI
@@ -1121,15 +1191,12 @@ DNS2_READ_BYTE:
 DNS2_READ_ABS:
     lda $ffff
     pha
-    jsr DNS2_ADV_PTR
-    pla
-    rts
-
-DNS2_ADV_PTR:
     inc DNS2_RD_LO
-    bne DNS2_ADV_DONE
+    bne DNS2_READ_ADV_DONE
     inc DNS2_RD_HI
-DNS2_ADV_DONE:
+DNS2_READ_ADV_DONE:
+    pla
+    clc
     rts
 
 ; Legacy self-modifying DNS parser removed. DNS2 uses explicit reader pointers so page wraps do not mutate the DNS message base.
@@ -1154,6 +1221,8 @@ DNS2_BASE_LO:       .byte $00
 DNS2_BASE_HI:       .byte $00
 DNS2_RD_LO:         .byte $00
 DNS2_RD_HI:         .byte $00
+DNS2_END_LO:        .byte $00
+DNS2_END_HI:        .byte $00
 DNS2_FLAGS_HI:      .byte $00
 DNS2_FLAGS_LO:      .byte $00
 DNS2_QD_LEFT:       .byte $00
@@ -1171,6 +1240,9 @@ DNS2_RDLEN_HI:      .byte $00
 DNS2_RDLEN_LO:      .byte $00
 DNS2_SKIP_LO:       .byte $00
 DNS2_SKIP_HI:       .byte $00
+DNS2_PTR_LO:        .byte $00
+DNS2_PTR_HI:        .byte $00
+DNS2_BOUNDS_FAIL:   .byte $00
 DNS2_NAME_GUARD:    .byte $00
 DNS2_NAME_LO:       .byte $00
 DNS2_NAME_HI:       .byte $00
