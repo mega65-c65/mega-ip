@@ -1,9 +1,7 @@
 ;=============================================================================
 ; ICMP echo reply
 ;=============================================================================
-; Keep this compact block in the free gap before the TCP handler. It handles
-; ordinary IPv4 echo requests only: no IP options and no fragments.
-* = $682c
+; Handles ordinary IPv4 echo requests only: no IP options and no fragments.
 ICMP_ECHO_REPLY:
     ; IPv4, IHL=5 only.
     lda ETH_RX_FRAME_PAYLOAD+0

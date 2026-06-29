@@ -82,8 +82,255 @@ ICMP_TYPE_ECHO_REQUEST      = $08
 ; This code is loaded to bank 4, starting at $2000 (BLOAD"eth.bin",P($42000),R)
 ; The reason is so that the standard MAP for BASIC remains in effect.
 EXEC_BANK = $04     ; code is running from $42000
+; Build with -D DEBUG=1 for diagnostics or -D DEBUG=0 for production.
+STATE_BLOCK_BASE = $2100
+ML_EXTENSION_TABLE_BASE = $7000
+ML_CALL_STAGING_BASE = $71c0
+BASIC_DEBUG_TABLE_BASE = $7200
 
 .include "api.asm"
+.cerror * > STATE_BLOCK_BASE, "API jump table overlaps state/buffer block"
+
+;=============================================================================
+; PEEK-visible state and packet buffers
+;=============================================================================
+; BASIC-facing state comes first, followed by the large packet/ring/TX buffers.
+; Keep this block directly after the public jump table unless callers are updated.
+* = STATE_BLOCK_BASE
+LOCAL_IP:               .byte 192, 168, 1, 75
+LOCAL_PORT:             .byte $c0, $00              ; ephemeral port 49152
+REMOTE_IP:              .byte 192, 168, 1, 1
+REMOTE_PORT:            .byte $00, $17
+GATEWAY_IP:             .byte 192, 168, 1, 1
+SUBNET_MASK:            .byte $ff, $ff, $ff, $00
+PRIMARY_DNS:            .byte 8, 8, 8, 8
+
+ETH_STATE:              .byte $00                   ; current state of ethernet
+TCP_STATE:              .byte $00
+
+REMOTE_ISN:             .byte $00, $00, $00, $00
+LOCAL_ISN:              .byte $00, $00, $00, $00
+LOCAL_ISN_TMP:          .byte $00                   ; temp values for seq number and ack number calcs
+REMOTE_ISN_TMP:         .byte $00, $00
+
+CONNECT_ACTIVE:         .byte $00                   ; 1 while a connect attempt is active
+CONNECT_SYN_SENT:       .byte $00                   ; 1 after we transmit SYN
+CONNECT_FAIL_LATCH:     .byte $00                   ; set by IRQ on RST/abort, polled/cleared in CONNECT_POLL
+CONNECT_RETRY_TICKS:    .byte $00
+CONNECT_RETRY_LEFT:     .byte $00
+CONNECT_LAST_RASTER_LO: .byte $00
+CONNECT_LAST_RASTER_HI: .byte $00
+CONNECT_EXPECT_ACK:     .byte $00, $00, $00, $00
+
+TCP_LISTEN_PORT:        .byte $00, $00              ; ---- Passive-accept (single slot) ----
+TCP_LISTEN_STATE:       .byte $00                   ; 0=idle, 1=LISTEN, 2=SYN_RCVD
+TCP_ACCEPT_FLAGS:       .byte $00                   ; bit0=accepted, bit1=fail
+TCP_LISTEN_ENABLED:     .byte $00                   ; 0=off, 1=on
+
+RX_COPY_REM_LO:         .byte 0
+RX_COPY_REM_HI:         .byte 0
+RX_CONSUMED_LO:         .byte 0
+RX_CONSUMED_HI:         .byte 0
+SKIP_LO:                .byte 0
+SKIP_HI:                .byte 0
+OFF_LO:                 .byte 0
+OFF_HI:                 .byte 0
+
+ETH_RX_TCP_FLAGS:       .byte $00                   ; recieved tcp pack flags
+ETH_TX_LEN_LSB:         .byte $00
+ETH_TX_LEN_MSB:         .byte $00
+ETH_RX_FRAME_LEN_L:     .byte $00                   ; copied Ethernet frame length, excluding FCS
+ETH_RX_FRAME_LEN_H:     .byte $00
+ETH_RX_PAYLOAD_LEN_L:   .byte $00                   ; copied Ethernet payload length, excluding header/FCS
+ETH_RX_PAYLOAD_LEN_H:   .byte $00
+TIME_WAIT_COUNTER_LO:   .byte $58                   ; 2×MSL = 60 s → 600 ticks of 100 ms → 0x0258
+TIME_WAIT_COUNTER_HI:   .byte $02
+CHARACTER_MODE:         .byte $00                   ; $00 = C= gfx (no translation), $01 = ASCII->PETSCII
+
+ACK_REPLY_PENDING:      .byte 0
+ACK_REPLY_LEN_L:        .byte 0
+ACK_REPLY_LEN_H:        .byte 0
+ACK_REPLY_PACKET:       .fill 60, $00               ; 60 bytes is enough (14+20+20), 60 gives slack
+
+RBUF_HEAD_LO:           .byte 0
+RBUF_HEAD_HI:           .byte 0                     ; 0..7
+RBUF_TAIL_LO:           .byte 0
+RBUF_TAIL_HI:           .byte 0                     ; 0..7
+
+TMP_TAIL_LO:            .byte 0
+TMP_TAIL_HI:            .byte 0
+TMP_HEAD_LO:            .byte 0
+TMP_HEAD_HI:            .byte 0
+NEXT_LO:                .byte 0
+NEXT_HI:                .byte 0
+HLO:                    .byte 0
+HHI:                    .byte 0
+FREE_LO:                .byte 0
+FREE_HI:                .byte 0
+
+ADV_WINDOW_LAST_LO:     .byte 0
+ADV_WINDOW_LAST_HI:     .byte 0
+
+SEG_SEQ:                .byte 0,0,0,0
+SEG_ACK:                .byte 0,0,0,0
+RX_META1:               .byte $00
+tmp_raster:             .byte 0
+ICMP_LEN_LO:            .byte 0
+ICMP_LEN_HI:            .byte 0
+ICMP_SUM_LO:            .byte 0
+ICMP_SUM_HI:            .byte 0
+ICMP_WORD_LO:           .byte 0
+ICMP_WORD_HI:           .byte 0
+
+host_str:               .fill DNS_HOST_BUFFER_SIZE, $00
+
+;=============================================================================
+; TRANSMITTING FRAME BUFFER
+;
+; Ethernet frame structures
+;
+; Dest MAC  - Desitnation mac address   6 bytes
+; Source MAX - MAC address of sender    6 bytes
+; EtherType - protocol in payload       2 bytes  (eg 0x800 = IPv4, 0x0806 = ARP, 0x86dd = IPv6, 0x8100 = VLAN tagged frame)
+; Payload - actual data                 46-1500
+; FCS (CRC32) - frame check sequence    4 bytes (calculated and appended by NIC hardware, not software)
+; 
+; Min frame size = 64 bytes
+; max payload = 1500 bytes
+; max total frame = 1518 bytes without VLAN, 1522 with VLAN tag
+;=============================================================================
+ETH_TX_FRAME_HEADER:
+ETH_TX_FRAME_DEST_MAC:
+    .byte $ff, $ff, $ff, $ff, $ff, $ff
+ETH_TX_FRAME_SRC_MAC:
+    .byte $00, $00, $00, $00, $00, $00
+ETH_TX_TYPE:
+    .byte $08, $06
+ETH_TX_FRAME_PAYLOAD:
+    .fill 1600, $00
+
+;=============================================================================
+; RECIEVED FRAME BUFFER
+;=============================================================================
+ETH_RX_FRAME_HEADER:
+ETH_RX_FRAME_DEST_MAC:
+    .byte $00, $00, $00, $00, $00, $00
+ETH_RX_FRAME_SRC_MAC:
+    .byte $00, $00, $00, $00, $00, $00
+ETH_RX_TYPE:
+    .byte $00, $00
+ETH_RX_FRAME_PAYLOAD:
+    .fill 1600, $00
+RX_CANARY:            
+    .byte $C3, $3C  ; should never change!!
+TCP_RX_DATA_PAYLOAD_SIZE:
+    .byte $00, $00
+
+;=============================================================================
+; INCOMING DATA RING BUFFER
+;=============================================================================
+
+RING_BUFFER:
+    .fill 2048, $00
+
+;=============================================================================
+; OUTGOING TCP DATA QUEUE
+;=============================================================================
+
+TXQ_HEAD:               .byte 0
+TXQ_TAIL:               .byte 0
+TXQ_COUNT:              .byte 0
+TXQ_NEW_COUNT:          .byte 0
+TXQ_ENQ_LEN:            .byte 0
+TXQ_SEND_LEN:           .byte 0
+TXQ_SCAN:               .byte 0
+
+TX_UNACK_PENDING:       .byte 0
+TX_UNACK_LEN:           .byte 0
+TX_UNACK_RETRY_TICKS:   .byte 0
+TX_UNACK_RETRY_LEFT:    .byte 0
+TCP_TX_LAST_RASTER_LO:  .byte 0
+TCP_TX_LAST_RASTER_HI:  .byte 0
+TX_UNACK_SEQ:           .byte 0,0,0,0
+TX_UNACK_EXPECT_ACK:    .byte 0,0,0,0
+TX_SAVE_LOCAL_ISN:      .byte 0,0,0,0
+TCP_PEER_MAC_VALID:     .byte 0
+TCP_PEER_MAC:           .byte 0,0,0,0,0,0
+
+.if DEBUG
+TCP_TX_ENQUEUE_OK_DBG:  .byte 0
+TCP_TX_SEND_OK_DBG:     .byte 0
+TCP_TX_ACK_SEEN_DBG:    .byte 0
+TCP_TX_ACK_MATCH_DBG:   .byte 0
+TCP_TX_TIMEOUT_DBG:     .byte 0
+TCP_TX_TIMEOUT_LEN_DBG: .byte 0
+TCP_TX_TIMEOUT_RETRY_DBG: .byte 0
+TCP_TX_SEND_FAIL_DBG:   .byte 0
+TCP_TX_RETX_OK_DBG:     .byte 0
+TCP_TX_RETX_FAIL_DBG:   .byte 0
+TCP_TX_BASE_RAW_DBG:    .byte 0
+TCP_TX_BASE_DISPATCH_DBG: .byte 0
+TCP_TX_BASE_HANDLER_DBG: .byte 0
+TCP_TX_LAST_ACK_DBG:    .byte 0,0,0,0
+TCP_TX_TIMEOUT_EXPECT_DBG: .byte 0,0,0,0
+TCP_TX_TIMEOUT_ACK_DBG: .byte 0,0,0,0
+.endif
+
+TX_APP_QUEUE:
+    .fill 256, $00
+
+TX_UNACK_PAYLOAD:
+    .fill TCP_PAYLOAD_MAX, $00
+
+
+;=============================================================================
+; TCP header and payload staging buffers
+;=============================================================================
+; we will max our data payload at 235 bytes which is small, but
+; fits well with BASIC string sizes (tcp header = 20 + 235 = 255)
+TCP_DATA_PAYLOAD_SIZE:
+.byte $00
+.byte $00
+
+TCP_HEADER_SIZE:
+.byte $00
+
+TCP_DATA_PAYLOAD_WORD_COUNT:
+.byte $00
+
+TCP_PSEUDO_HDR:
+.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+
+TCP_HDR:
+TCP_HDR_SRC_PORT:   .byte $00, $00
+TCP_HDR_DST_PORT:   .byte $00, $00
+TCP_HDR_SEQ_NUM:    .byte $00, $00, $00, $00
+TCP_HDR_ACK_NUM:    .byte $00, $00, $00, $00
+TCP_HDR_FLGS_OFFS:  .byte $00, $00
+TCP_HDR_WINDOW:     .byte $00, $00
+TCP_HDR_CHKSM:      .byte $00, $00
+TCP_HDR_URGNT:      .byte $00, $00
+
+; max size of 235 bytes. One extra pad byte lets checksum handle odd lengths.
+TCP_DATA_PAYLOAD:
+.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+
+TCP_DATA_PAYLOAD_PAD:
+.byte $00
 
 ;=============================================================================
 ; Knock routine to expose IO
@@ -368,7 +615,7 @@ CONNECT_SEND_SYN:
     bcs _connect_syn_not_sent
     jsr ETH_PACKET_SEND
     bcs _connect_syn_not_sent
-    inc CONNECT_SYN_TX_OK_DBG
+    DEBUG_INC CONNECT_SYN_TX_OK_DBG
     jsr TCP_SAVE_PEER_MAC
 
     lda #$01
@@ -386,7 +633,7 @@ CONNECT_SEND_SYN:
     rts
 
 _connect_syn_not_sent:
-    inc CONNECT_SYN_TX_FAIL_DBG
+    DEBUG_INC CONNECT_SYN_TX_FAIL_DBG
     sec
     rts
 
@@ -1108,7 +1355,7 @@ _check_SYN:
     bne _done
 
 _got_SYNACK:
-    inc CONNECT_SYNACK_RX_DBG
+    DEBUG_INC CONNECT_SYNACK_RX_DBG
 
     ; SYN-ACK must acknowledge our SYN (LOCAL_ISN + 1).
     lda LOCAL_ISN+0
@@ -1178,7 +1425,7 @@ _got_SYNACK_ahead:
     rts
 
 _synack_bad_ack:
-    inc CONNECT_SYNACK_BAD_ACK_DBG
+    DEBUG_INC CONNECT_SYNACK_BAD_ACK_DBG
     jmp _done
 
     ;---------------------------------------------------------------------------
@@ -1789,52 +2036,6 @@ WINUPDATE_THRESHOLD = $01    ; send update when we open by ≥1 bytes
 
 WINUPDATE_GROW_LO = $00
 WINUPDATE_GROW_HI = $01
-
-; we will max our data payload at 235 bytes which is small, but
-; fits well with BASIC string sizes (tcp header = 20 + 235 = 255)
-TCP_DATA_PAYLOAD_SIZE:
-.byte $00
-.byte $00
-
-TCP_HEADER_SIZE:
-.byte $00
-
-TCP_DATA_PAYLOAD_WORD_COUNT:
-.byte $00
-
-TCP_PSEUDO_HDR:
-.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
-
-TCP_HDR:
-TCP_HDR_SRC_PORT:   .byte $00, $00
-TCP_HDR_DST_PORT:   .byte $00, $00
-TCP_HDR_SEQ_NUM:    .byte $00, $00, $00, $00
-TCP_HDR_ACK_NUM:    .byte $00, $00, $00, $00
-TCP_HDR_FLGS_OFFS:  .byte $00, $00
-TCP_HDR_WINDOW:     .byte $00, $00
-TCP_HDR_CHKSM:      .byte $00, $00
-TCP_HDR_URGNT:      .byte $00, $00
-
-; max size of 235 bytes. One extra pad byte lets checksum handle odd lengths.
-TCP_DATA_PAYLOAD:
-.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
-.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
-.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
-.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
-.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
-.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
-.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
-.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
-.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
-.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
-.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
-.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
-.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
-.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
-.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
-
-TCP_DATA_PAYLOAD_PAD:
-.byte $00
 
 ;=============================================================================
 ; Routine to calculate the tcp checksum
@@ -2764,12 +2965,12 @@ _chk_dest_ok:
     jmp _accept_packet
 
 _accept_packet:
-inc DHCP_RX_ACCEPTS
-    inc CONNECT_RAW_RX_DBG
+    DEBUG_INC DHCP_RX_ACCEPTS
+    DEBUG_INC CONNECT_RAW_RX_DBG
     lda DNS_STATE
     cmp #DNS_STATE_WAIT
     bne +
-    inc DNS_RAW_RX_COUNT
+    DEBUG_INC DNS_RAW_RX_COUNT
 +
     ; --- subtract FCS (4 bytes), drop on underflow ---
     sec
@@ -2855,19 +3056,19 @@ _len_msb:
     ; verify dest mac or broadcast from the copied Ethernet header
     jsr ETH_IS_PACKET_FOR_US
     sta CONNECT_LAST_RX_DC_DBG
-    inc CONNECT_COPY_RX_DBG
+    DEBUG_INC CONNECT_COPY_RX_DBG
     lda ETH_RX_TYPE
-    sta CONNECT_LAST_RX_TYPE_HI_DBG
+    DEBUG_STA CONNECT_LAST_RX_TYPE_HI_DBG
     lda ETH_RX_TYPE+1
-    sta CONNECT_LAST_RX_TYPE_LO_DBG
+    DEBUG_STA CONNECT_LAST_RX_TYPE_LO_DBG
     lda ETH_RX_FRAME_PAYLOAD+9
-    sta CONNECT_LAST_RX_PROTO_DBG
+    DEBUG_STA CONNECT_LAST_RX_PROTO_DBG
     lda CONNECT_LAST_RX_DC_DBG
     bne _chk_eth_type
     lda DNS_STATE
     cmp #DNS_STATE_WAIT
     bne _unknown_packet
-    inc DNS_NOT_FOR_US_COUNT
+    DEBUG_INC DNS_NOT_FOR_US_COUNT
     jmp _unknown_packet
 
 _chk_eth_type:
@@ -2907,7 +3108,7 @@ _is_ipv4:
     lda DNS_STATE
     cmp #DNS_STATE_WAIT
     bne +
-    inc DNS_IPV4_RX_COUNT
+    DEBUG_INC DNS_IPV4_RX_COUNT
 +
     ; IPv4 protocol dispatch
     lda ETH_RX_FRAME_HEADER+23         ; Protocol (14 + 9)
@@ -2927,7 +3128,7 @@ _udp_demux:
     lda DNS_STATE
     cmp #DNS_STATE_WAIT
     bne +
-    inc DNS_UDP_RX_COUNT
+    DEBUG_INC DNS_UDP_RX_COUNT
 +
     ; Compute IHL in bytes: IHL field is low nibble of first IP byte, units of 4 bytes
     lda ETH_RX_FRAME_HEADER+14         ; Version/IHL at start of IP header
@@ -2946,7 +3147,7 @@ _udp_demux:
     bne _udp_maybe_dns
 
     ; DHCP → handle and return
-inc DHCP_UDP68_HITS    
+    DEBUG_INC DHCP_UDP68_HITS
     jsr DHCP_ON_UDP
     rts
 
@@ -2958,6 +3159,7 @@ _call_incoming_tcp:
     jsr TCP_RX_CHECKSUM_OK
     bcs _unknown_packet
 
+.if DEBUG
     inc CONNECT_TCP_DISPATCH_DBG
     lda ETH_RX_FRAME_PAYLOAD
     and #$0F
@@ -2980,6 +3182,7 @@ _tcp_dbg_ip:
     sta CONNECT_LAST_TCP_SRC_IP_DBG,x
     dex
     bpl _tcp_dbg_ip
+.endif
     jmp INCOMING_TCP_PACKET
 
 _unknown_packet:
@@ -3097,194 +3300,6 @@ _petscii_ascii_done:
 .include "tcp_seq.asm"
 
 ;=============================================================================
-; Temporary Storage
-;=============================================================================
-; BASIC samples peek a few values in this block for display/debugging.
-; Keep the block fixed unless those samples are updated at the same time.
-* = $4bf5
-LOCAL_IP:               .byte 192, 168, 1, 75
-LOCAL_PORT:             .byte $c0, $00              ; ephemeral port 49152
-REMOTE_IP:              .byte 192, 168, 1, 1
-REMOTE_PORT:            .byte $00, $17
-GATEWAY_IP:             .byte 192, 168, 1, 1
-SUBNET_MASK:            .byte $ff, $ff, $ff, $00
-PRIMARY_DNS:            .byte 8, 8, 8, 8
-
-ETH_STATE:              .byte $00                   ; current state of ethernet
-TCP_STATE:              .byte $00
-
-REMOTE_ISN:             .byte $00, $00, $00, $00
-LOCAL_ISN:              .byte $00, $00, $00, $00
-LOCAL_ISN_TMP:          .byte $00                   ; temp values for seq number and ack number calcs
-REMOTE_ISN_TMP:         .byte $00, $00
-
-CONNECT_ACTIVE:         .byte $00                   ; 1 while a connect attempt is active
-CONNECT_SYN_SENT:       .byte $00                   ; 1 after we transmit SYN
-CONNECT_FAIL_LATCH:     .byte $00                   ; set by IRQ on RST/abort, polled/cleared in CONNECT_POLL
-CONNECT_RETRY_TICKS:    .byte $00
-CONNECT_RETRY_LEFT:     .byte $00
-CONNECT_LAST_RASTER_LO: .byte $00
-CONNECT_LAST_RASTER_HI: .byte $00
-CONNECT_EXPECT_ACK:     .byte $00, $00, $00, $00
-
-TCP_LISTEN_PORT:        .byte $00, $00              ; ---- Passive-accept (single slot) ----
-TCP_LISTEN_STATE:       .byte $00                   ; 0=idle, 1=LISTEN, 2=SYN_RCVD
-TCP_ACCEPT_FLAGS:       .byte $00                   ; bit0=accepted, bit1=fail
-TCP_LISTEN_ENABLED:     .byte $00                   ; 0=off, 1=on
-
-RX_COPY_REM_LO:         .byte 0
-RX_COPY_REM_HI:         .byte 0
-RX_CONSUMED_LO:         .byte 0
-RX_CONSUMED_HI:         .byte 0
-SKIP_LO:                .byte 0
-SKIP_HI:                .byte 0
-OFF_LO:                 .byte 0
-OFF_HI:                 .byte 0
-
-ETH_RX_TCP_FLAGS:       .byte $00                   ; recieved tcp pack flags
-ETH_TX_LEN_LSB:         .byte $00
-ETH_TX_LEN_MSB:         .byte $00
-ETH_RX_FRAME_LEN_L:     .byte $00                   ; copied Ethernet frame length, excluding FCS
-ETH_RX_FRAME_LEN_H:     .byte $00
-ETH_RX_PAYLOAD_LEN_L:   .byte $00                   ; copied Ethernet payload length, excluding header/FCS
-ETH_RX_PAYLOAD_LEN_H:   .byte $00
-TIME_WAIT_COUNTER_LO:   .byte $58                   ; 2×MSL = 60 s → 600 ticks of 100 ms → 0x0258
-TIME_WAIT_COUNTER_HI:   .byte $02
-CHARACTER_MODE:         .byte $00                   ; $00 = C= gfx (no translation), $01 = ASCII->PETSCII
-
-ACK_REPLY_PENDING:      .byte 0
-ACK_REPLY_LEN_L:        .byte 0
-ACK_REPLY_LEN_H:        .byte 0
-ACK_REPLY_PACKET:       .fill 60, $00               ; 60 bytes is enough (14+20+20), 60 gives slack
-
-RBUF_HEAD_LO:           .byte 0
-RBUF_HEAD_HI:           .byte 0                     ; 0..7
-RBUF_TAIL_LO:           .byte 0
-RBUF_TAIL_HI:           .byte 0                     ; 0..7
-
-TMP_TAIL_LO:            .byte 0
-TMP_TAIL_HI:            .byte 0
-TMP_HEAD_LO:            .byte 0
-TMP_HEAD_HI:            .byte 0
-NEXT_LO:                .byte 0
-NEXT_HI:                .byte 0
-HLO:                    .byte 0
-HHI:                    .byte 0
-FREE_LO:                .byte 0
-FREE_HI:                .byte 0
-
-ADV_WINDOW_LAST_LO:     .byte 0
-ADV_WINDOW_LAST_HI:     .byte 0
-
-SEG_SEQ:                .byte 0,0,0,0
-SEG_ACK:                .byte 0,0,0,0
-RX_META1:               .byte $00
-tmp_raster:             .byte 0
-ICMP_LEN_LO:            .byte 0
-ICMP_LEN_HI:            .byte 0
-ICMP_SUM_LO:            .byte 0
-ICMP_SUM_HI:            .byte 0
-ICMP_WORD_LO:           .byte 0
-ICMP_WORD_HI:           .byte 0
-
-host_str:               .fill DNS_HOST_BUFFER_SIZE, $00
-
-;=============================================================================
-; TRANSMITTING FRAME BUFFER
-;
-; Ethernet frame structures
-;
-; Dest MAC  - Desitnation mac address   6 bytes
-; Source MAX - MAC address of sender    6 bytes
-; EtherType - protocol in payload       2 bytes  (eg 0x800 = IPv4, 0x0806 = ARP, 0x86dd = IPv6, 0x8100 = VLAN tagged frame)
-; Payload - actual data                 46-1500
-; FCS (CRC32) - frame check sequence    4 bytes (calculated and appended by NIC hardware, not software)
-; 
-; Min frame size = 64 bytes
-; max payload = 1500 bytes
-; max total frame = 1518 bytes without VLAN, 1522 with VLAN tag
-;=============================================================================
-ETH_TX_FRAME_HEADER:
-ETH_TX_FRAME_DEST_MAC:
-    .byte $ff, $ff, $ff, $ff, $ff, $ff
-ETH_TX_FRAME_SRC_MAC:
-    .byte $00, $00, $00, $00, $00, $00
-ETH_TX_TYPE:
-    .byte $08, $06
-ETH_TX_FRAME_PAYLOAD:
-    .fill 1600, $00
-
-;=============================================================================
-; RECIEVED FRAME BUFFER
-;=============================================================================
-ETH_RX_FRAME_HEADER:
-ETH_RX_FRAME_DEST_MAC:
-    .byte $00, $00, $00, $00, $00, $00
-ETH_RX_FRAME_SRC_MAC:
-    .byte $00, $00, $00, $00, $00, $00
-ETH_RX_TYPE:
-    .byte $00, $00
-ETH_RX_FRAME_PAYLOAD:
-    .fill 1600, $00
-RX_CANARY:            
-    .byte $C3, $3C  ; should never change!!
-TCP_RX_DATA_PAYLOAD_SIZE:
-    .byte $00, $00
-
-;=============================================================================
-; INCOMING DATA RING BUFFER
-;=============================================================================
-
-RING_BUFFER:
-    .fill 2048, $00
-
-;=============================================================================
-; OUTGOING TCP DATA QUEUE
-;=============================================================================
-
-TXQ_HEAD:               .byte 0
-TXQ_TAIL:               .byte 0
-TXQ_COUNT:              .byte 0
-TXQ_NEW_COUNT:          .byte 0
-TXQ_ENQ_LEN:            .byte 0
-TXQ_SEND_LEN:           .byte 0
-TXQ_SCAN:               .byte 0
-
-TX_UNACK_PENDING:       .byte 0
-TX_UNACK_LEN:           .byte 0
-TX_UNACK_RETRY_TICKS:   .byte 0
-TX_UNACK_RETRY_LEFT:    .byte 0
-TCP_TX_LAST_RASTER_LO:  .byte 0
-TCP_TX_LAST_RASTER_HI:  .byte 0
-TX_UNACK_SEQ:           .byte 0,0,0,0
-TX_UNACK_EXPECT_ACK:    .byte 0,0,0,0
-TX_SAVE_LOCAL_ISN:      .byte 0,0,0,0
-TCP_PEER_MAC_VALID:     .byte 0
-TCP_PEER_MAC:           .byte 0,0,0,0,0,0
-
-TCP_TX_ENQUEUE_OK_DBG:  .byte 0
-TCP_TX_SEND_OK_DBG:     .byte 0
-TCP_TX_ACK_SEEN_DBG:    .byte 0
-TCP_TX_ACK_MATCH_DBG:   .byte 0
-TCP_TX_TIMEOUT_DBG:     .byte 0
-TCP_TX_TIMEOUT_LEN_DBG: .byte 0
-TCP_TX_TIMEOUT_RETRY_DBG: .byte 0
-TCP_TX_SEND_FAIL_DBG:   .byte 0
-TCP_TX_RETX_OK_DBG:     .byte 0
-TCP_TX_RETX_FAIL_DBG:   .byte 0
-TCP_TX_BASE_RAW_DBG:    .byte 0
-TCP_TX_BASE_DISPATCH_DBG: .byte 0
-TCP_TX_BASE_HANDLER_DBG: .byte 0
-TCP_TX_LAST_ACK_DBG:    .byte 0,0,0,0
-TCP_TX_TIMEOUT_EXPECT_DBG: .byte 0,0,0,0
-TCP_TX_TIMEOUT_ACK_DBG: .byte 0,0,0,0
-
-TX_APP_QUEUE:
-    .fill 256, $00
-
-TX_UNACK_PAYLOAD:
-    .fill TCP_PAYLOAD_MAX, $00
-
 ;=============================================================================
 ; Set local (ephemeral) port
 ;=============================================================================
@@ -3552,6 +3567,7 @@ _connect_frame_elapsed:
     rts
 
 CONNECT_CLEAR_DEBUG:
+.if DEBUG
     lda #$00
     sta CONNECT_FAIL_REASON_DBG
     sta CONNECT_SYNACK_RX_DBG
@@ -3600,9 +3616,11 @@ CONNECT_CLEAR_DEBUG:
     sta TCP_TX_TIMEOUT_ACK_DBG+1
     sta TCP_TX_TIMEOUT_ACK_DBG+2
     sta TCP_TX_TIMEOUT_ACK_DBG+3
+.endif
     rts
 
 CONNECT_SNAPSHOT_FAIL:
+.if DEBUG
     lda CONNECT_FAIL_REASON_DBG
     bne _connect_reason_done
 
@@ -3640,8 +3658,10 @@ _connect_generic_fail:
     sta CONNECT_FAIL_REASON_DBG
 
 _connect_reason_done:
+.endif
     rts
 
+.if DEBUG
 CONNECT_FAIL_REASON_DBG:     .byte $00
 CONNECT_SYNACK_RX_DBG:       .byte $00
 CONNECT_SYNACK_BAD_ACK_DBG:  .byte $00
@@ -3651,7 +3671,6 @@ CONNECT_RAW_RX_DBG:          .byte $00
 CONNECT_TCP_RX_DBG:          .byte $00
 CONNECT_COPY_RX_DBG:         .byte $00
 CONNECT_TCP_DISPATCH_DBG:    .byte $00
-CONNECT_LAST_RX_DC_DBG:      .byte $00
 CONNECT_LAST_RX_TYPE_HI_DBG: .byte $00
 CONNECT_LAST_RX_TYPE_LO_DBG: .byte $00
 CONNECT_LAST_RX_PROTO_DBG:   .byte $00
@@ -3661,6 +3680,8 @@ CONNECT_LAST_TCP_DST_PORT_HI_DBG: .byte $00
 CONNECT_LAST_TCP_DST_PORT_LO_DBG: .byte $00
 CONNECT_LAST_TCP_FLAGS_DBG:       .byte $00
 CONNECT_LAST_TCP_SRC_IP_DBG:      .byte $00, $00, $00, $00
+.endif
+CONNECT_LAST_RX_DC_DBG:      .byte $00
 
 ETH_INIT_ML_SAFE:
     php
@@ -3916,31 +3937,59 @@ RBUF_BLOCK_SAVE46:    .byte $00
 RBUF_BLOCK_SAVE47:    .byte $00
 RBUF_BLOCK_SAVE48:    .byte $00
 
+.if DEBUG
+.else
+ETH_DEBUG_ZERO:
+    lda #$00
+    tax
+    tay
+    taz
+    rts
+.endif
+
 ;=============================================================================
 ; ML extension entry points
 ;
 ; These live outside the original BASIC-facing jump table so existing SYS
 ; addresses and hard-coded BASIC peeks stay compatible.
 ;=============================================================================
+.cerror * > ML_EXTENSION_TABLE_BASE, "state/buffer/runtime block overlaps ML extension table"
 
-* = $7000
+* = ML_EXTENSION_TABLE_BASE
 
     jmp ETH_TCP_SEND_BYTE
     jmp ETH_DNS_LOOKUP_BUFFER
     jmp ETH_INIT_ML_SAFE
+.if DEBUG
     jmp ETH_DHCP_DEBUG
     jmp ETH_DHCP_DEBUG_TX
+.else
+    jmp ETH_DEBUG_ZERO
+    jmp ETH_DEBUG_ZERO
+.endif
     jmp ETH_DNS_START_BUFFER
+.if DEBUG
     jmp ETH_DNS_DEBUG
     jmp ETH_DNS_DEBUG2
+.else
+    jmp ETH_DEBUG_ZERO
+    jmp ETH_DEBUG_ZERO
+.endif
     jmp ETH_DNS_START_BUFFER_YLEN
     jmp ETH_ML_CALL_STAGED
     jmp ETH_RBUF_GET_BYTE
     jmp ETH_RBUF_GET_BLOCK
+.if DEBUG
     jmp ETH_DNS_DEBUG3
     jmp ETH_CONNECT_DEBUG
     jmp ETH_CONNECT_DEBUG2
     jmp ETH_CONNECT_DEBUG3
+.else
+    jmp ETH_DEBUG_ZERO
+    jmp ETH_DEBUG_ZERO
+    jmp ETH_DEBUG_ZERO
+    jmp ETH_DEBUG_ZERO
+.endif
 
 ;=============================================================================
 ; Send one byte over TCP
@@ -4028,7 +4077,7 @@ ETH_DNS_COPY_BUFFER:
     stx DNS_COPY_SRC_ADDR+1
     sty DNS_COPY_SRC_ADDR+2
     lda #$30
-    sta DNS_DEBUG_STAGE
+    DEBUG_STA DNS_DEBUG_STAGE
     tza
     jmp ETH_DNS_COPY_BUFFER_LEN_A
 
@@ -4038,7 +4087,7 @@ ETH_DNS_COPY_BUFFER_YLEN_BANK1:
     lda #$01
     sta DNS_COPY_SRC_ADDR+2
     lda #$32
-    sta DNS_DEBUG_STAGE
+    DEBUG_STA DNS_DEBUG_STAGE
     cpx #BANK1_WORKSPACE_LOW_HI
     bcc ETH_DNS_COPY_BUFFER_BANK1_RANGE_FAIL
     cpx #BANK1_COLOR_SHADOW_HI
@@ -4089,17 +4138,17 @@ DNS_COPY_DEST_ADDR:
 
 ETH_DNS_COPY_BUFFER_BANK1_RANGE_FAIL:
     lda #$33
-    sta DNS_DEBUG_STAGE
+    DEBUG_STA DNS_DEBUG_STAGE
     lda DNS_COPY_SRC_ADDR+1
-    sta DNS_ARP_WAIT_COUNT
+    DEBUG_STA DNS_ARP_WAIT_COUNT
     lda DNS_COPY_SRC_ADDR+0
-    sta DNS_PARSE_FAILS
+    DEBUG_STA DNS_PARSE_FAILS
     sec
     rts
 
 ETH_DNS_COPY_BUFFER_FAIL:
     lda #$31
-    sta DNS_DEBUG_STAGE
+    DEBUG_STA DNS_DEBUG_STAGE
     sec
     rts
 
@@ -4107,6 +4156,7 @@ ETH_DNS_COPY_BUFFER_FAIL:
 ; Return DHCP debug counters for ML callers.
 ; Out: A = accepted RX frames, X = UDP/68 hits, Y = parser stage, Z = msg type.
 ;=============================================================================
+.if DEBUG
 ETH_DHCP_DEBUG:
     lda DHCP_RX_ACCEPTS
     ldx DHCP_UDP68_HITS
@@ -4193,6 +4243,7 @@ ETH_CONNECT_DEBUG3:
     ldy CONNECT_LAST_RX_TYPE_LO_DBG
     ldz CONNECT_LAST_RX_PROTO_DBG
     rts
+.endif
 
 ;=============================================================================
 ; Get one received TCP byte for ML callers without relying on carry across
@@ -4248,7 +4299,9 @@ _ml_call_jsr:
     plp
     rts
 
-* = $71c0
+.cerror * > ML_CALL_STAGING_BASE, "ML extension table overlaps ML call staging area"
+
+* = ML_CALL_STAGING_BASE
 
 ML_CALL_TARGET_LO:      .byte $00
 ML_CALL_TARGET_HI:      .byte $00
@@ -4267,8 +4320,11 @@ ML_CALL_RET_Z:          .byte $00
 ; These are intentionally outside the original BASIC jump table and the $7000
 ; ML extension table so existing addresses stay fixed.
 ;=============================================================================
-* = $7200
+.cerror * > BASIC_DEBUG_TABLE_BASE, "ML call staging area overlaps BASIC debug table"
 
+* = BASIC_DEBUG_TABLE_BASE
+
+.if DEBUG
     jmp ETH_CONNECT_TX_DEBUG1      ; $47200
     jmp ETH_CONNECT_TX_DEBUG2      ; $47203
     jmp ETH_CONNECT_TX_DEBUG3      ; $47206
@@ -4289,7 +4345,30 @@ ML_CALL_RET_Z:          .byte $00
     jmp ETH_TX_DUMP4               ; $47233
     jmp ETH_TCP_TX_DEBUG5          ; $47236
     jmp ETH_TCP_TX_DEBUG6          ; $47239
+.else
+    jmp ETH_DEBUG_ZERO             ; $47200
+    jmp ETH_DEBUG_ZERO             ; $47203
+    jmp ETH_DEBUG_ZERO             ; $47206
+    jmp ETH_DEBUG_ZERO             ; $47209
+    jmp ETH_DEBUG_ZERO             ; $4720c
+    jmp ETH_DEBUG_ZERO             ; $4720f
+    jmp ETH_DEBUG_ZERO             ; $47212
+    jmp ETH_DEBUG_ZERO             ; $47215
+    jmp ETH_DEBUG_ZERO             ; $47218
+    jmp ETH_DEBUG_ZERO             ; $4721b
+    jmp ETH_DEBUG_ZERO             ; $4721e
+    jmp ETH_DEBUG_ZERO             ; $47221
+    jmp ETH_DEBUG_ZERO             ; $47224
+    jmp ETH_DEBUG_ZERO             ; $47227
+    jmp ETH_DEBUG_ZERO             ; $4722a
+    jmp ETH_DEBUG_ZERO             ; $4722d
+    jmp ETH_DEBUG_ZERO             ; $47230
+    jmp ETH_DEBUG_ZERO             ; $47233
+    jmp ETH_DEBUG_ZERO             ; $47236
+    jmp ETH_DEBUG_ZERO             ; $47239
+.endif
 
+.if DEBUG
 ; Out: A/X = frame length lo/hi, Y/Z = EtherType hi/lo.
 ETH_CONNECT_TX_DEBUG1:
     lda ETH_TX_LEN_LSB
@@ -4461,3 +4540,4 @@ ETH_TX_DUMP4:
 TX_DUMP_A: .byte $00
 TX_DUMP_X: .byte $00
 TX_DUMP_Y: .byte $00
+.endif

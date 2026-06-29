@@ -1,4 +1,28 @@
 ; #DMA_COPY $00,$042500, $ff, $0de800, 42
+DEBUG_INC .macro target
+.if DEBUG
+    inc \target
+.endif
+.endm
+
+DEBUG_STA .macro target
+.if DEBUG
+    sta \target
+.endif
+.endm
+
+DEBUG_STX .macro target
+.if DEBUG
+    stx \target
+.endif
+.endm
+
+DEBUG_STY .macro target
+.if DEBUG
+    sty \target
+.endif
+.endm
+
 DMA_COPY    .macro   src_hi, src, dest_hi, dest, length
     sta $D707
     .byte $80                                   ; enhanced dma - src bits 20-27

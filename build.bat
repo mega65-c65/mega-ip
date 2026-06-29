@@ -17,7 +17,7 @@ del /q basic\term.prg 2>nul
 del /q basic\terminal.prg 2>nul
 del /q basic\webserver.prg 2>nul
 
-.\64tass.exe .\src\eth.asm --nostart -L target\eth.lst -o target\eth.bin
+.\64tass.exe -D DEBUG=1 .\src\eth.asm --nostart -L target\eth.lst -o target\eth.bin
 
 .\c1541.exe -format megaip,wr d81 target\megaip.d81
 

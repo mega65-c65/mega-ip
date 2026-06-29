@@ -69,6 +69,7 @@ opt_router:                 .byte 0,0,0,0
 opt_dns:                    .byte 0,0,0,0
 dhcp_msg_type:              .byte 0
 
+.if DEBUG
 DHCP_RX_ACCEPTS: .byte 0
 DHCP_UDP68_HITS: .byte 0
 DHCP_ACK_SEEN: .byte 0
@@ -78,6 +79,7 @@ DHCP_DISCOVER_TX_OK: .byte 0
 DHCP_DISCOVER_TX_FAIL: .byte 0
 DHCP_REQUEST_TX_OK: .byte 0
 DHCP_REQUEST_TX_FAIL: .byte 0
+.endif
 
 ;=============================================================================
 ; Start DHCP (non-blocking). Safe to call any time; it will restart if needed
@@ -87,15 +89,15 @@ ETH_DHCP_START:
     ; clear from previous run
     lda #$00
     sta dhcp_msg_type
-    sta DHCP_RX_ACCEPTS
-    sta DHCP_UDP68_HITS
-    sta DHCP_ACK_SEEN
-    sta DHCP_NAK_SEEN
-    sta DHCP_DEBUG_STAGE
-    sta DHCP_DISCOVER_TX_OK
-    sta DHCP_DISCOVER_TX_FAIL
-    sta DHCP_REQUEST_TX_OK
-    sta DHCP_REQUEST_TX_FAIL
+    DEBUG_STA DHCP_RX_ACCEPTS
+    DEBUG_STA DHCP_UDP68_HITS
+    DEBUG_STA DHCP_ACK_SEEN
+    DEBUG_STA DHCP_NAK_SEEN
+    DEBUG_STA DHCP_DEBUG_STAGE
+    DEBUG_STA DHCP_DISCOVER_TX_OK
+    DEBUG_STA DHCP_DISCOVER_TX_FAIL
+    DEBUG_STA DHCP_REQUEST_TX_OK
+    DEBUG_STA DHCP_REQUEST_TX_FAIL
     ldy #$00
 _loop:
     sta DHCP_SERVER_ID,y
@@ -364,12 +366,12 @@ _bcast_fill:
 
     jsr ETH_PACKET_SEND
     bcs _discover_tx_fail
-    inc DHCP_DISCOVER_TX_OK
+    DEBUG_INC DHCP_DISCOVER_TX_OK
     clc
     rts
 
 _discover_tx_fail:
-    inc DHCP_DISCOVER_TX_FAIL
+    DEBUG_INC DHCP_DISCOVER_TX_FAIL
     sec
     rts
 
@@ -498,12 +500,12 @@ _bcast_fill:
 
     jsr ETH_PACKET_SEND
     bcs _request_tx_fail
-    inc DHCP_REQUEST_TX_OK
+    DEBUG_INC DHCP_REQUEST_TX_OK
     clc
     rts
 
 _request_tx_fail:
-    inc DHCP_REQUEST_TX_FAIL
+    DEBUG_INC DHCP_REQUEST_TX_FAIL
     sec
     rts
 
@@ -702,20 +704,20 @@ UDP_CALC_IPHDR_CHECKSUM:
 ;=============================================================================
 DHCP_ON_UDP:
     lda #$01
-    sta DHCP_DEBUG_STAGE
+    DEBUG_STA DHCP_DEBUG_STAGE
 
     ldy DHCP_IP_IHL_BYTES        ; Y = IP header length in bytes
 
     ; Verify BOOTP op=2 (reply)
     lda #$02
-    sta DHCP_DEBUG_STAGE
+    DEBUG_STA DHCP_DEBUG_STAGE
     lda ETH_RX_FRAME_PAYLOAD+8+0,y
     cmp #BOOTP_OP_BOOTREPLY
     bne _out
 
     ; Check XID matches ours
     lda #$03
-    sta DHCP_DEBUG_STAGE
+    DEBUG_STA DHCP_DEBUG_STAGE
     lda ETH_RX_FRAME_PAYLOAD+8+$04,y
     cmp DHCP_XID+0
     bne _out
@@ -731,7 +733,7 @@ DHCP_ON_UDP:
 
     ; yiaddr → candidate IP (for OFFER/ACK)
     lda #$04
-    sta DHCP_DEBUG_STAGE
+    DEBUG_STA DHCP_DEBUG_STAGE
     lda ETH_RX_FRAME_PAYLOAD+8+$10,y
     sta DHCP_OFFER_IP+0
     lda ETH_RX_FRAME_PAYLOAD+8+$11,y
@@ -743,7 +745,7 @@ DHCP_ON_UDP:
 
     ; Must have magic cookie
     lda #$05
-    sta DHCP_DEBUG_STAGE
+    DEBUG_STA DHCP_DEBUG_STAGE
     lda ETH_RX_FRAME_PAYLOAD+8+236,y
     cmp #DHCP_MAGIC_0
     bne _out
@@ -759,12 +761,12 @@ DHCP_ON_UDP:
 
     ; Parse options TLV
     lda #$06
-    sta DHCP_DEBUG_STAGE
+    DEBUG_STA DHCP_DEBUG_STAGE
     jsr DHCP_PARSE_OPTIONS
 
     ; Branch by message type
     lda #$07
-    sta DHCP_DEBUG_STAGE
+    DEBUG_STA DHCP_DEBUG_STAGE
     lda dhcp_msg_type
     cmp #DHCPOFFER
     beq _got_offer
@@ -776,7 +778,7 @@ DHCP_ON_UDP:
 
 _got_offer:
     lda #$08
-    sta DHCP_DEBUG_STAGE
+    DEBUG_STA DHCP_DEBUG_STAGE
 
     ; record server id if present; then send REQUEST
     lda #DHCP_STATE_OFFER_SEEN
@@ -814,9 +816,9 @@ _offer_request_tx_busy:
     rts
 
 _got_ack:
-    inc DHCP_ACK_SEEN
+    DEBUG_INC DHCP_ACK_SEEN
     lda #$09
-    sta DHCP_DEBUG_STAGE
+    DEBUG_STA DHCP_DEBUG_STAGE
 
     ; apply config: LOCAL_IP, SUBNET_MASK, ROUTER (gateway), DNS
     ldy #0
@@ -841,9 +843,9 @@ _got_ack:
     rts
 
 _got_nak:
-    inc DHCP_NAK_SEEN
+    DEBUG_INC DHCP_NAK_SEEN
     lda #$0a
-    sta DHCP_DEBUG_STAGE
+    DEBUG_STA DHCP_DEBUG_STAGE
 
     lda #DHCP_STATE_FAILED
     sta DHCP_STATE

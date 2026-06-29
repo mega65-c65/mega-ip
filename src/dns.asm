@@ -51,6 +51,7 @@ DNS_QNAME_LEN:          .byte $00
 
 DNS_ARP_DEFERS:         .byte 40   ; ~40 quick defers then give up
 
+.if DEBUG
 DNS_DEBUG_STAGE:        .byte $00
 DNS_QUERY_TX_OK:        .byte $00
 DNS_QUERY_TX_FAIL:      .byte $00
@@ -61,6 +62,7 @@ DNS_RAW_RX_COUNT:       .byte $00
 DNS_IPV4_RX_COUNT:      .byte $00
 DNS_UDP_RX_COUNT:       .byte $00
 DNS_NOT_FOR_US_COUNT:   .byte $00
+.endif
 
 ;===========================================================
 ; BUILD + SEND a UDP/IPv4 packet in ETH_TX_FRAME_*
@@ -152,7 +154,7 @@ _cpy_ip:
 ;===========================================================
 DNS_SEND_QUERY:
     lda #$01
-    sta DNS_DEBUG_STAGE
+    DEBUG_STA DNS_DEBUG_STAGE
 
     ; ARP must be ready first (non-blocking)
     jsr DNS_ENSURE_ARP_READY
@@ -252,26 +254,26 @@ _qcpy:
 
     ; ---- Build IPv4+send ----
     lda #$02
-    sta DNS_DEBUG_STAGE
+    DEBUG_STA DNS_DEBUG_STAGE
     jsr DNS_SEND_UDP
     bcs _tx_fail
-    inc DNS_QUERY_TX_OK
+    DEBUG_INC DNS_QUERY_TX_OK
     lda #$03
-    sta DNS_DEBUG_STAGE
+    DEBUG_STA DNS_DEBUG_STAGE
     clc                 ; C=0 - sent
     rts
 
 _tx_fail:
-    inc DNS_QUERY_TX_FAIL
+    DEBUG_INC DNS_QUERY_TX_FAIL
     lda #$04
-    sta DNS_DEBUG_STAGE
+    DEBUG_STA DNS_DEBUG_STAGE
     sec
     rts
 
 _no_send:
-    inc DNS_ARP_WAIT_COUNT
+    DEBUG_INC DNS_ARP_WAIT_COUNT
     lda #$05
-    sta DNS_DEBUG_STAGE
+    DEBUG_STA DNS_DEBUG_STAGE
     sec                 ; C=1 - not sent
     rts
 
@@ -303,8 +305,8 @@ _hn_abs:                    ; self-modified: LDA $xxxx,Y
     jsr DNS_HOST_CHAR_TO_ASCII
     bcc _char_ok
 
-    sty DNS_ARP_WAIT_COUNT
-    sta DNS_PARSE_FAILS
+    DEBUG_STY DNS_ARP_WAIT_COUNT
+    DEBUG_STA DNS_PARSE_FAILS
     jmp _toolong
 
 _char_ok:
@@ -557,30 +559,30 @@ DNS_RESOLVE_START:
 
     ; clear previous result
     lda #0
-    sta DNS_DEBUG_STAGE
-    sta DNS_QUERY_TX_OK
-    sta DNS_QUERY_TX_FAIL
-    sta DNS_RX_HITS
-    sta DNS_ARP_WAIT_COUNT
-    sta DNS_PARSE_FAILS
-    sta DNS_RAW_RX_COUNT
-    sta DNS_IPV4_RX_COUNT
-    sta DNS_UDP_RX_COUNT
-    sta DNS_NOT_FOR_US_COUNT
+    DEBUG_STA DNS_DEBUG_STAGE
+    DEBUG_STA DNS_QUERY_TX_OK
+    DEBUG_STA DNS_QUERY_TX_FAIL
+    DEBUG_STA DNS_RX_HITS
+    DEBUG_STA DNS_ARP_WAIT_COUNT
+    DEBUG_STA DNS_PARSE_FAILS
+    DEBUG_STA DNS_RAW_RX_COUNT
+    DEBUG_STA DNS_IPV4_RX_COUNT
+    DEBUG_STA DNS_UDP_RX_COUNT
+    DEBUG_STA DNS_NOT_FOR_US_COUNT
     sta DNS_RESULT_IP+0
     sta DNS_RESULT_IP+1
     sta DNS_RESULT_IP+2
     sta DNS_RESULT_IP+3
 
     lda #$10
-    sta DNS_DEBUG_STAGE
+    DEBUG_STA DNS_DEBUG_STAGE
 
     lda #<host_str
     ldx #>host_str
     jsr DNS_PACK_HOSTNAME
     bcc _pack_ok
     lda #$11
-    sta DNS_DEBUG_STAGE
+    DEBUG_STA DNS_DEBUG_STAGE
     jmp _start_fail
 
 _pack_ok:
@@ -686,7 +688,7 @@ _defer:
 
 _give_up:
     lda #$f1
-    sta DNS_DEBUG_STAGE
+    DEBUG_STA DNS_DEBUG_STAGE
     lda #DNS_STATE_FAIL
     sta DNS_STATE
 _tick_done:
@@ -738,9 +740,9 @@ DNS_UDP_IN:
     lda DNS_STATE
     cmp #DNS_STATE_WAIT
     bne DNS2_NOT_DNS
-    inc DNS_RX_HITS
+    DEBUG_INC DNS_RX_HITS
     lda #$10
-    sta DNS_DEBUG_STAGE
+    DEBUG_STA DNS_DEBUG_STAGE
 
     ; ---- IHL (IP header length in bytes) ----
     lda ETH_RX_FRAME_PAYLOAD+0
@@ -763,7 +765,7 @@ DNS_UDP_IN:
     bne DNS2_NOT_DNS
 
     lda #$11
-    sta DNS_DEBUG_STAGE
+    DEBUG_STA DNS_DEBUG_STAGE
     ; UDP source port must be 53.
     lda ETH_RX_FRAME_PAYLOAD+0,y
     cmp #$00
@@ -782,7 +784,7 @@ DNS2_SRC_CHECK:
     bpl DNS2_SRC_CHECK
 
     lda #$12
-    sta DNS_DEBUG_STAGE
+    DEBUG_STA DNS_DEBUG_STAGE
     ; Reader base = first byte of DNS payload.
     lda #<ETH_RX_FRAME_PAYLOAD+UDP_DATA_BASE
     clc
@@ -803,7 +805,7 @@ DNS2_SRC_CHECK:
     bne DNS2_NOT_DNS
 
     lda #$13
-    sta DNS_DEBUG_STAGE
+    DEBUG_STA DNS_DEBUG_STAGE
     ; Flags: QR=1, TC=0, RCODE=0.
     jsr DNS2_READ_BYTE
     sta DNS2_FLAGS_HI
@@ -820,7 +822,7 @@ DNS2_SRC_CHECK:
     bne DNS2_FAIL
 
     lda #$14
-    sta DNS_DEBUG_STAGE
+    DEBUG_STA DNS_DEBUG_STAGE
     ; QDCOUNT.
     jsr DNS2_READ_BYTE
     bne DNS2_FAIL
@@ -869,7 +871,7 @@ DNS2_ANS_LOW_ONLY:
     sta seen_cname
 
     lda #$15
-    sta DNS_DEBUG_STAGE
+    DEBUG_STA DNS_DEBUG_STAGE
 DNS2_ANSWER_LOOP:
     jsr DNS2_SKIP_NAME
     bcs DNS2_FAIL
@@ -935,7 +937,7 @@ DNS2_SKIP_RDATA:
     bne DNS2_PREP_AUTHORITY
 
 DNS2_FAIL:
-    inc DNS_PARSE_FAILS
+    DEBUG_INC DNS_PARSE_FAILS
     lda #DNS_STATE_FAIL
     sta DNS_STATE
 DNS2_NOT_DNS:
@@ -953,7 +955,7 @@ DNS2_ACCEPT_A:
     lda #DNS_STATE_DONE
     sta DNS_STATE
     lda #$20
-    sta DNS_DEBUG_STAGE
+    DEBUG_STA DNS_DEBUG_STAGE
     rts
 
 DNS2_PREP_AUTHORITY:
@@ -966,7 +968,7 @@ DNS2_NS_LOW_ONLY:
     beq DNS2_PREP_ADDITIONAL
 
     lda #$17
-    sta DNS_DEBUG_STAGE
+    DEBUG_STA DNS_DEBUG_STAGE
 
 DNS2_AUTHORITY_LOOP:
     jsr DNS2_SKIP_RR
@@ -984,7 +986,7 @@ DNS2_AR_LOW_ONLY:
     beq DNS2_REQUERY_CNAME
 
     lda #$16
-    sta DNS_DEBUG_STAGE
+    DEBUG_STA DNS_DEBUG_STAGE
 
 DNS2_ADDITIONAL_LOOP:
     jsr DNS2_SKIP_NAME

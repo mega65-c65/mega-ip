@@ -1,11 +1,9 @@
 ;=============================================================================
 ; Routine to handle incoming TCP packet
 ;=============================================================================
-; Keep this private TCP block in the low runtime image but clear of the fixed
-; BASIC data block and the $7000/$7200 public helper tables.
-* = $6a00
+; Internal handler: let it flow with the runtime image.
 INCOMING_TCP_PACKET:
-    inc CONNECT_TCP_RX_DBG
+    DEBUG_INC CONNECT_TCP_RX_DBG
 
     ; Only handle IPv4 TCP; drop others (e.g., mDNS/UDP)
     lda ETH_RX_FRAME_PAYLOAD+0

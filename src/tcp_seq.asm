@@ -1,8 +1,7 @@
 ;=============================================================================
 ; TCP 32-bit modular sequence comparisons
 ;=============================================================================
-; Lives in the fixed gap before the BASIC-visible data block.
-* = $4b0b
+; Internal helper code: let it flow with the runtime image.
 
 ; Out: A=$ff if SEG.SEQ < RCV.NXT, A=$00 if equal, A=$01 if greater.
 ;      N/Z reflect A for BMI/BEQ callers.

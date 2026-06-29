@@ -49,7 +49,7 @@ _enqueue_loop:
 _enqueue_done:
     lda TXQ_NEW_COUNT
     sta TXQ_COUNT
-    inc TCP_TX_ENQUEUE_OK_DBG
+    DEBUG_INC TCP_TX_ENQUEUE_OK_DBG
 
 _success:
     clc
@@ -66,7 +66,8 @@ TCP_TX_ACK_CHECK:
     lda ETH_RX_TCP_FLAGS
     and #TCP_FLAG_ACK
     beq _ret
-    inc TCP_TX_ACK_SEEN_DBG
+    DEBUG_INC TCP_TX_ACK_SEEN_DBG
+.if DEBUG
     ldx #$00
 _save_last_ack:
     lda SEG_ACK,x
@@ -74,6 +75,7 @@ _save_last_ack:
     inx
     cpx #$04
     bne _save_last_ack
+.endif
 
     ; RFC-style ACK bounds for stop-and-wait data:
     ; SND.UNA < SEG.ACK <= SND.NXT, and it must cover this segment.
@@ -91,7 +93,7 @@ _ack_not_future:
     bmi _ret
 
 _acked:
-    inc TCP_TX_ACK_MATCH_DBG
+    DEBUG_INC TCP_TX_ACK_MATCH_DBG
     lda #$00
     sta TX_UNACK_PENDING
     sta TX_UNACK_RETRY_TICKS
@@ -140,6 +142,7 @@ _tx_busy:
     rts
 
 _timeout:
+.if DEBUG
     inc TCP_TX_TIMEOUT_DBG
     lda TX_UNACK_LEN
     sta TCP_TX_TIMEOUT_LEN_DBG
@@ -154,6 +157,7 @@ _timeout_snapshot:
     inx
     cpx #$04
     bne _timeout_snapshot
+.endif
 
     jsr TCP_HARD_RESET
     lda TCP_EVENT_FLAG
@@ -245,13 +249,15 @@ _payload_ready:
     bcs _send_fail_clear
     lda #$00
     sta ACK_REPLY_PENDING
-    inc TCP_TX_SEND_OK_DBG
+    DEBUG_INC TCP_TX_SEND_OK_DBG
+.if DEBUG
     lda CONNECT_RAW_RX_DBG
     sta TCP_TX_BASE_RAW_DBG
     lda CONNECT_TCP_DISPATCH_DBG
     sta TCP_TX_BASE_DISPATCH_DBG
     lda CONNECT_TCP_RX_DBG
     sta TCP_TX_BASE_HANDLER_DBG
+.endif
 
     ldx #$00
 _save_seq:
@@ -316,7 +322,7 @@ _send_fail_clear:
     jsr CLEAR_TCP_PAYLOAD
 
 _send_fail:
-    inc TCP_TX_SEND_FAIL_DBG
+    DEBUG_INC TCP_TX_SEND_FAIL_DBG
     sec
     rts
 
@@ -371,14 +377,14 @@ _restore_isn_after_build:
     bcs _retransmit_fail
     lda #$00
     sta ACK_REPLY_PENDING
-    inc TCP_TX_RETX_OK_DBG
+    DEBUG_INC TCP_TX_RETX_OK_DBG
 
     jsr CLEAR_TCP_PAYLOAD
     clc
     rts
 
 _retransmit_fail:
-    inc TCP_TX_RETX_FAIL_DBG
+    DEBUG_INC TCP_TX_RETX_FAIL_DBG
     jsr CLEAR_TCP_PAYLOAD
     sec
     rts
