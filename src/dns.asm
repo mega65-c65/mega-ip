@@ -800,6 +800,44 @@ DNS2_SRC_CHECK:
     cmp #$0c
     bcc DNS2_FAIL
 
+    ; Actual DNS payload available = IPv4 total length - IHL - UDP header.
+    lda IPV4_RX_TOTAL_LO
+    sec
+    sbc ihl
+    sta DNS2_PTR_LO
+    lda IPV4_RX_TOTAL_HI
+    sbc #$00
+    bcc DNS2_FAIL
+    sta DNS2_PTR_HI
+    lda DNS2_PTR_LO
+    sec
+    sbc #UDP_DATA_BASE
+    sta DNS2_PTR_LO
+    lda DNS2_PTR_HI
+    sbc #$00
+    bcc DNS2_FAIL
+    sta DNS2_PTR_HI
+    bne DNS2_REAL_LEN_OK
+    lda DNS2_PTR_LO
+    cmp #$0c
+    bcc DNS2_FAIL
+
+DNS2_REAL_LEN_OK:
+    ; Clamp claimed UDP payload length to the real bytes in the IPv4 datagram.
+    lda DNS2_PTR_HI
+    cmp DNS2_SKIP_HI
+    bcc DNS2_CLAMP_LEN
+    bne DNS2_UDP_LEN_OK
+    lda DNS2_PTR_LO
+    cmp DNS2_SKIP_LO
+    bcs DNS2_UDP_LEN_OK
+
+DNS2_CLAMP_LEN:
+    lda DNS2_PTR_LO
+    sta DNS2_SKIP_LO
+    lda DNS2_PTR_HI
+    sta DNS2_SKIP_HI
+
 DNS2_UDP_LEN_OK:
     ; Reader base = first byte of DNS payload.
     lda #<ETH_RX_FRAME_PAYLOAD+UDP_DATA_BASE
