@@ -167,9 +167,10 @@
 800 rem ====================== keyboard ==========================
 801 if iw=1 then ob$="":gosub 680:return
 802 if pd=1 then ob$="":gosub 680:return
-803 if k$=chr$(133) then gosub 1030:return
-804 if k$=chr$(135) then gosub 1035:return
-805 if k$=chr$(13) then gosub 820:gosub 680:return
+803 if k$=chr$(147) or k$=chr$(19) then return
+804 if k$=chr$(133) then gosub 1030:return
+805 if k$=chr$(135) then gosub 1035:return
+806 if k$=chr$(13) then gosub 820:gosub 680:return
 810 if k$=chr$(20) then if len(ob$)>0 then ob$=left$(ob$,len(ob$)-1)
 815 if k$<>chr$(13) and k$<>chr$(20) and len(ob$)<200 then ob$=ob$+k$
 818 gosub 680:return
@@ -377,14 +378,15 @@
 1362 if mk<>1 then print an$;
 1363 gosub 1460
 1364 getkey k$:gosub 1461
-1365 if k$=chr$(13) then print:return
-1366 if k$=chr$(20) then dd=0:if len(an$)>0 then an$=left$(an$,len(an$)-1):print chr$(20);" ";chr$(20);
-1367 if k$=chr$(20) then gosub 1460:goto 1364
-1368 if len(k$)<>1 then gosub 1460:goto 1364
-1369 if asc(k$)<32 then gosub 1460:goto 1364
-1370 if dd=1 and df$<>"" then for z=1 to len(an$):print chr$(20);" ";chr$(20);:next:an$="":dd=0
-1371 if len(an$)<60 then an$=an$+k$:if mk=1 then print"*";:else print k$;
-1372 gosub 1460:goto 1364
+1365 if k$=chr$(147) or k$=chr$(19) then gosub 1460:goto 1364
+1366 if k$=chr$(13) then print:return
+1367 if k$=chr$(20) then dd=0:if len(an$)>0 then an$=left$(an$,len(an$)-1):print chr$(20);" ";chr$(20);
+1368 if k$=chr$(20) then gosub 1460:goto 1364
+1369 if len(k$)<>1 then gosub 1460:goto 1364
+1370 if asc(k$)<32 then gosub 1460:goto 1364
+1371 if dd=1 and df$<>"" then for z=1 to len(an$):print chr$(20);" ";chr$(20);:next:an$="":dd=0
+1372 if len(an$)<60 then an$=an$+k$:if mk=1 then print"*";:else print k$;
+1373 gosub 1460:goto 1364
 1373 rem
 1375 rem -- channel forward numeric 470: old channel -> new channel --
 1376 fw$=rl$:for zx=1 to 4:p=instr(fw$," "):if p=0 then return
