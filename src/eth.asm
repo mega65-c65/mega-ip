@@ -1182,6 +1182,12 @@ _seg_in_past:
     lda REMOTE_ISN+2
     sbc SEG_SEQ+2
     sta SKIP_HI
+    lda REMOTE_ISN+1
+    sbc SEG_SEQ+1
+    bne _dup_entire_ack
+    lda REMOTE_ISN+0
+    sbc SEG_SEQ+0
+    bne _dup_entire_ack
 
     ; If SKIP >= seg_len → whole segment duplicate → dup-ACK and return
     lda SKIP_HI

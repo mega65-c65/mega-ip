@@ -49,7 +49,7 @@
 580 if (a and 1) then 610
 590 if (a and 2) then print"{lred} failed.{wht}":end
 600 if ti-tt<2000 then 570:else print"{lred} timed out.{wht}":end
-610 li=0:jn=0:rl$="":ob$="":tp$="":pj$="":ld=0:rd=0:nt=0:nr=0:nw$="":lc=-1:pd=0:iw=0:ij=0:jp=0 : rem ld=names loading
+610 li=0:jn=0:rl$="":ob$="":tp$="":pj$="":ld=0:rd=0:nt=0:nr=0:nw$="":lc=-1:pd=0:iw=0:ij=0:jp=0:wi=0:wf$="" : rem ld=names loading
 620 gosub 800:gosub 1530             : rem ui, register
 630 rem ====================== main loop =========================
 640 if jp=1 and ti-jt>600 then gosub 4100
@@ -118,6 +118,7 @@
 1250 gosub 1530                      : rem register on first line
 1260 cm$="":cp=instr(rl$," "):if left$(rl$,1)=":" and cp>0 then cm$=mid$(rl$,cp+1,3)
 1270 if cm$="432" or cm$="433" then gosub 4130:rl$="":return       : rem nick invalid/in use
+1275 if wi=1 and instr("311 312 313 317 318 319 330 671 401",cm$)>0 then gosub 4730:rl$="":return
 1280 if ch$<>"" and cm$="332" then gosub 2930:rl$="":return        : rem topic reply
 1290 if ch$<>"" and cm$="331" then tp$="":gosub 3080:rl$="":return  : rem no topic
 1300 if ch$<>"" and cm$="333" then rl$="":return                   : rem topic metadata
@@ -193,6 +194,7 @@
 1970 pr$="{cyn}<{lred}"+nk$+"{cyn}> {lred}"+ob$:gosub 1050:ob$="":return
 1980 rem -- slash command --
 1990 if left$(ob$,5)="/msg " then gosub 2870:return
+1995 if left$(ob$,7)="/whois " then gosub 4650:return
 2000 if left$(ob$,6)="/join " then nj$=mid$(ob$,7):if ij=1 then pj$=nj$:a$="part "+ch$+cr$:sys $4201b:pd=1:ld=0:nr=0:nw$="":gosub 1120:return
 2010 if left$(ob$,6)="/join " then ch$=nj$:tp$="":pj$="":iw=0:pd=0:ij=0:gosub 800:gosub 2270:return
 2020 if ob$="/part" and ch$="" then pr$="{lred}* not in a channel.":gosub 1050:return
@@ -205,7 +207,7 @@
 2090 if ob$="/help" then gosub 2130:return
 2100 pr$="{lred}* unknown command.":gosub 1050:return
 2110 rem -- disconnected --
-2120 sys $4205d:jp=0:ij=0:ld=0:nr=0:pd=0:iw=0:rl$="":ob$="":nc=0:nt=0:nw$="":lc=-1
+2120 sys $4205d:jp=0:ij=0:ld=0:nr=0:pd=0:iw=0:wi=0:wf$="":rl$="":ob$="":nc=0:nt=0:nw$="":lc=-1
 2125 pr$="{lred}* connection closed.":gosub 1050:gosub 1120
 2127 pr$="{yel}* press any key to reconnect.":gosub 1050:getkey k$:goto 280
 2130 rem -- help --
@@ -216,6 +218,7 @@
 2180 pr$="{lgrn}/nick name          - change nick":gosub 1050
 2190 pr$="{lgrn}/names              - refresh names":gosub 1050
 2200 pr$="{lgrn}/msg <nick> message - send private message":gosub 1050
+2205 pr$="{lgrn}/whois nick         - show user info":gosub 1050
 2210 pr$="{lgrn}/me action          - send an action":gosub 1050
 2220 pr$="{lgrn}/quit               - disconnect":gosub 1050:return
 2230 rem -- rreg ip into ad$ --
@@ -472,3 +475,15 @@
 4620 iw=0:pr$="{yel}* NickServ wait timed out, joining...":gosub 1050
 4630 if ch$<>"" and ij=0 and jp=0 then gosub 2270
 4640 return
+4650 rem -- whois command --
+4660 wn$=mid$(ob$,8):sp=instr(wn$," "):if sp>0 then wn$=left$(wn$,sp-1)
+4670 zn$=wn$:gosub 2740:wn$=zz$:if wn$="" then pr$="{lred}* usage: /whois nick":gosub 1050:return
+4680 wf$=wn$:wi=1:a$="whois "+wn$+cr$:sys $4201b
+4690 pr$="{rvon}{cyn} WHOIS "+wn$+" {rvof}":gosub 1050:return
+4730 rem -- whois numeric reply --
+4740 wt$=rl$:for wx=1 to 3:sp=instr(wt$," "):if sp=0 then 4770
+4750 wt$=mid$(wt$,sp+1):next
+4760 sx$=wt$:gosub 4290:wt$=sy$
+4770 if cm$="318" then pr$="{rvon}{cyn}WHOIS done{rvof}":gosub 1050:wi=0:return
+4780 if cm$="401" then pr$="{rvon}{cyn}WHOIS{rvof} {lred}"+wt$:gosub 1050:wi=0:return
+4790 pr$="{rvon}{cyn}WHOIS "+cm$+"{rvof} {wht}"+wt$:gosub 1050:return
