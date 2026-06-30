@@ -1610,6 +1610,12 @@ _check_CLOSE_WAIT:
     cmp #TCP_STATE_CLOSE_WAIT
     bne _check_LAST_ACK
 
+    jsr TCP_SEQ_CMP_SEG_SEQ_REMOTE
+    beq _close_wait_seq_ok
+    jsr TCP_DEFER_DUP_ACK
+    jmp _done
+
+_close_wait_seq_ok:
     ; build & send FIN+ACK
     lda #TCP_FLAG_FIN|TCP_FLAG_ACK
     jsr ETH_BUILD_TCPIP_PACKET
