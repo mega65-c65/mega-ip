@@ -82,6 +82,8 @@ _pub:
 RBUF_GET:
     php
     sei
+    tza
+    pha
 
     ; empty? (head == tail)
     jsr READ_HEAD_ATOMIC
@@ -121,21 +123,32 @@ _ok:
     beq _ok_done
     pla
     jsr CHAR_TRANSLATE
-    plp
-    clc
-    rts
+    jmp _return_ok
 
 _ok_done:
     pla
+
+_return_ok:
+    sta RBUF_GET_SAVE_A
+    pla
+    taz
+    lda RBUF_GET_SAVE_A
     plp
     clc
     rts
 
 _empty:
     lda #$00
+    sta RBUF_GET_SAVE_A
+    pla
+    taz
+    lda RBUF_GET_SAVE_A
     plp
     sec
     rts
+
+RBUF_GET_SAVE_A:
+    .byte $00
 
 
 ;=============================================================================

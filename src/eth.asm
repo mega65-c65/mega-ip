@@ -1191,6 +1191,37 @@ _seg_in_past:
     cmp RX_COPY_REM_LO
     bcc _have_tail
 _dup_entire:
+    lda ETH_RX_TCP_FLAGS
+    and #TCP_FLAG_FIN
+    beq _dup_entire_ack
+    lda SKIP_HI
+    cmp RX_COPY_REM_HI
+    bne _dup_entire_ack
+    lda SKIP_LO
+    cmp RX_COPY_REM_LO
+    bne _dup_entire_ack
+
+    ; The payload is duplicate, but FIN sits exactly at RCV.NXT.
+    lda #$00
+    sta TCP_RX_DATA_PAYLOAD_SIZE
+    sta TCP_RX_DATA_PAYLOAD_SIZE+1
+    lda #$01
+    sta REMOTE_ISN_BUMP
+    jsr CALC_REMOTE_ISN
+    lda #$00
+    sta REMOTE_ISN_BUMP
+    lda #TCP_FLAG_ACK
+    jsr ETH_BUILD_TCPIP_PACKET
+    jsr DEFER_CURRENT_TX
+    lda #TCP_STATE_CLOSE_WAIT
+    sta TCP_STATE
+    lda TCP_EVENT_FLAG
+    ora #EV_PEER_FIN
+    sta TCP_EVENT_FLAG
+    plp
+    rts
+
+_dup_entire_ack:
     lda #$00
     sta TCP_RX_DATA_PAYLOAD_SIZE
     sta TCP_RX_DATA_PAYLOAD_SIZE+1
@@ -4115,6 +4146,7 @@ DNS2_COPY_LABEL_BYTE:
     lda DNS2_BOUNDS_FAIL
     bne DNS2_COPY_NAME_BAD
     tya
+    jsr DNS2_MATCH_LOWER_A
     ldx q_out
     cpx #128
     bcs DNS2_COPY_NAME_BAD

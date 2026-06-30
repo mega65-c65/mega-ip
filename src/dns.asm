@@ -942,7 +942,7 @@ DNS2_ANS_LOW_ONLY:
     lda #$15
     DEBUG_STA DNS_DEBUG_STAGE
 DNS2_ANSWER_LOOP:
-    jsr DNS2_SKIP_NAME
+    jsr DNS2_MATCH_QNAME
     bcs DNS2_FAIL
 
     jsr DNS2_READ_BYTE
@@ -973,6 +973,8 @@ DNS2_ANSWER_LOOP:
     bne DNS2_SKIP_RDATA
 
 DNS2_CHECK_A:
+    lda DNS2_OWNER_MATCH
+    beq DNS2_SKIP_RDATA
     lda DNS2_CLASS_HI
     bne DNS2_SKIP_RDATA
     lda DNS2_CLASS_LO
@@ -987,6 +989,8 @@ DNS2_CHECK_A:
     jmp DNS2_ACCEPT_A
 
 DNS2_CHECK_CNAME:
+    lda DNS2_OWNER_MATCH
+    beq DNS2_SKIP_RDATA
     lda DNS2_CLASS_HI
     bne DNS2_SKIP_RDATA
     lda DNS2_CLASS_LO
@@ -1062,7 +1066,7 @@ DNS2_AR_LOW_ONLY:
     DEBUG_STA DNS_DEBUG_STAGE
 
 DNS2_ADDITIONAL_LOOP:
-    jsr DNS2_SKIP_NAME
+    jsr DNS2_MATCH_QNAME
     bcs DNS2_FAIL
 
     jsr DNS2_READ_BYTE
@@ -1089,6 +1093,8 @@ DNS2_ADDITIONAL_LOOP:
     lda DNS2_TYPE_LO
     cmp #$01
     bne DNS2_SKIP_AR_RDATA
+    lda DNS2_OWNER_MATCH
+    beq DNS2_SKIP_AR_RDATA
     lda DNS2_CLASS_HI
     bne DNS2_SKIP_AR_RDATA
     lda DNS2_CLASS_LO
@@ -1137,6 +1143,174 @@ DNS2_SKIP_RR:
 
 DNS2_SKIP_RR_BAD:
     sec
+    rts
+
+DNS2_MATCH_QNAME:
+    lda #$01
+    sta DNS2_OWNER_MATCH
+    lda #$00
+    sta DNS2_MATCH_IDX
+    sta DNS2_NAME_GUARD
+
+DNS2_MATCH_MAIN_LOOP:
+    inc DNS2_NAME_GUARD
+    lda DNS2_NAME_GUARD
+    cmp #$40
+    bcs DNS2_MATCH_BAD
+
+    jsr DNS2_READ_BYTE
+    tax
+    lda DNS2_BOUNDS_FAIL
+    bne DNS2_MATCH_BAD
+    txa
+    and #$C0
+    beq DNS2_MATCH_MAIN_LABEL
+    cmp #$C0
+    beq DNS2_MATCH_MAIN_POINTER
+    jmp DNS2_MATCH_BAD
+
+DNS2_MATCH_MAIN_LABEL:
+    txa
+    and #$3F
+    jsr DNS2_MATCH_COMPARE_BYTE
+    lda DNS2_MATCH_BYTE
+    and #$3F
+    beq DNS2_MATCH_DONE
+    sta DNS2_MATCH_COUNT
+
+DNS2_MATCH_MAIN_LABEL_BYTE:
+    jsr DNS2_READ_BYTE
+    tax
+    lda DNS2_BOUNDS_FAIL
+    bne DNS2_MATCH_BAD
+    txa
+    jsr DNS2_MATCH_COMPARE_BYTE
+    dec DNS2_MATCH_COUNT
+    bne DNS2_MATCH_MAIN_LABEL_BYTE
+    jmp DNS2_MATCH_MAIN_LOOP
+
+DNS2_MATCH_MAIN_POINTER:
+    txa
+    and #$3F
+    sta DNS2_PTR_HI
+    jsr DNS2_READ_BYTE
+    sta DNS2_PTR_LO
+    lda DNS2_BOUNDS_FAIL
+    bne DNS2_MATCH_BAD
+    jsr DNS2_MATCH_SET_NAME_PTR
+    jmp DNS2_MATCH_PTR_LOOP
+
+DNS2_MATCH_PTR_LOOP:
+    inc DNS2_NAME_GUARD
+    lda DNS2_NAME_GUARD
+    cmp #$40
+    bcs DNS2_MATCH_BAD
+
+    jsr DNS2_READ_NAME_BYTE
+    tax
+    lda DNS2_BOUNDS_FAIL
+    bne DNS2_MATCH_BAD
+    txa
+    and #$C0
+    beq DNS2_MATCH_PTR_LABEL
+    cmp #$C0
+    beq DNS2_MATCH_PTR_POINTER
+    jmp DNS2_MATCH_BAD
+
+DNS2_MATCH_PTR_LABEL:
+    txa
+    and #$3F
+    jsr DNS2_MATCH_COMPARE_BYTE
+    lda DNS2_MATCH_BYTE
+    and #$3F
+    beq DNS2_MATCH_DONE
+    sta DNS2_MATCH_COUNT
+
+DNS2_MATCH_PTR_LABEL_BYTE:
+    jsr DNS2_READ_NAME_BYTE
+    tax
+    lda DNS2_BOUNDS_FAIL
+    bne DNS2_MATCH_BAD
+    txa
+    jsr DNS2_MATCH_COMPARE_BYTE
+    dec DNS2_MATCH_COUNT
+    bne DNS2_MATCH_PTR_LABEL_BYTE
+    jmp DNS2_MATCH_PTR_LOOP
+
+DNS2_MATCH_PTR_POINTER:
+    txa
+    and #$3F
+    sta DNS2_PTR_HI
+    jsr DNS2_READ_NAME_BYTE
+    sta DNS2_PTR_LO
+    lda DNS2_BOUNDS_FAIL
+    bne DNS2_MATCH_BAD
+    jsr DNS2_MATCH_SET_NAME_PTR
+    jmp DNS2_MATCH_PTR_LOOP
+
+DNS2_MATCH_DONE:
+    lda DNS2_BOUNDS_FAIL
+    bne DNS2_MATCH_BAD
+    lda DNS2_OWNER_MATCH
+    beq DNS2_MATCH_OK
+    lda DNS2_MATCH_IDX
+    cmp DNS_QNAME_LEN
+    beq DNS2_MATCH_OK
+    lda #$00
+    sta DNS2_OWNER_MATCH
+
+DNS2_MATCH_OK:
+    clc
+    rts
+
+DNS2_MATCH_BAD:
+    sec
+    rts
+
+DNS2_MATCH_SET_NAME_PTR:
+    lda DNS2_BASE_LO
+    clc
+    adc DNS2_PTR_LO
+    sta DNS2_NAME_LO
+    lda DNS2_BASE_HI
+    adc DNS2_PTR_HI
+    sta DNS2_NAME_HI
+    rts
+
+DNS2_MATCH_COMPARE_BYTE:
+    jsr DNS2_MATCH_LOWER_A
+    sta DNS2_MATCH_BYTE
+    lda DNS2_OWNER_MATCH
+    beq DNS2_MATCH_COMPARE_DONE
+    ldx DNS2_MATCH_IDX
+    cpx DNS_QNAME_LEN
+    bcc DNS2_MATCH_COMPARE_IDX_OK
+    lda #$00
+    sta DNS2_OWNER_MATCH
+    rts
+
+DNS2_MATCH_COMPARE_IDX_OK:
+    lda DNS2_MATCH_BYTE
+    cmp DNS_QNAME,x
+    beq DNS2_MATCH_COMPARE_SAME
+    lda #$00
+    sta DNS2_OWNER_MATCH
+    rts
+
+DNS2_MATCH_COMPARE_SAME:
+    inc DNS2_MATCH_IDX
+
+DNS2_MATCH_COMPARE_DONE:
+    rts
+
+DNS2_MATCH_LOWER_A:
+    cmp #'A'
+    bcc DNS2_MATCH_LOWER_DONE
+    cmp #'Z'+1
+    bcs DNS2_MATCH_LOWER_DONE
+    ora #$20
+
+DNS2_MATCH_LOWER_DONE:
     rts
 
 DNS2_SKIP_NAME:
@@ -1291,3 +1465,7 @@ DNS2_BOUNDS_FAIL:   .byte $00
 DNS2_NAME_GUARD:    .byte $00
 DNS2_NAME_LO:       .byte $00
 DNS2_NAME_HI:       .byte $00
+DNS2_OWNER_MATCH:   .byte $00
+DNS2_MATCH_IDX:     .byte $00
+DNS2_MATCH_COUNT:   .byte $00
+DNS2_MATCH_BYTE:    .byte $00
