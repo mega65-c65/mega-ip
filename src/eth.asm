@@ -1050,6 +1050,15 @@ TCP_STATE_HANDLER:
     beq _not_RST
 
     ; remote sent RST → tear down immediately
+    lda TCP_STATE
+    cmp #TCP_STATE_SYN_SENT
+    beq _rst_accepted
+    cmp #TCP_STATE_CLOSED
+    beq _rst_ignore
+    jsr TCP_SEQ_CMP_SEG_SEQ_REMOTE
+    bne _rst_ignore
+
+_rst_accepted:
     jsr TCP_HARD_RESET
     lda CONNECT_ACTIVE
     beq +
@@ -1061,6 +1070,9 @@ TCP_STATE_HANDLER:
     ora #EV_CONNECT_FAIL
     sta TCP_EVENT_FLAG
  +  rts
+
+_rst_ignore:
+    rts
 
 _not_RST:
 
@@ -1079,6 +1091,12 @@ _check_ESTABLISHED:
     lda ETH_RX_TCP_FLAGS
     and #TCP_FLAG_FIN
     beq _no_fin_in_established
+    jsr TCP_SEQ_CMP_SEG_SEQ_REMOTE
+    beq _fin_seq_ok_established
+    jsr TCP_DEFER_DUP_ACK
+    rts
+
+_fin_seq_ok_established:
     jmp _got_FIN_IN_ESTABLISHED
 
     ; If the peer is closing too (FIN+ACK), go handle that first
@@ -1444,6 +1462,14 @@ _check_FIN_WAIT_1:
     and #TCP_FLAG_ACK
     cmp #TCP_FLAG_ACK
     bne _done
+    jsr TCP_SEQ_CMP_SEG_SEQ_REMOTE
+    beq _fin_wait_1_seq_ok
+    jsr TCP_DEFER_DUP_ACK
+    jmp _done
+
+_fin_wait_1_seq_ok:
+    jsr TCP_SEQ_CMP_SEG_ACK_LOCAL_ISN
+    bne _done
 
 _got_FIN_WAIT_1_ACK:
     lda #TCP_STATE_FIN_WAIT_2
@@ -1462,6 +1488,12 @@ _check_FIN_WAIT_2:
     lda ETH_RX_TCP_FLAGS
     and #TCP_FLAG_FIN
     beq _done
+    jsr TCP_SEQ_CMP_SEG_SEQ_REMOTE
+    beq _fin_wait_2_seq_ok
+    jsr TCP_DEFER_DUP_ACK
+    jmp _done
+
+_fin_wait_2_seq_ok:
 
     ;lda ETH_RX_TCP_FLAGS
     ;and #(TCP_FLAG_FIN|TCP_FLAG_ACK)
@@ -1517,6 +1549,7 @@ _check_CLOSE_WAIT:
     jsr ETH_BUILD_TCPIP_PACKET
     bcs _done
     jsr DEFER_CURRENT_TX
+    jsr CALC_LOCAL_ISN
     ; move to LAST_ACK
     lda #TCP_STATE_LAST_ACK
     sta TCP_STATE
@@ -1532,6 +1565,14 @@ _check_LAST_ACK:
     lda ETH_RX_TCP_FLAGS
     and #TCP_FLAG_ACK
     cmp #TCP_FLAG_ACK
+    bne _done
+    jsr TCP_SEQ_CMP_SEG_SEQ_REMOTE
+    beq _last_ack_seq_ok
+    jsr TCP_DEFER_DUP_ACK
+    jmp _done
+
+_last_ack_seq_ok:
+    jsr TCP_SEQ_CMP_SEG_ACK_LOCAL_ISN
     bne _done
 
     ; peer ACK’d your FIN, now go TIME_WAIT
@@ -1561,6 +1602,9 @@ _check_SYN_RCVD:
     ora TCP_RX_DATA_PAYLOAD_SIZE+1
     bne _done
 
+    jsr TCP_SEQ_CMP_SEG_SEQ_REMOTE
+    bne _done
+
     ldx #$00
 _synrcvd_ack_check:
     lda SEG_ACK,x
@@ -1586,6 +1630,25 @@ _synrcvd_ack_check:
     rts
 
 _done:
+    rts
+
+; ================================================================================
+; Defers a duplicate ACK using the current receive-next value.
+; ================================================================================
+TCP_DEFER_DUP_ACK:
+    lda #$00
+    sta TCP_RX_DATA_PAYLOAD_SIZE
+    sta TCP_RX_DATA_PAYLOAD_SIZE+1
+    sta TCP_DATA_PAYLOAD_SIZE
+    sta TCP_DATA_PAYLOAD_SIZE+1
+    sta REMOTE_ISN_BUMP
+    jsr CALC_REMOTE_ISN
+    lda #TCP_FLAG_ACK
+    jsr ETH_BUILD_TCPIP_PACKET
+    bcs _tcp_defer_dup_ack_done
+    jsr DEFER_CURRENT_TX
+
+_tcp_defer_dup_ack_done:
     rts
 
 ; ================================================================================
@@ -2306,8 +2369,17 @@ CALC_LOCAL_ISN:
     beq _add_one                        ; handshake‐ACK must consume the SYN
 
     cmp #TCP_STATE_ESTABLISHED          ; dont change seq # if not established
+    beq _check_established_flags
+
+    cmp #TCP_STATE_CLOSE_WAIT
     bne _done
 
+    lda TCP_HDR_FLGS_OFFS+1
+    and #TCP_FLAG_FIN
+    bne _add_one                        ; passive-close FIN consumes 1
+    rts
+
+_check_established_flags:
     lda TCP_HDR_FLGS_OFFS+1
     and #TCP_FLAG_FIN
     bne _add_one                        ; if FIN present, add 1

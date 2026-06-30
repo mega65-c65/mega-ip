@@ -66,6 +66,8 @@ TCP_TX_ACK_CHECK:
     lda ETH_RX_TCP_FLAGS
     and #TCP_FLAG_ACK
     beq _ret
+    jsr TCP_SEQ_CMP_SEG_SEQ_REMOTE
+    bne _ret
     DEBUG_INC TCP_TX_ACK_SEEN_DBG
 .if DEBUG
     ldx #$00
