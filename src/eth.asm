@@ -661,9 +661,14 @@ _connect_syn_expired:
     lda CONNECT_RETRY_LEFT
     beq _connect_syn_timeout
     dec CONNECT_RETRY_LEFT
-    lda #CONNECT_SYN_RETRY_TICKS
-    sta CONNECT_RETRY_TICKS
     jsr CONNECT_SEND_SYN
+    bcs _connect_syn_retry_not_sent
+    clc
+    rts
+
+_connect_syn_retry_not_sent:
+    lda #TCP_TX_BUSY_RETRY_TICKS
+    sta CONNECT_RETRY_TICKS
     clc
     rts
 

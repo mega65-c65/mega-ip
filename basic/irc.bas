@@ -55,19 +55,20 @@
 640 if jp=1 and ti-jt>600 then gosub 4100
 650 gosub 4590
 660 get k$:if k$<>"" then gosub 1800 : rem keyboard gets first chance
+665 sys $42024:rreg a:if a<>0 then 2110
 670 bc=0
 680 sys $4201e:rreg a               : rem read one incoming byte
 690 if a=0 then 780                 : rem 0 = ring empty
 700 if a=10 then 770                : rem ignore lf
 710 if nr=1 then gosub 3270:goto 770
 720 if a=13 and rd=1 then rd=0:rl$="":goto 780
-730 if a=13 then gosub 1220:gosub 1120:goto 780 : rem process line, refresh input
+730 if a=13 then gosub 1220:goto 770 : rem process line and keep draining burst
 740 if rd=1 then 770
 750 if len(rl$)<250 then rl$=rl$+chr$(a):gosub 3340:goto 770
 760 rd=1:rl$="":goto 780
 770 if iw=1 then gosub 4590
-775 bc=bc+1:if bc<96 then 680
-780 sys $42024:rreg a:if a<>0 then 2110
+775 bc=bc+1:if bc<224 then 680
+780 rem back to poll/keyboard loop
 790 goto 650
 800 rem ================== build screen ==========================
 810 cursor off:cc=0:cr=0
@@ -121,7 +122,7 @@
 1290 if ch$<>"" and cm$="331" then tp$="":gosub 3080:rl$="":return  : rem no topic
 1300 if ch$<>"" and cm$="333" then rl$="":return                   : rem topic metadata
 1310 if ch$<>"" and (cm$="353" or instr(rl$," 353 ")>0) then jp=0:ij=1:gosub 2380:rl$="":return  : rem names reply
-1320 if ch$<>"" and (cm$="366" or instr(rl$," 366 ")>0) then jp=0:ij=1:ld=0:nr=0:nw$="":gosub 2540:rl$="":return  : rem end of names
+1320 if ch$<>"" and (cm$="366" or instr(rl$," 366 ")>0) then jp=0:ij=1:ld=0:nr=0:nw$="":gosub 2540:gosub 1120:rl$="":return  : rem end of names
 1330 if jn=0 and instr(rl$," 001")>0 then jn=1:gosub 1560
 1340 if pd=1 and cm$="442" then ch$="":tp$="":pj$="":pd=0:ij=0:jp=0:ld=0:nr=0:nw$="":nc=0:nt=0:gosub 800:gosub 2690:rl$="":return
 1350 if pd=1 and instr(rl$," PART ")=0 then rl$="":return
