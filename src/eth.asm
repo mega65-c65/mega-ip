@@ -261,6 +261,16 @@ TX_UNACK_EXPECT_ACK:    .byte 0,0,0,0
 TX_SAVE_LOCAL_ISN:      .byte 0,0,0,0
 TCP_PEER_MAC_VALID:     .byte 0
 TCP_PEER_MAC:           .byte 0,0,0,0,0,0
+TCP_RST_SAVE_LOCAL_PORT:  .byte 0,0
+TCP_RST_SAVE_REMOTE_PORT: .byte 0,0
+TCP_RST_SAVE_REMOTE_IP:   .byte 0,0,0,0
+TCP_RST_SAVE_LOCAL_ISN:   .byte 0,0,0,0
+TCP_RST_SAVE_REMOTE_ISN:  .byte 0,0,0,0
+TCP_RST_SAVE_TX_LEN:      .byte 0,0
+TCP_RST_SAVE_RX_LEN:      .byte 0,0
+TCP_RST_SAVE_BUMP:        .byte 0
+TCP_RST_TCP_OFF:          .byte 0
+TCP_RST_REPLY_FLAGS:      .byte 0
 
 .if DEBUG
 TCP_TX_ENQUEUE_OK_DBG:  .byte 0
@@ -1087,10 +1097,14 @@ _check_ESTABLISHED:
 
     jsr TCP_TX_ACK_CHECK
 
-    ; If the peer is closing too (FIN), go handle that first
+    ; If this is a bare FIN, handle it now.  If data is present, copy the
+    ; payload first and consume the FIN only after all bytes are stored.
     lda ETH_RX_TCP_FLAGS
     and #TCP_FLAG_FIN
     beq _no_fin_in_established
+    lda TCP_RX_DATA_PAYLOAD_SIZE
+    ora TCP_RX_DATA_PAYLOAD_SIZE+1
+    bne _no_fin_in_established
     jsr TCP_SEQ_CMP_SEG_SEQ_REMOTE
     beq _fin_seq_ok_established
     jsr TCP_DEFER_DUP_ACK
@@ -1288,6 +1302,16 @@ _ack_what_we_took:
 
     lda #$00
     sta REMOTE_ISN_BUMP
+    lda ETH_RX_TCP_FLAGS
+    and #TCP_FLAG_FIN
+    beq _ack_no_fin_bump
+    lda RX_COPY_REM_LO
+    ora RX_COPY_REM_HI
+    bne _ack_no_fin_bump
+    lda #$01
+    sta REMOTE_ISN_BUMP
+
+_ack_no_fin_bump:
     jsr CALC_REMOTE_ISN            ; RCV.NXT += consumed
 
     ; Build a pure ACK (no data)
@@ -1328,6 +1352,20 @@ _ack_defer_copy:
     sta ACK_REPLY_PENDING
 
 _ack_defer_done:
+    lda REMOTE_ISN_BUMP
+    beq _ack_defer_no_fin
+    lda #$00
+    sta REMOTE_ISN_BUMP
+
+    ; data+FIN is now fully consumed.
+    lda #TCP_STATE_CLOSE_WAIT
+    sta TCP_STATE
+
+    lda TCP_EVENT_FLAG
+    ora #EV_PEER_FIN
+    sta TCP_EVENT_FLAG
+
+_ack_defer_no_fin:
     plp
     rts
 
@@ -1360,9 +1398,10 @@ _est_done:
     ; CLOSED
     ;---------------------------------------------------------------------------
 _check_CLOSED:
-    ; if closed, nothing to do. return
+    ; if closed, reset non-RST segments so peers fail fast
     cmp #TCP_STATE_CLOSED
     bne _check_SYN
+    jsr TCP_SEND_RESET_FOR_RX
     rts
 
     ;---------------------------------------------------------------------------
@@ -1649,6 +1688,203 @@ TCP_DEFER_DUP_ACK:
     jsr DEFER_CURRENT_TX
 
 _tcp_defer_dup_ack_done:
+    rts
+
+; ================================================================================
+; Send a TCP reset for a valid inbound segment that has no matching open socket.
+; RFC 793: never answer RST with RST.  If SEG.ACK is present, send RST with
+; SEQ=SEG.ACK.  Otherwise send RST|ACK with ACK=SEG.SEQ+SEG.LEN.
+; ================================================================================
+TCP_SEND_RESET_FOR_RX:
+    lda ETH_RX_TCP_FLAGS
+    and #TCP_FLAG_RST
+    beq _tcp_rst_not_rst
+    rts
+
+_tcp_rst_not_rst:
+    lda ETH_RX_FRAME_SRC_MAC
+    and #$01
+    beq _tcp_rst_src_unicast
+    rts
+
+_tcp_rst_src_unicast:
+    jsr TCP_RST_SAVE_CONTEXT
+
+    lda ETH_RX_FRAME_PAYLOAD
+    and #$0f
+    asl
+    asl
+    sta TCP_RST_TCP_OFF
+    tax
+
+    ; Reply tuple: local is the segment's destination, remote is its source.
+    ldy #$03
+_tcp_rst_ip_copy:
+    lda ETH_RX_FRAME_PAYLOAD+12,y
+    sta REMOTE_IP,y
+    dey
+    bpl _tcp_rst_ip_copy
+
+    lda ETH_RX_FRAME_PAYLOAD+0,x
+    sta REMOTE_PORT
+    lda ETH_RX_FRAME_PAYLOAD+1,x
+    sta REMOTE_PORT+1
+    lda ETH_RX_FRAME_PAYLOAD+2,x
+    sta LOCAL_PORT
+    lda ETH_RX_FRAME_PAYLOAD+3,x
+    sta LOCAL_PORT+1
+
+    lda ETH_RX_FRAME_PAYLOAD+4,x
+    sta SEG_SEQ+0
+    lda ETH_RX_FRAME_PAYLOAD+5,x
+    sta SEG_SEQ+1
+    lda ETH_RX_FRAME_PAYLOAD+6,x
+    sta SEG_SEQ+2
+    lda ETH_RX_FRAME_PAYLOAD+7,x
+    sta SEG_SEQ+3
+    lda ETH_RX_FRAME_PAYLOAD+8,x
+    sta SEG_ACK+0
+    lda ETH_RX_FRAME_PAYLOAD+9,x
+    sta SEG_ACK+1
+    lda ETH_RX_FRAME_PAYLOAD+10,x
+    sta SEG_ACK+2
+    lda ETH_RX_FRAME_PAYLOAD+11,x
+    sta SEG_ACK+3
+
+    jsr CALC_RX_TCP_BYTE_COUNT
+
+    lda ETH_RX_TCP_FLAGS
+    and #TCP_FLAG_ACK
+    beq _tcp_rst_no_ack
+
+    ldx #$03
+_tcp_rst_seq_from_ack:
+    lda SEG_ACK,x
+    sta LOCAL_ISN,x
+    lda #$00
+    sta REMOTE_ISN,x
+    dex
+    bpl _tcp_rst_seq_from_ack
+    lda #TCP_FLAG_RST
+    sta TCP_RST_REPLY_FLAGS
+    jmp _tcp_rst_build
+
+_tcp_rst_no_ack:
+    ldx #$03
+_tcp_rst_ack_from_seq:
+    lda #$00
+    sta LOCAL_ISN,x
+    lda SEG_SEQ,x
+    sta REMOTE_ISN,x
+    dex
+    bpl _tcp_rst_ack_from_seq
+
+    lda #$00
+    sta REMOTE_ISN_BUMP
+    lda ETH_RX_TCP_FLAGS
+    and #TCP_FLAG_SYN
+    beq +
+    inc REMOTE_ISN_BUMP
++   lda ETH_RX_TCP_FLAGS
+    and #TCP_FLAG_FIN
+    beq +
+    inc REMOTE_ISN_BUMP
++   jsr CALC_REMOTE_ISN
+    lda #(TCP_FLAG_RST|TCP_FLAG_ACK)
+    sta TCP_RST_REPLY_FLAGS
+
+_tcp_rst_build:
+    lda #$00
+    sta TCP_DATA_PAYLOAD_SIZE
+    sta TCP_DATA_PAYLOAD_SIZE+1
+
+    lda #$08
+    sta ETH_TX_TYPE
+    lda #$00
+    sta ETH_TX_TYPE+1
+
+    lda #$06
+    jsr BUILD_IPV4_HEADER
+    lda TCP_RST_REPLY_FLAGS
+    jsr BUILD_TCP_HEADER
+
+    ldy #$05
+_tcp_rst_mac_copy:
+    lda ETH_RX_FRAME_SRC_MAC,y
+    sta ETH_TX_FRAME_DEST_MAC,y
+    dey
+    bpl _tcp_rst_mac_copy
+
+    lda #60
+    sta ETH_TX_LEN_LSB
+    lda #$00
+    sta ETH_TX_LEN_MSB
+    jsr DEFER_CURRENT_TX
+    jsr TCP_RST_RESTORE_CONTEXT
+    rts
+
+TCP_RST_SAVE_CONTEXT:
+    lda LOCAL_PORT
+    sta TCP_RST_SAVE_LOCAL_PORT
+    lda LOCAL_PORT+1
+    sta TCP_RST_SAVE_LOCAL_PORT+1
+    lda REMOTE_PORT
+    sta TCP_RST_SAVE_REMOTE_PORT
+    lda REMOTE_PORT+1
+    sta TCP_RST_SAVE_REMOTE_PORT+1
+    lda TCP_DATA_PAYLOAD_SIZE
+    sta TCP_RST_SAVE_TX_LEN
+    lda TCP_DATA_PAYLOAD_SIZE+1
+    sta TCP_RST_SAVE_TX_LEN+1
+    lda TCP_RX_DATA_PAYLOAD_SIZE
+    sta TCP_RST_SAVE_RX_LEN
+    lda TCP_RX_DATA_PAYLOAD_SIZE+1
+    sta TCP_RST_SAVE_RX_LEN+1
+    lda REMOTE_ISN_BUMP
+    sta TCP_RST_SAVE_BUMP
+
+    ldx #$03
+_tcp_rst_save_loop:
+    lda REMOTE_IP,x
+    sta TCP_RST_SAVE_REMOTE_IP,x
+    lda LOCAL_ISN,x
+    sta TCP_RST_SAVE_LOCAL_ISN,x
+    lda REMOTE_ISN,x
+    sta TCP_RST_SAVE_REMOTE_ISN,x
+    dex
+    bpl _tcp_rst_save_loop
+    rts
+
+TCP_RST_RESTORE_CONTEXT:
+    lda TCP_RST_SAVE_LOCAL_PORT
+    sta LOCAL_PORT
+    lda TCP_RST_SAVE_LOCAL_PORT+1
+    sta LOCAL_PORT+1
+    lda TCP_RST_SAVE_REMOTE_PORT
+    sta REMOTE_PORT
+    lda TCP_RST_SAVE_REMOTE_PORT+1
+    sta REMOTE_PORT+1
+    lda TCP_RST_SAVE_TX_LEN
+    sta TCP_DATA_PAYLOAD_SIZE
+    lda TCP_RST_SAVE_TX_LEN+1
+    sta TCP_DATA_PAYLOAD_SIZE+1
+    lda TCP_RST_SAVE_RX_LEN
+    sta TCP_RX_DATA_PAYLOAD_SIZE
+    lda TCP_RST_SAVE_RX_LEN+1
+    sta TCP_RX_DATA_PAYLOAD_SIZE+1
+    lda TCP_RST_SAVE_BUMP
+    sta REMOTE_ISN_BUMP
+
+    ldx #$03
+_tcp_rst_restore_loop:
+    lda TCP_RST_SAVE_REMOTE_IP,x
+    sta REMOTE_IP,x
+    lda TCP_RST_SAVE_LOCAL_ISN,x
+    sta LOCAL_ISN,x
+    lda TCP_RST_SAVE_REMOTE_ISN,x
+    sta REMOTE_ISN,x
+    dex
+    bpl _tcp_rst_restore_loop
     rts
 
 ; ================================================================================
@@ -3162,6 +3398,15 @@ _chk_eth_type:
     jmp _unknown_packet
 
 _is_arp:
+    ; ARP payload is 28 bytes. Ethernet padding may make it larger, but never
+    ; trust shorter frames before reading fixed ARP fields.
+    lda ETH_RX_PAYLOAD_LEN_H
+    bne _arp_len_ok
+    lda ETH_RX_PAYLOAD_LEN_L
+    cmp #28
+    bcc _unknown_packet
+
+_arp_len_ok:
     ; OPER must be 0x0001 (request) or 0x0002 (reply)
     lda ETH_RX_FRAME_PAYLOAD+6          ; OPER MSB
     bne _unknown_packet                 ; reject non-zero MSB
@@ -3215,6 +3460,17 @@ _udp_demux:
     sta DHCP_IP_IHL_BYTES
     tay                                ; Y = IHL in bytes (typically 20)
 
+    ; Require a complete UDP header before reading UDP ports.
+    lda IPV4_RX_TOTAL_HI
+    bne _udp_header_ok
+    lda IPV4_RX_TOTAL_LO
+    sec
+    sbc DHCP_IP_IHL_BYTES
+    bcc _unknown_packet
+    cmp #UDP_DATA_BASE
+    bcc _unknown_packet
+
+_udp_header_ok:
     ; Check UDP destination port (at UDP header offset +2)
     lda ETH_RX_FRAME_PAYLOAD+2,y       ; dst port high
     cmp #>(UDP_PORT_DHCP_CLIENT)       ; 68
@@ -3826,8 +4082,11 @@ DNS2_COPY_NAME_LOOP:
     bcs DNS2_COPY_NAME_BAD
 
     jsr DNS2_READ_NAME_BYTE
-    beq DNS2_COPY_NAME_ZERO
     tax
+    lda DNS2_BOUNDS_FAIL
+    bne DNS2_COPY_NAME_BAD
+    txa
+    beq DNS2_COPY_NAME_ZERO
     and #$C0
     beq DNS2_COPY_NAME_LABEL
     cmp #$C0
@@ -3852,6 +4111,10 @@ DNS2_COPY_NAME_LABEL:
     sta lbl_cnt
 DNS2_COPY_LABEL_BYTE:
     jsr DNS2_READ_NAME_BYTE
+    tay
+    lda DNS2_BOUNDS_FAIL
+    bne DNS2_COPY_NAME_BAD
+    tya
     ldx q_out
     cpx #128
     bcs DNS2_COPY_NAME_BAD
@@ -3867,7 +4130,10 @@ DNS2_COPY_NAME_POINTER:
     and #$3F
     sta ptr_hi
     jsr DNS2_READ_NAME_BYTE
-    sta ptr_lo
+    tay
+    lda DNS2_BOUNDS_FAIL
+    bne DNS2_COPY_NAME_BAD
+    sty ptr_lo
 
     lda DNS2_BASE_LO
     clc
@@ -3894,6 +4160,22 @@ DNS2_COPY_NAME_BAD:
     rts
 
 DNS2_READ_NAME_BYTE:
+    lda DNS2_NAME_HI
+    cmp DNS2_END_HI
+    bcc DNS2_READ_NAME_OK
+    bne DNS2_READ_NAME_BAD
+    lda DNS2_NAME_LO
+    cmp DNS2_END_LO
+    bcc DNS2_READ_NAME_OK
+
+DNS2_READ_NAME_BAD:
+    lda #$01
+    sta DNS2_BOUNDS_FAIL
+    lda #$00
+    sec
+    rts
+
+DNS2_READ_NAME_OK:
     lda DNS2_NAME_LO
     sta DNS2_NAME_READ_ABS+1
     lda DNS2_NAME_HI
@@ -3906,9 +4188,14 @@ DNS2_NAME_READ_ABS:
     inc DNS2_NAME_HI
 DNS2_NAME_ADV_DONE:
     pla
+    clc
     rts
 
 DNS2_REQUERY_CNAME:
+    lda DNS_CNAME_HOPS
+    beq DNS2_REQUERY_CNAME_FAIL
+    dec DNS_CNAME_HOPS
+
     lda #DNS_MAX_RETRIES
     sta DNS_RETRY_LEFT
     lda #DNS_TIMEOUT_TICKS_BASE
@@ -3944,6 +4231,11 @@ DNS2_REQUERY_ID_OK:
     lda #40
     sta DNS_ARP_DEFERS
 DNS2_REQUERY_DONE:
+    rts
+
+DNS2_REQUERY_CNAME_FAIL:
+    lda #DNS_STATE_FAIL
+    sta DNS_STATE
     rts
 
 ;=============================================================================

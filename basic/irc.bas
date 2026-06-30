@@ -53,7 +53,7 @@
 620 gosub 800:gosub 1530             : rem ui, register
 630 rem ====================== main loop =========================
 640 if jp=1 and ti-jt>600 then gosub 4100
-650 if iw=1 and ti-it>600 then iw=0:pr$="{yel}* NickServ authorization timed out.":gosub 1050:gosub 1120
+650 gosub 4590
 660 get k$:if k$<>"" then gosub 1800 : rem keyboard gets first chance
 670 bc=0
 680 sys $4201e:rreg a               : rem read one incoming byte
@@ -65,7 +65,8 @@
 740 if rd=1 then 770
 750 if len(rl$)<250 then rl$=rl$+chr$(a):gosub 3340:goto 770
 760 rd=1:rl$="":goto 780
-770 bc=bc+1:if bc<96 then 680
+770 if iw=1 then gosub 4590
+775 bc=bc+1:if bc<96 then 680
 780 sys $42024:rreg a:if a<>0 then 2110
 790 goto 650
 800 rem ================== build screen ==========================
@@ -103,7 +104,7 @@
 1120 rem -- redraw the input line on row 24 --
 1130 window 0,0,79,24:print chr$(19);chr$(19);:cursor 0,24
 1140 if pd=1 then lm$="Leaving channel...":print"{yel}";lm$;:zk=77-len(lm$):if zk>0 then for zj=1 to zk:print" ";:next:window 0,2,67,22:return
-1150 if iw=1 then lm$="Authorizing your credentials...":print"{yel}";lm$;:zk=77-len(lm$):if zk>0 then for zj=1 to zk:print" ";:next:window 0,2,67,22:return
+1150 rem NickServ identify runs in background; do not block input.
 1160 if jp=1 and ob$="" then lm$="Joining "+ch$+"...":print"{yel}";lm$;:zk=77-len(lm$):if zk>0 then for zj=1 to zk:print" ";:next:window 0,2,67,22:return
 1170 if ld=1 and ob$="" then gosub 3400:return
 1180 if len(ob$)>77 then id$=right$(ob$,77):else id$=ob$
@@ -140,18 +141,21 @@
 1490 if ch$<>"" and instr(rl$," NICK ")>0 then gosub 1730:rl$="":return
 1500 if pd=1 then rl$="":return
 1510 mp=instr(rl$," :"):if mp=0 then pr$=rl$:else pr$=mid$(rl$,mp+2)
+1515 mb$=pr$:gosub 4190
 1520 gosub 1050:rl$="":return
 1530 if li=1 then return
 1540 li=1:a$="nick "+nk$+cr$:sys $4201b
 1550 a$="user "+nk$+" 0 * :"+nk$+cr$:sys $4201b:return
 1560 rem -- after welcome, identify first if requested, then join --
-1570 if pw$<>"" then a$="privmsg NickServ :IDENTIFY "+pw$+cr$:sys $4201b:iw=1:it=ti:pr$="{wht}* identifying with NickServ...":gosub 1050:return
+1565 if pw$="" then 1580
+1570 co=rcolor(1):a$="privmsg NickServ :IDENTIFY "+pw$+cr$:sys $4201b:iw=1:it=ti
+1575 pr$="{rvon}{lgrn} Automatically sending NickServ credentials {rvof}":gosub 1050:color co:return
 1580 gosub 2270:return
 1590 mp=instr(rl$," :"):if mp=0 then return
 1600 pv=instr(rl$," PRIVMSG "):if pv=0 then return
 1610 tg$=mid$(rl$,pv+9):sp=instr(tg$," "):if sp=0 then return
 1620 tg$=left$(tg$,sp-1):mb$=mid$(rl$,mp+2):if left$(mb$,1)=chr$(1) then 1670
-1630 sx$=mb$:gosub 4290:mb$=sy$
+1630 sx$=mb$:gosub 4290:mb$=sy$:gosub 4190
 1640 if tg$=ch$ then pr$="{cyn}<{lgrn}"+sn$+"{cyn}> {wht}"+mb$:gosub 1050:return
 1650 zn$=tg$:gosub 2740:tc$=zz$:zn$=nk$:gosub 2740:if tc$<>zz$ then return
 1660 pr$="{lred}*PM* {cyn}<"+sn$+">{wht} "+mb$:gosub 1050:return
@@ -169,7 +173,7 @@
 1780 mb$=mid$(rl$,mp+2):sx$=mb$:gosub 4290:mb$=sy$:gosub 4190
 1790 pr$="{yel}-"+sn$+"- {wht}"+mb$:gosub 1050:return
 1800 rem ====================== keyboard ==========================
-1810 if iw=1 then ob$="":gosub 1120:return
+1810 rem NickServ identify does not block typing.
 1820 if pd=1 then ob$="":gosub 1120:return
 1830 if k$=chr$(147) or k$=chr$(19) then return
 1840 if k$=chr$(133) then gosub 3000:return
@@ -200,7 +204,9 @@
 2090 if ob$="/help" then gosub 2130:return
 2100 pr$="{lred}* unknown command.":gosub 1050:return
 2110 rem -- disconnected --
-2120 sys $4205d:print chr$(19);chr$(19);"{clr}{lred}* connection closed.{wht}":end
+2120 sys $4205d:jp=0:ij=0:ld=0:nr=0:pd=0:iw=0:rl$="":ob$="":nc=0:nt=0:nw$="":lc=-1
+2125 pr$="{lred}* connection closed.":gosub 1050:gosub 1120
+2127 pr$="{yel}* press any key to reconnect.":gosub 1050:getkey k$:goto 280
 2130 rem -- help --
 2140 pr$="":gosub 1050
 2150 pr$="{lgrn}MegaIP Help:":gosub 1050
@@ -409,14 +415,26 @@
 4180 a$="nick "+nk$+cr$:sys $4201b:pr$="{yel}* trying nick "+nk$:gosub 1050:return
 4190 rem -- NickServ identify notice watcher --
 4200 if iw<>1 then return
-4210 if instr(mb$,"You are now identified")>0 or instr(mb$,"You are now logged in")>0 then 4280
-4220 if instr(mb$,"Password accepted")>0 or instr(mb$,"Authentication successful")>0 then 4280
-4230 if instr(mb$,"Invalid password")>0 or instr(mb$,"Password incorrect")>0 then 4260
-4240 if instr(mb$,"not registered")>0 or instr(mb$,"not recognized")>0 or instr(mb$,"No such nick")>0 then 4260
-4250 return
-4260 iw=0:jp=0:ij=0:ld=0:nr=0:nw$="":ch$="":tp$="":gosub 3080:gosub 2540
-4270 pr$="{lred}* NickServ identify failed.":gosub 1050:return
-4280 iw=0:pr$="{wht}* NickServ identified.":gosub 1050:gosub 2270:return
+4205 sx$=mb$:gosub 4550:lw$=sy$
+4210 if instr(lw$,"you are now identified")>0 then 4280
+4215 if instr(lw$,"you are now logged in")>0 then 4280
+4220 if instr(lw$,"password accepted")>0 then 4280
+4225 if instr(lw$,"authentication successful")>0 then 4280
+4226 if instr(lw$,"already logged in")>0 then 4280
+4227 if instr(lw$,"already identified")>0 then 4280
+4228 if iw<>1 then return
+4230 if instr(lw$,"invalid password")>0 then 4260
+4235 if instr(lw$,"password incorrect")>0 then 4260
+4240 if instr(lw$,"not registered")>0 then 4260
+4245 if instr(lw$,"not recognized")>0 then 4260
+4250 if instr(lw$,"no such nick")>0 then 4260
+4255 return
+4260 iw=0:pr$="{lred}* NickServ identify failed.":gosub 1050
+4270 if ch$<>"" and ij=0 and jp=0 then gosub 2270
+4275 gosub 1120:return
+4280 iw=0:pr$="{wht}* NickServ identified.":gosub 1050
+4285 if ch$<>"" and ij=0 and jp=0 then gosub 2270
+4287 return
 4290 rem -- strip irc color/control codes from sx$ into sy$ --
 4300 sy$="":for qx=1 to len(sx$)
 4310 qc=asc(mid$(sx$,qx,1)):if qc=3 then gosub 4350:goto 4340
@@ -443,3 +461,13 @@
 4520 return
 4530 print chr$(18);" ";chr$(146);:return
 4540 print chr$(20);" ";chr$(20);:return
+4550 rem -- lowercase sx$ into sy$ --
+4560 sy$="":for qx=1 to len(sx$):qc=asc(mid$(sx$,qx,1)):if qc>=65 and qc<=90 then sy$=sy$+chr$(qc+32):goto 4580
+4570 sy$=sy$+mid$(sx$,qx,1)
+4580 next:return
+4590 rem -- NickServ wait fallback --
+4600 if iw<>1 then return
+4610 if ti-it<3 then return
+4620 iw=0:pr$="{yel}* NickServ wait timed out, joining...":gosub 1050
+4630 if ch$<>"" and ij=0 and jp=0 then gosub 2270
+4640 return

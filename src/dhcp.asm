@@ -41,6 +41,7 @@ DHCP_TICK_FRAMES            = 6
 
 ; BOOTP/DHCP fixed header sizes
 BOOTP_FIXED_SIZE            = 236          ; up to 'options' field
+DHCP_MIN_UDP_LEN            = UDP_DATA_BASE + BOOTP_FIXED_SIZE + 4
 
 ; Workspace
 DHCP_IN_PROGRESS:           .byte 0
@@ -708,6 +709,37 @@ DHCP_ON_UDP:
 
     ldy DHCP_IP_IHL_BYTES        ; Y = IP header length in bytes
 
+    ; Require actual IPv4 bytes and claimed UDP length to contain the UDP
+    ; header, BOOTP fixed section, and DHCP magic cookie before fixed reads.
+    lda IPV4_RX_TOTAL_LO
+    sec
+    sbc DHCP_IP_IHL_BYTES
+    sta pl_len
+    lda IPV4_RX_TOTAL_HI
+    sbc #$00
+    sta pl_len+1
+    bne _dhcp_actual_len_ok
+    lda pl_len
+    cmp #DHCP_MIN_UDP_LEN
+    bcc _out
+
+_dhcp_actual_len_ok:
+    lda ETH_RX_FRAME_PAYLOAD+4,y
+    bne _dhcp_claimed_len_ok
+    lda ETH_RX_FRAME_PAYLOAD+5,y
+    cmp #DHCP_MIN_UDP_LEN
+    bcc _out
+
+_dhcp_claimed_len_ok:
+    lda pl_len+1
+    cmp ETH_RX_FRAME_PAYLOAD+4,y
+    bcc _out
+    bne _dhcp_udp_len_ok
+    lda pl_len
+    cmp ETH_RX_FRAME_PAYLOAD+5,y
+    bcc _out
+
+_dhcp_udp_len_ok:
     ; Verify BOOTP op=2 (reply)
     lda #$02
     DEBUG_STA DHCP_DEBUG_STAGE
@@ -769,10 +801,28 @@ DHCP_ON_UDP:
     DEBUG_STA DHCP_DEBUG_STAGE
     lda dhcp_msg_type
     cmp #DHCPOFFER
-    beq _got_offer
+    beq _maybe_offer
     cmp #DHCPACK
-    beq _got_ack
+    beq _maybe_ack
     cmp #DHCPNAK
+    beq _maybe_nak
+    rts
+
+_maybe_offer:
+    lda DHCP_STATE
+    cmp #DHCP_STATE_DISCOVER_SENT
+    beq _got_offer
+    rts
+
+_maybe_ack:
+    lda DHCP_STATE
+    cmp #DHCP_STATE_REQUEST_SENT
+    beq _got_ack
+    rts
+
+_maybe_nak:
+    lda DHCP_STATE
+    cmp #DHCP_STATE_REQUEST_SENT
     beq _got_nak
     rts
 

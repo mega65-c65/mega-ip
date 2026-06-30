@@ -174,13 +174,22 @@ _copy_mac:
 _passive_done:
     ; ===== end passive-open demux =====
 
+    ; No active socket accepted this TCP segment.  If we are otherwise closed,
+    ; answer with RST instead of silently dropping it.
+    lda TCP_STATE
+    cmp #TCP_STATE_CLOSED
+    bne _active_tuple_check
+    jsr TCP_SEND_RESET_FOR_RX
+    rts
+
+_active_tuple_check:
     ; src IP must be REMOTE_IP (once we are trying to talk to a peer)
     ; (do this unconditionally; if you prefer, you can skip while CLOSED)
     ldy #0
 _chk_sip:
     lda ETH_RX_FRAME_PAYLOAD+12,y    ; IPv4 src at +12..+15
     cmp REMOTE_IP,y
-    bne _drop
+    bne _reset_drop
     iny
     cpy #4
     bne _chk_sip
@@ -188,18 +197,18 @@ _chk_sip:
     ; verify this is our socket (dst port at ip_len+2) ----
     lda ETH_RX_FRAME_PAYLOAD+2,x      ; dst port hi
     cmp LOCAL_PORT+0
-    bne _drop
+    bne _reset_drop
     lda ETH_RX_FRAME_PAYLOAD+3,x      ; dst port lo
     cmp LOCAL_PORT+1
-    bne _drop
+    bne _reset_drop
 
     ; verify peer source port too
     lda ETH_RX_FRAME_PAYLOAD+0,x      ; src port hi
     cmp REMOTE_PORT+0
-    bne _drop
+    bne _reset_drop
     lda ETH_RX_FRAME_PAYLOAD+1,x      ; src port lo
     cmp REMOTE_PORT+1
-    bne _drop
+    bne _reset_drop
 
     ; ---- TCP flags at ip_len + 13 ----
     lda ETH_RX_FRAME_PAYLOAD+13,x
@@ -232,6 +241,10 @@ _chk_sip:
     jmp TCP_STATE_HANDLER
 
 _drop:
+    rts
+
+_reset_drop:
+    jsr TCP_SEND_RESET_FOR_RX
     rts
 
 ;=============================================================================

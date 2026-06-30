@@ -25,6 +25,7 @@ DNS_STATE_FAIL          = $03
 
 DNS_TIMEOUT_TICKS_BASE  = 2     ; ~2 ticks between (re)sends, grows linearly
 DNS_MAX_RETRIES         = 8
+DNS_CNAME_MAX_HOPS      = 8
 DNS_TICK_FRAMES         = 6
 
 ; public result
@@ -38,6 +39,7 @@ DNS_LAST_BACKOFF:       .byte $00
 DNS_FRAME_TICKS:        .byte $00
 DNS_LAST_RASTER_LO:     .byte $00
 DNS_LAST_RASTER_HI:     .byte $00
+DNS_CNAME_HOPS:         .byte $00
 
 ; message id + client port (ephemeral: $C000-$DFFF)
 DNS_MSG_ID_HI:          .byte $00
@@ -573,6 +575,8 @@ DNS_RESOLVE_START:
     sta DNS_RESULT_IP+1
     sta DNS_RESULT_IP+2
     sta DNS_RESULT_IP+3
+    lda #DNS_CNAME_MAX_HOPS
+    sta DNS_CNAME_HOPS
 
     lda #$10
     DEBUG_STA DNS_DEBUG_STAGE
