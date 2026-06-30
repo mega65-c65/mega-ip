@@ -1600,7 +1600,8 @@ _got_FIN_ACK:
 _check_TIME_WAIT:
     cmp #TCP_STATE_TIME_WAIT
     bne _check_CLOSE_WAIT
-    jsr TIME_WAIT_TICK
+    ; ETH_STATUS_POLL owns the TIME_WAIT timer. Do not tick here too, because
+    ; this path is reached from ETH_RCV inside that same status poll.
     rts
 
     ;---------------------------------------------------------------------------
