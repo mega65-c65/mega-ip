@@ -132,6 +132,8 @@ _passive_try:
     lda #20
     sta TCP_HEADER_SIZE          ; ensure checksum code uses 20-byte TCP hdr
 
+    jsr TCP_SEED_LOCAL_ISN
+
     lda #$06
     jsr BUILD_IPV4_HEADER              ; uses LOCAL_IP/REMOTE_IP
 
@@ -156,8 +158,7 @@ _copy_mac:
     jsr ETH_PACKET_SEND
     bcs _drop
 
-    ; ----- Choose / bump our ISS (LOCAL_ISN) -----
-    ; Reuse your simple monotonic bump (no RNG needed here)
+    ; ----- The SYN we sent consumes 1 sequence number. -----
     inc LOCAL_ISN+3
     bne +
     inc LOCAL_ISN+2

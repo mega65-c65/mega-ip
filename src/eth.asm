@@ -535,15 +535,8 @@ ETH_TCP_CONNECT_START:
     jsr TCP_TX_RESET
     jsr CLEAR_REMOTE_ISN
 
-    inc LOCAL_ISN+3
-    bne _ahead
-    inc LOCAL_ISN+2
-    bne _ahead
-    inc LOCAL_ISN+1
-    bne _ahead
-    inc LOCAL_ISN+0
+    jsr TCP_SEED_LOCAL_ISN
 
-_ahead:
     lda #$00
     sta ETH_RX_TCP_FLAGS
     sta CONNECT_FAIL_LATCH
@@ -1981,6 +1974,7 @@ _done:
     rts
 
 .include "rbuf.asm"
+.include "random.asm"
 
 ;=============================================================================
 ; Ethernet clear to send

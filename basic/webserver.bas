@@ -262,7 +262,10 @@
  4080 a$="<h2>directory</h2><table id='dir' border='1' cellpadding='6' cellspacing='0'><tr><th>Filename</th><th>Type</th><th>Size</th><th colspan='2'>Actions</th></tr>":gosub 1000:gosub 4300
  4090 a$="</table><script>async function up()"+lb$+"let f=document.getElementById('file').files[0];if(!f)return;let t=document.getElementById('type').value;document.getElementById('upmsg').hidden=false;":gosub 1000
  4100 a$="document.getElementById('dir').style.display='none';for(let e of document.querySelectorAll('button,input,select'))e.disabled=true;":gosub 1000
- 4110 a$="await fetch('/upload?f='+encodeURIComponent(f.name)+'&t='+t+'&l='+f.size,"+lb$+"method:'POST',body:f"+rb$+");location='/files.html';"+rb$+"</script></body></html>":gosub 1000
+ 4105 a$="try"+lb$:gosub 1000
+ 4110 a$="await fetch('/upload?f='+encodeURIComponent(f.name)+'&t='+t+'&l='+f.size,"+lb$+"method:'POST',body:f,redirect:'manual',cache:'no-store'"+rb$+");":gosub 1000
+ 4115 a$=rb$+"catch(e)"+lb$+rb$+";setTimeout(function()"+lb$:gosub 1000
+ 4117 a$="location='/files.html?x='+Date.now()"+rb$+",1000);"+rb$+"</script></body></html>":gosub 1000
  4120 gosub 1030:sys $42021:gosub 1030:sleep1:sys $4205d:goto 730
  4300 rem == stream directory listing ======================================
  4310 close 2:df=1:open 2,8,0,"$"
