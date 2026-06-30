@@ -107,7 +107,6 @@ _loop:
     sta LOCAL_IP,Y
     sta GATEWAY_IP,Y
     sta SUBNET_MASK,Y
-    sta PRIMARY_DNS,Y
     sta opt_mask,y
     sta opt_router,y
     sta opt_dns,y
@@ -870,7 +869,14 @@ _got_ack:
     lda #$09
     DEBUG_STA DHCP_DEBUG_STAGE
 
-    ; apply config: LOCAL_IP, SUBNET_MASK, ROUTER (gateway), DNS
+    jsr _dhcp_ack_sanity
+    bcc _ack_sane
+    lda #$0b
+    DEBUG_STA DHCP_DEBUG_STAGE
+    rts
+
+_ack_sane:
+    ; apply config: LOCAL_IP, SUBNET_MASK, ROUTER (gateway)
     ldy #0
 -   lda DHCP_OFFER_IP,y
     sta LOCAL_IP,y
@@ -878,18 +884,49 @@ _got_ack:
     sta SUBNET_MASK,y
     lda opt_router,y
     sta GATEWAY_IP,y
-    lda opt_dns,y
-    ;sta DNS_SERVER,y
+    iny
+    cpy #4
+    bne -
+
+    ; DNS is optional.  If absent/zero, keep the previous/default DNS setting.
+    lda opt_dns+0
+    ora opt_dns+1
+    ora opt_dns+2
+    ora opt_dns+3
+    beq _ack_dns_done
+    ldy #0
+-   lda opt_dns,y
     sta PRIMARY_DNS,y
     iny
     cpy #4
     bne -
+_ack_dns_done:
 
     lda #DHCP_STATE_BOUND
     sta DHCP_STATE
 
     lda #0
     sta DHCP_IN_PROGRESS
+    rts
+
+_dhcp_ack_sanity:
+    lda DHCP_OFFER_IP+0
+    ora DHCP_OFFER_IP+1
+    ora DHCP_OFFER_IP+2
+    ora DHCP_OFFER_IP+3
+    beq _ack_bad
+
+    lda opt_mask+0
+    ora opt_mask+1
+    ora opt_mask+2
+    ora opt_mask+3
+    beq _ack_bad
+
+    clc
+    rts
+
+_ack_bad:
+    sec
     rts
 
 _got_nak:
