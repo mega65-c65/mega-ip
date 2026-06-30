@@ -120,42 +120,21 @@ _passive_try:
     bne +
     inc REMOTE_ISN+0
 +
-    ; ----- Send SYN|ACK back (build without the ARP gate) -----
-    lda #$08
-    sta ETH_TX_TYPE
-    lda #$00
-    sta ETH_TX_TYPE+1
-
     lda #$00
     sta TCP_DATA_PAYLOAD_SIZE
     sta TCP_DATA_PAYLOAD_SIZE+1
-    lda #20
-    sta TCP_HEADER_SIZE          ; ensure checksum code uses 20-byte TCP hdr
 
+    jsr TCP_SAVE_RX_PEER_MAC
     jsr TCP_SEED_LOCAL_ISN
+    ldx #$00
+_save_synack_iss:
+    lda LOCAL_ISN,x
+    sta TCP_SYNACK_ISS,x
+    inx
+    cpx #$04
+    bne _save_synack_iss
 
-    lda #$06
-    jsr BUILD_IPV4_HEADER              ; uses LOCAL_IP/REMOTE_IP
-
-    lda #(TCP_FLAG_SYN|TCP_FLAG_ACK)
-    jsr BUILD_TCP_HEADER               ; uses LOCAL_ISN / REMOTE_ISN
-
-    ; Fast-path MAC: reply to sender, avoid ARP wait
-    ldy #5
-_copy_mac:
-    lda ETH_RX_FRAME_SRC_MAC,y
-    sta ETH_TX_FRAME_DEST_MAC,y
-    dey
-    bpl _copy_mac
-    jsr TCP_SAVE_PEER_MAC
-
-    ; total length = 14 (Eth) + 20 (IP) + 20 (TCP) = 54 bytes (60 pad)
-    lda #60
-    sta ETH_TX_LEN_LSB
-    lda #$00
-    sta ETH_TX_LEN_MSB
-
-    jsr ETH_PACKET_SEND
+    jsr TCP_PASSIVE_SEND_SYNACK
     bcs _drop
 
     ; ----- The SYN we sent consumes 1 sequence number. -----
@@ -167,6 +146,16 @@ _copy_mac:
     bne +
     inc LOCAL_ISN+0
 +
+    lda #CONNECT_SYN_MAX_RETRIES
+    sta CONNECT_RETRY_LEFT
+    lda #CONNECT_SYN_RETRY_TICKS
+    sta CONNECT_RETRY_TICKS
+    jsr ARP_READ_RASTER
+    lda ARP_CUR_RASTER_LO
+    sta CONNECT_LAST_RASTER_LO
+    lda ARP_CUR_RASTER_HI
+    sta CONNECT_LAST_RASTER_HI
+
     ; Enter SYN-RCVD so final ACK will complete the handshake
     lda #TCP_STATE_SYN_RECEIVED
     sta TCP_STATE
@@ -246,6 +235,100 @@ _drop:
 
 _reset_drop:
     jsr TCP_SEND_RESET_FOR_RX
+    rts
+
+TCP_SYNACK_TICK:
+    lda TCP_STATE
+    cmp #TCP_STATE_SYN_RECEIVED
+    beq _synack_tick_active
+    rts
+
+_synack_tick_active:
+    jsr CONNECT_FRAME_WRAP_TICK
+    bcc _synack_tick_done
+
+    lda CONNECT_RETRY_TICKS
+    beq _synack_retry_expired
+    dec CONNECT_RETRY_TICKS
+
+_synack_tick_done:
+    rts
+
+_synack_retry_expired:
+    lda CONNECT_RETRY_LEFT
+    beq _synack_timeout
+
+    dec CONNECT_RETRY_LEFT
+    jsr TCP_PASSIVE_RETRANSMIT_SYNACK
+    bcs _synack_retry_busy
+
+    lda #CONNECT_SYN_RETRY_TICKS
+    sta CONNECT_RETRY_TICKS
+    rts
+
+_synack_retry_busy:
+    lda #TCP_TX_BUSY_RETRY_TICKS
+    sta CONNECT_RETRY_TICKS
+    rts
+
+_synack_timeout:
+    lda #TCP_STATE_CLOSED
+    sta TCP_STATE
+    lda #$00
+    sta CONNECT_RETRY_TICKS
+    sta CONNECT_RETRY_LEFT
+    rts
+
+TCP_PASSIVE_RETRANSMIT_SYNACK:
+    ldx #$00
+_synack_save_live_isn:
+    lda LOCAL_ISN,x
+    sta TX_SAVE_LOCAL_ISN,x
+    lda TCP_SYNACK_ISS,x
+    sta LOCAL_ISN,x
+    inx
+    cpx #$04
+    bne _synack_save_live_isn
+
+    jsr TCP_PASSIVE_SEND_SYNACK
+    php
+
+    ldx #$00
+_synack_restore_live_isn:
+    lda TX_SAVE_LOCAL_ISN,x
+    sta LOCAL_ISN,x
+    inx
+    cpx #$04
+    bne _synack_restore_live_isn
+
+    plp
+    rts
+
+TCP_PASSIVE_SEND_SYNACK:
+    lda #$08
+    sta ETH_TX_TYPE
+    lda #$00
+    sta ETH_TX_TYPE+1
+    sta TCP_DATA_PAYLOAD_SIZE
+    sta TCP_DATA_PAYLOAD_SIZE+1
+
+    lda #20
+    sta TCP_HEADER_SIZE
+
+    lda #$06
+    jsr BUILD_IPV4_HEADER
+
+    lda #(TCP_FLAG_SYN|TCP_FLAG_ACK)
+    jsr BUILD_TCP_HEADER
+
+    jsr TCP_RESTORE_PEER_MAC
+
+    lda #60
+    sta ETH_TX_LEN_LSB
+    lda #$00
+    sta ETH_TX_LEN_MSB
+
+    jsr ETH_PACKET_SEND
     rts
 
 ;=============================================================================

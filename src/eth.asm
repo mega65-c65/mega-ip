@@ -133,6 +133,7 @@ TCP_LISTEN_PORT:        .byte $00, $00              ; ---- Passive-accept (singl
 TCP_LISTEN_STATE:       .byte $00                   ; 0=idle, 1=LISTEN, 2=SYN_RCVD
 TCP_ACCEPT_FLAGS:       .byte $00                   ; bit0=accepted, bit1=fail
 TCP_LISTEN_ENABLED:     .byte $00                   ; 0=off, 1=on
+TCP_SYNACK_ISS:         .byte $00, $00, $00, $00
 
 RX_COPY_REM_LO:         .byte 0
 RX_COPY_REM_HI:         .byte 0
@@ -823,6 +824,8 @@ ETH_TCP_LISTEN_START:
 
     lda #0
     sta TCP_ACCEPT_FLAGS        ; clear accepted/fail
+    sta CONNECT_RETRY_TICKS
+    sta CONNECT_RETRY_LEFT
     lda #1
     sta TCP_LISTEN_ENABLED      ; go LISTEN
     jsr TCP_TX_RESET
@@ -1680,6 +1683,9 @@ _synrcvd_ack_check:
     ; Handshake complete
     lda #TCP_STATE_ESTABLISHED
     sta TCP_STATE
+    lda #$00
+    sta CONNECT_RETRY_TICKS
+    sta CONNECT_RETRY_LEFT
 
     ; Report accept once
     lda TCP_ACCEPT_FLAGS
@@ -2900,9 +2906,14 @@ ETH_STATUS_POLL:
     jsr ETH_RCV
     lda TCP_STATE
     cmp #TCP_STATE_ESTABLISHED
-    bne _skip_tcp_tx_tick
+    bne _check_synack_tick
     jsr TCP_TX_TICK
-_skip_tcp_tx_tick:
+    jmp _after_tcp_ticks
+_check_synack_tick:
+    cmp #TCP_STATE_SYN_RECEIVED
+    bne _after_tcp_ticks
+    jsr TCP_SYNACK_TICK
+_after_tcp_ticks:
     jsr ARP_RETRY_TICK
     jsr DNS_TICK
     jsr ETH_MAYBE_WINUPDATE
@@ -3588,6 +3599,18 @@ _save_mac:
     inx
     cpx #$06
     bne _save_mac
+    lda #$01
+    sta TCP_PEER_MAC_VALID
+    rts
+
+TCP_SAVE_RX_PEER_MAC:
+    ldx #$00
+_save_rx_mac:
+    lda ETH_RX_FRAME_SRC_MAC,x
+    sta TCP_PEER_MAC,x
+    inx
+    cpx #$06
+    bne _save_rx_mac
     lda #$01
     sta TCP_PEER_MAC_VALID
     rts
