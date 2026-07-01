@@ -39,6 +39,9 @@ _icmp_len_ok:
     lda ETH_RX_FRAME_PAYLOAD+21
     bne _icmp_drop
 
+    jsr ICMP_RX_CHECKSUM_OK
+    bcs _icmp_drop
+
     ; TX frame length = IPv4 total length + Ethernet header.
     lda ETH_RX_FRAME_PAYLOAD+3
     clc
@@ -109,26 +112,12 @@ _icmp_ip_loop:
     sta ETH_TX_FRAME_PAYLOAD+22
     sta ETH_TX_FRAME_PAYLOAD+23
 
-    ldx #$00
-_icmp_copy_ip_hdr:
-    lda ETH_TX_FRAME_PAYLOAD,x
-    sta IPV4_HEADER,x
-    inx
-    cpx #20
-    bne _icmp_copy_ip_hdr
-    jsr CALC_IPV4_CHECKSUM
-    ldx #$00
-_icmp_copy_ip_back:
-    lda IPV4_HEADER,x
-    sta ETH_TX_FRAME_PAYLOAD,x
-    inx
-    cpx #20
-    bne _icmp_copy_ip_back
+    jsr CALC_IPV4_TX_CHECKSUM
 
-    jsr ICMP_CALC_CHECKSUM
-    lda ICMP_SUM_HI
+    jsr ICMP_TX_CALC_CHECKSUM
+    lda CHECKSUM_RESULT_HI
     sta ETH_TX_FRAME_PAYLOAD+22
-    lda ICMP_SUM_LO
+    lda CHECKSUM_RESULT_LO
     sta ETH_TX_FRAME_PAYLOAD+23
 
     jmp ETH_PACKET_SEND
@@ -136,91 +125,37 @@ _icmp_copy_ip_back:
 _icmp_drop:
     rts
 
-ICMP_CALC_CHECKSUM:
-    lda #$00
-    sta ICMP_SUM_LO
-    sta ICMP_SUM_HI
-    sta ICMP_WORD_LO
-    sta ICMP_WORD_HI
-
+ICMP_SET_CHECKSUM_LEN:
     lda ETH_RX_FRAME_PAYLOAD+3
     sec
     sbc #20
-    sta ICMP_LEN_LO
+    sta CHECKSUM_LEN_LO
     lda ETH_RX_FRAME_PAYLOAD+2
     sbc #$00
-    sta ICMP_LEN_HI
-
-    lda #<ETH_TX_FRAME_PAYLOAD+20
-    sta _icmp_read_hi+1
-    sta _icmp_read_lo+1
-    lda #>ETH_TX_FRAME_PAYLOAD+20
-    sta _icmp_read_hi+2
-    sta _icmp_read_lo+2
-    ldy #$00
-
-_icmp_sum_loop:
-    lda ICMP_LEN_LO
-    ora ICMP_LEN_HI
-    beq _icmp_sum_done
-
-_icmp_read_hi:
-    lda $ffff,y
-    sta ICMP_WORD_HI
-    iny
-    bne _icmp_dec_after_hi
-    inc _icmp_read_hi+2
-    inc _icmp_read_lo+2
-_icmp_dec_after_hi:
-    dec ICMP_LEN_LO
-    lda ICMP_LEN_LO
-    cmp #$ff
-    bne _icmp_have_lo_check
-    dec ICMP_LEN_HI
-
-_icmp_have_lo_check:
-    lda ICMP_LEN_LO
-    ora ICMP_LEN_HI
-    beq _icmp_odd_word
-
-_icmp_read_lo:
-    lda $ffff,y
-    sta ICMP_WORD_LO
-    iny
-    bne _icmp_dec_after_lo
-    inc _icmp_read_hi+2
-    inc _icmp_read_lo+2
-_icmp_dec_after_lo:
-    dec ICMP_LEN_LO
-    lda ICMP_LEN_LO
-    cmp #$ff
-    bne _icmp_add_word
-    dec ICMP_LEN_HI
-    bra _icmp_add_word
-
-_icmp_odd_word:
-    lda #$00
-    sta ICMP_WORD_LO
-
-_icmp_add_word:
-    clc
-    lda ICMP_SUM_LO
-    adc ICMP_WORD_LO
-    sta ICMP_SUM_LO
-    lda ICMP_SUM_HI
-    adc ICMP_WORD_HI
-    sta ICMP_SUM_HI
-    bcc _icmp_sum_loop
-    inc ICMP_SUM_LO
-    bne _icmp_sum_loop
-    inc ICMP_SUM_HI
-    bra _icmp_sum_loop
-
-_icmp_sum_done:
-    lda ICMP_SUM_HI
-    eor #$ff
-    sta ICMP_SUM_HI
-    lda ICMP_SUM_LO
-    eor #$ff
-    sta ICMP_SUM_LO
+    sta CHECKSUM_LEN_HI
     rts
+
+ICMP_RX_CHECKSUM_OK:
+    lda #<ETH_RX_FRAME_PAYLOAD+20
+    sta CHECKSUM_PTR_LO
+    lda #>ETH_RX_FRAME_PAYLOAD+20
+    sta CHECKSUM_PTR_HI
+    jsr ICMP_SET_CHECKSUM_LEN
+    jsr CHECKSUM_ONES_COMP
+    lda CHECKSUM_RESULT_HI
+    ora CHECKSUM_RESULT_LO
+    bne _icmp_checksum_bad
+    clc
+    rts
+
+_icmp_checksum_bad:
+    sec
+    rts
+
+ICMP_TX_CALC_CHECKSUM:
+    lda #<ETH_TX_FRAME_PAYLOAD+20
+    sta CHECKSUM_PTR_LO
+    lda #>ETH_TX_FRAME_PAYLOAD+20
+    sta CHECKSUM_PTR_HI
+    jsr ICMP_SET_CHECKSUM_LEN
+    jmp CHECKSUM_ONES_COMP

@@ -13,6 +13,7 @@ RBUF_PUT:
     sei
 
     pha                         ; save data byte on stack
+    jsr RBUF_SAVE_PTR_ZP
 
     ; snapshot current head into HLO/HHI
     lda RBUF_HEAD_LO
@@ -39,6 +40,7 @@ RBUF_PUT:
     cmp TMP_TAIL_HI
     bne _not_full
 _full:
+    jsr RBUF_RESTORE_PTR_ZP
     pla                         ; drop saved byte
     plp
     sec                         ; full
@@ -69,6 +71,7 @@ _pub:
     lda NEXT_HI
     sta RBUF_HEAD_HI
 
+    jsr RBUF_RESTORE_PTR_ZP
     plp
     clc                         ; success
     rts
@@ -84,6 +87,7 @@ RBUF_GET:
     sei
     tza
     pha
+    jsr RBUF_SAVE_PTR_ZP
 
     ; empty? (head == tail)
     jsr READ_HEAD_ATOMIC
@@ -130,6 +134,7 @@ _ok_done:
 
 _return_ok:
     sta RBUF_GET_SAVE_A
+    jsr RBUF_RESTORE_PTR_ZP
     pla
     taz
     lda RBUF_GET_SAVE_A
@@ -140,6 +145,7 @@ _return_ok:
 _empty:
     lda #$00
     sta RBUF_GET_SAVE_A
+    jsr RBUF_RESTORE_PTR_ZP
     pla
     taz
     lda RBUF_GET_SAVE_A
@@ -149,6 +155,33 @@ _empty:
 
 RBUF_GET_SAVE_A:
     .byte $00
+
+RBUF_SAVE_PTR_ZP:
+    lda RBUF_PTR_LO
+    sta RBUF_SAVE_PTR_LO
+    lda RBUF_PTR_HI
+    sta RBUF_SAVE_PTR_HI
+    lda RBUF_PTR_BANK
+    sta RBUF_SAVE_PTR_BANK
+    lda RBUF_PTR_TOP
+    sta RBUF_SAVE_PTR_TOP
+    rts
+
+RBUF_RESTORE_PTR_ZP:
+    lda RBUF_SAVE_PTR_LO
+    sta RBUF_PTR_LO
+    lda RBUF_SAVE_PTR_HI
+    sta RBUF_PTR_HI
+    lda RBUF_SAVE_PTR_BANK
+    sta RBUF_PTR_BANK
+    lda RBUF_SAVE_PTR_TOP
+    sta RBUF_PTR_TOP
+    rts
+
+RBUF_SAVE_PTR_LO:   .byte $00
+RBUF_SAVE_PTR_HI:   .byte $00
+RBUF_SAVE_PTR_BANK: .byte $00
+RBUF_SAVE_PTR_TOP:  .byte $00
 
 
 ;=============================================================================

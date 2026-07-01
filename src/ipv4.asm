@@ -30,12 +30,12 @@ BUILD_IPV4_HEADER:
     lda #<(20+20)
     sta IPV4_HDR_LEN+1
 
-    lda TCP_DATA_PAYLOAD_SIZE   ; add the tcp payload data size (big endian)
+    lda TCP_DATA_PAYLOAD_SIZE   ; add the TCP payload data size (little endian)
     clc
     adc IPV4_HDR_LEN+1
     sta IPV4_HDR_LEN+1
-    lda IPV4_HDR_LEN
-    adc #$00
+    lda TCP_DATA_PAYLOAD_SIZE+1
+    adc IPV4_HDR_LEN
     sta IPV4_HDR_LEN
 
     ; dont fragment
@@ -94,6 +94,30 @@ CALC_IPV4_CHECKSUM:
     sta IPV4_HDR_CHKSM
     lda CHECKSUM_RESULT_LO
     sta IPV4_HDR_CHKSM+1
+    rts
+
+;=============================================================================
+; Calculate IPv4 checksum over the TX frame's IPv4 header in-place.
+;=============================================================================
+CALC_IPV4_TX_CHECKSUM:
+    lda #$00
+    sta ETH_TX_FRAME_PAYLOAD+10
+    sta ETH_TX_FRAME_PAYLOAD+11
+
+    lda #<ETH_TX_FRAME_PAYLOAD
+    sta CHECKSUM_PTR_LO
+    lda #>ETH_TX_FRAME_PAYLOAD
+    sta CHECKSUM_PTR_HI
+    lda #20
+    sta CHECKSUM_LEN_LO
+    lda #$00
+    sta CHECKSUM_LEN_HI
+    jsr CHECKSUM_ONES_COMP
+
+    lda CHECKSUM_RESULT_HI
+    sta ETH_TX_FRAME_PAYLOAD+10
+    lda CHECKSUM_RESULT_LO
+    sta ETH_TX_FRAME_PAYLOAD+11
     rts
 
 ;=============================================================================

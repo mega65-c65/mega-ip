@@ -61,9 +61,9 @@ _passive_try:
     cmp TCP_LISTEN_PORT+1
     bne _passive_done
 
-    ; Must be a bare SYN (no RST/FIN; ACK ignored for SYN here)
+    ; Must be a bare SYN.  A passive open must not accept SYN+ACK.
     lda ETH_RX_TCP_FLAGS
-    and #(TCP_FLAG_SYN | TCP_FLAG_RST | TCP_FLAG_FIN)
+    and #(TCP_FLAG_SYN | TCP_FLAG_ACK | TCP_FLAG_RST | TCP_FLAG_FIN)
     cmp #TCP_FLAG_SYN
     bne _passive_done               ; not a pure SYN → let normal path drop it
 
@@ -150,11 +150,7 @@ _save_synack_iss:
     sta CONNECT_RETRY_LEFT
     lda #CONNECT_SYN_RETRY_TICKS
     sta CONNECT_RETRY_TICKS
-    jsr ARP_READ_RASTER
-    lda ARP_CUR_RASTER_LO
-    sta CONNECT_LAST_RASTER_LO
-    lda ARP_CUR_RASTER_HI
-    sta CONNECT_LAST_RASTER_HI
+    jsr CONNECT_STAMP_TIMER
 
     ; Enter SYN-RCVD so final ACK will complete the handshake
     lda #TCP_STATE_SYN_RECEIVED
@@ -258,17 +254,19 @@ _synack_retry_expired:
     lda CONNECT_RETRY_LEFT
     beq _synack_timeout
 
-    dec CONNECT_RETRY_LEFT
     jsr TCP_PASSIVE_RETRANSMIT_SYNACK
     bcs _synack_retry_busy
 
+    dec CONNECT_RETRY_LEFT
     lda #CONNECT_SYN_RETRY_TICKS
     sta CONNECT_RETRY_TICKS
+    jsr CONNECT_STAMP_TIMER
     rts
 
 _synack_retry_busy:
     lda #TCP_TX_BUSY_RETRY_TICKS
     sta CONNECT_RETRY_TICKS
+    jsr CONNECT_STAMP_TIMER
     rts
 
 _synack_timeout:

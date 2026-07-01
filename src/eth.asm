@@ -183,13 +183,6 @@ SEG_SEQ:                .byte 0,0,0,0
 SEG_ACK:                .byte 0,0,0,0
 RX_META1:               .byte $00
 tmp_raster:             .byte 0
-ICMP_LEN_LO:            .byte 0
-ICMP_LEN_HI:            .byte 0
-ICMP_SUM_LO:            .byte 0
-ICMP_SUM_HI:            .byte 0
-ICMP_WORD_LO:           .byte 0
-ICMP_WORD_HI:           .byte 0
-
 host_str:               .fill DNS_HOST_BUFFER_SIZE, $00
 
 ;=============================================================================
@@ -562,7 +555,7 @@ _query_cache:
 
     ; Have MAC → send SYN immediately
     jsr CONNECT_SEND_SYN
-    bcs _send_fail                 ; (carry set = build error)
+    bcs _syn_send_busy
     lda #CONN_IN_PROGRESS|CONN_SYN_SENT
     rts
 
@@ -584,10 +577,11 @@ _cpy_arp:
     lda #CONN_IN_PROGRESS|CONN_ARP_WAIT
     rts
 
-_send_fail:
-    lda #$00
-    sta CONNECT_ACTIVE
-    lda #CONN_FAILED
+_syn_send_busy:
+    lda #TCP_TX_BUSY_RETRY_TICKS
+    sta CONNECT_RETRY_TICKS
+    jsr CONNECT_STAMP_TIMER
+    lda #CONN_IN_PROGRESS
     rts
 
 _already_up:
@@ -618,6 +612,14 @@ _connect_cpy_rem:
     bpl _connect_cpy_rem
     rts
 
+CONNECT_STAMP_TIMER:
+    jsr ARP_READ_RASTER
+    lda ARP_CUR_RASTER_LO
+    sta CONNECT_LAST_RASTER_LO
+    lda ARP_CUR_RASTER_HI
+    sta CONNECT_LAST_RASTER_HI
+    rts
+
 CONNECT_SEND_SYN:
     lda #TCP_FLAG_SYN
     jsr ETH_BUILD_TCPIP_PACKET
@@ -633,11 +635,7 @@ CONNECT_SEND_SYN:
     sta TCP_STATE
     lda #CONNECT_SYN_RETRY_TICKS
     sta CONNECT_RETRY_TICKS
-    jsr ARP_READ_RASTER
-    lda ARP_CUR_RASTER_LO
-    sta CONNECT_LAST_RASTER_LO
-    lda ARP_CUR_RASTER_HI
-    sta CONNECT_LAST_RASTER_HI
+    jsr CONNECT_STAMP_TIMER
     clc
     rts
 
@@ -660,15 +658,16 @@ _connect_syn_wait:
 _connect_syn_expired:
     lda CONNECT_RETRY_LEFT
     beq _connect_syn_timeout
-    dec CONNECT_RETRY_LEFT
     jsr CONNECT_SEND_SYN
     bcs _connect_syn_retry_not_sent
+    dec CONNECT_RETRY_LEFT
     clc
     rts
 
 _connect_syn_retry_not_sent:
     lda #TCP_TX_BUSY_RETRY_TICKS
     sta CONNECT_RETRY_TICKS
+    jsr CONNECT_STAMP_TIMER
     clc
     rts
 
@@ -737,6 +736,16 @@ _try_send_after_arp:
     jsr ARP_QUERY_CACHE
     beq _inprog                   ; still not populated (rare)
 
+    lda CONNECT_RETRY_TICKS
+    beq _try_send_syn_now
+    jsr CONNECT_FRAME_WRAP_TICK
+    bcc _inprog
+    lda CONNECT_RETRY_TICKS
+    beq _try_send_syn_now
+    dec CONNECT_RETRY_TICKS
+    jmp _inprog
+
+_try_send_syn_now:
     jsr CONNECT_SEND_SYN
     bcs _inprog     ; was: bcs _fail
 
@@ -876,6 +885,7 @@ ETH_TCP_DISCONNECT:
     bcs _not_connected
 
     jsr CALC_LOCAL_ISN
+    jsr TCP_FIN_RETRY_INIT
 
     lda #TCP_STATE_FIN_WAIT_1
     sta TCP_STATE
@@ -1063,11 +1073,43 @@ TCP_STATE_HANDLER:
     ; remote sent RST → tear down immediately
     lda TCP_STATE
     cmp #TCP_STATE_SYN_SENT
-    beq _rst_accepted
+    beq _rst_syn_sent
     cmp #TCP_STATE_CLOSED
     beq _rst_ignore
     jsr TCP_SEQ_CMP_SEG_SEQ_REMOTE
     bne _rst_ignore
+
+_rst_syn_sent:
+    ; In SYN-SENT, a RST is acceptable only if it ACKs our SYN.
+    lda ETH_RX_TCP_FLAGS
+    and #TCP_FLAG_ACK
+    beq _rst_ignore
+
+    lda LOCAL_ISN+0
+    sta CONNECT_EXPECT_ACK+0
+    lda LOCAL_ISN+1
+    sta CONNECT_EXPECT_ACK+1
+    lda LOCAL_ISN+2
+    sta CONNECT_EXPECT_ACK+2
+    lda LOCAL_ISN+3
+    sta CONNECT_EXPECT_ACK+3
+    inc CONNECT_EXPECT_ACK+3
+    bne _rst_syn_ack_ready
+    inc CONNECT_EXPECT_ACK+2
+    bne _rst_syn_ack_ready
+    inc CONNECT_EXPECT_ACK+1
+    bne _rst_syn_ack_ready
+    inc CONNECT_EXPECT_ACK+0
+
+_rst_syn_ack_ready:
+    ldx #$00
+_rst_syn_ack_check:
+    lda SEG_ACK,x
+    cmp CONNECT_EXPECT_ACK,x
+    bne _rst_ignore
+    inx
+    cpx #$04
+    bne _rst_syn_ack_check
 
 _rst_accepted:
     jsr TCP_HARD_RESET
@@ -1140,6 +1182,7 @@ _no_fin_in_established:
     rts
 
 _not_retx_synack:
+_copy_payload_and_ack:
     ; Any payload?
     lda TCP_RX_DATA_PAYLOAD_SIZE
     ora TCP_RX_DATA_PAYLOAD_SIZE+1
@@ -1220,11 +1263,7 @@ _dup_entire:
     lda #TCP_FLAG_ACK
     jsr ETH_BUILD_TCPIP_PACKET
     jsr DEFER_CURRENT_TX
-    lda #TCP_STATE_CLOSE_WAIT
-    sta TCP_STATE
-    lda TCP_EVENT_FLAG
-    ora #EV_PEER_FIN
-    sta TCP_EVENT_FLAG
+    jsr _apply_peer_fin_state
     plp
     rts
 
@@ -1396,15 +1435,36 @@ _ack_defer_done:
     sta REMOTE_ISN_BUMP
 
     ; data+FIN is now fully consumed.
-    lda #TCP_STATE_CLOSE_WAIT
-    sta TCP_STATE
-
-    lda TCP_EVENT_FLAG
-    ora #EV_PEER_FIN
-    sta TCP_EVENT_FLAG
+    jsr _apply_peer_fin_state
 
 _ack_defer_no_fin:
     plp
+    rts
+
+_apply_peer_fin_state:
+    lda TCP_STATE
+    cmp #TCP_STATE_FIN_WAIT_1
+    beq _peer_fin_active_close
+    cmp #TCP_STATE_FIN_WAIT_2
+    beq _peer_fin_active_close
+
+    lda #TCP_STATE_CLOSE_WAIT
+    sta TCP_STATE
+    lda TCP_EVENT_FLAG
+    ora #EV_PEER_FIN
+    sta TCP_EVENT_FLAG
+    rts
+
+_peer_fin_active_close:
+    jsr TCP_TIME_WAIT_RESET
+    lda #$00
+    sta CONNECT_RETRY_TICKS
+    sta CONNECT_RETRY_LEFT
+    lda #TCP_STATE_TIME_WAIT
+    sta TCP_STATE
+    lda TCP_EVENT_FLAG
+    ora #EV_LOCAL_CLOSE
+    sta TCP_EVENT_FLAG
     rts
 
 
@@ -1551,6 +1611,12 @@ _fin_wait_1_seq_ok:
 _got_FIN_WAIT_1_ACK:
     lda #TCP_STATE_FIN_WAIT_2
     sta TCP_STATE
+    lda TCP_RX_DATA_PAYLOAD_SIZE
+    ora TCP_RX_DATA_PAYLOAD_SIZE+1
+    bne _copy_payload_and_ack
+    lda ETH_RX_TCP_FLAGS
+    and #TCP_FLAG_FIN
+    bne _got_FIN_ACK
     jmp _done
 
     ;---------------------------------------------------------------------------
@@ -1561,21 +1627,22 @@ _check_FIN_WAIT_2:
     cmp #TCP_STATE_FIN_WAIT_2
     bne _check_TIME_WAIT
 
-    ; await the FIN (ACK may or may not be set)
+    lda TCP_RX_DATA_PAYLOAD_SIZE
+    ora TCP_RX_DATA_PAYLOAD_SIZE+1
+    bne _fin_wait_2_seq_check
     lda ETH_RX_TCP_FLAGS
     and #TCP_FLAG_FIN
     beq _done
+_fin_wait_2_seq_check:
     jsr TCP_SEQ_CMP_SEG_SEQ_REMOTE
     beq _fin_wait_2_seq_ok
     jsr TCP_DEFER_DUP_ACK
     jmp _done
 
 _fin_wait_2_seq_ok:
-
-    ;lda ETH_RX_TCP_FLAGS
-    ;and #(TCP_FLAG_FIN|TCP_FLAG_ACK)
-    ;cmp #(TCP_FLAG_FIN|TCP_FLAG_ACK)
-    ;bne _done
+    lda TCP_RX_DATA_PAYLOAD_SIZE
+    ora TCP_RX_DATA_PAYLOAD_SIZE+1
+    bne _copy_payload_and_ack
 
 _got_FIN_ACK:
     ; consume the peer's FIN (+1 on remote sequence)
@@ -1592,10 +1659,10 @@ _got_FIN_ACK:
     jsr DEFER_CURRENT_TX
 
     ; reset TIME_WAIT counter
-    lda #$02
-    sta TIME_WAIT_COUNTER_HI
-    lda #$58
-    sta TIME_WAIT_COUNTER_LO
+    jsr TCP_TIME_WAIT_RESET
+    lda #$00
+    sta CONNECT_RETRY_TICKS
+    sta CONNECT_RETRY_LEFT
 
     lda #TCP_STATE_TIME_WAIT
     sta TCP_STATE
@@ -1611,6 +1678,14 @@ _got_FIN_ACK:
 _check_TIME_WAIT:
     cmp #TCP_STATE_TIME_WAIT
     bne _check_CLOSE_WAIT
+    lda ETH_RX_TCP_FLAGS
+    and #TCP_FLAG_FIN
+    beq _time_wait_done
+    jsr TCP_TIME_WAIT_FIN_SEQ_OK
+    bcs _time_wait_done
+    jsr TCP_DEFER_DUP_ACK
+    jsr TCP_TIME_WAIT_RESET
+_time_wait_done:
     ; ETH_STATUS_POLL owns the TIME_WAIT timer. Do not tick here too, because
     ; this path is reached from ETH_RCV inside that same status poll.
     rts
@@ -1634,6 +1709,7 @@ _close_wait_seq_ok:
     bcs _done
     jsr DEFER_CURRENT_TX
     jsr CALC_LOCAL_ISN
+    jsr TCP_FIN_RETRY_INIT
     ; move to LAST_ACK
     lda #TCP_STATE_LAST_ACK
     sta TCP_STATE
@@ -1660,10 +1736,10 @@ _last_ack_seq_ok:
     bne _done
 
     ; peer ACK’d your FIN, now go TIME_WAIT
-    lda #$02
-    sta TIME_WAIT_COUNTER_HI
-    lda #$58
-    sta TIME_WAIT_COUNTER_LO
+    jsr TCP_TIME_WAIT_RESET
+    lda #$00
+    sta CONNECT_RETRY_TICKS
+    sta CONNECT_RETRY_LEFT
 
     lda #TCP_STATE_TIME_WAIT
     sta TCP_STATE
@@ -1995,6 +2071,13 @@ TIME_WAIT_TICK:
     sta TCP_EVENT_FLAG
 
 _done:
+    rts
+
+TCP_TIME_WAIT_RESET:
+    lda #$02
+    sta TIME_WAIT_COUNTER_HI
+    lda #$58
+    sta TIME_WAIT_COUNTER_LO
     rts
 
 .include "rbuf.asm"
@@ -2929,11 +3012,20 @@ ETH_STATUS_POLL:
     jmp _after_tcp_ticks
 _check_synack_tick:
     cmp #TCP_STATE_SYN_RECEIVED
-    bne _after_tcp_ticks
+    bne _check_fin_tick
     jsr TCP_SYNACK_TICK
+    jmp _after_tcp_ticks
+_check_fin_tick:
+    cmp #TCP_STATE_FIN_WAIT_1
+    beq _tick_fin_retry
+    cmp #TCP_STATE_LAST_ACK
+    bne _after_tcp_ticks
+_tick_fin_retry:
+    jsr TCP_FIN_RETRY_TICK
 _after_tcp_ticks:
     jsr ARP_RETRY_TICK
     jsr DNS_TICK
+    jsr DHCP_STATUS_TICK
     jsr ETH_MAYBE_WINUPDATE
 
     ; 2) Let TIME_WAIT progress while BASIC polls
@@ -3913,6 +4005,10 @@ ETH_CLEAR_DRIVER_STATE:
     sta DHCP_STATE
     sta DHCP_RETRY_TICKS
     sta DHCP_FRAME_TICKS
+    sta DHCP_RENEW_ACTIVE
+    sta DHCP_RENEW_SUBTICKS
+    sta DHCP_RENEW_SECS_LO
+    sta DHCP_RENEW_SECS_HI
     sta TCP_EVENT_FLAG
     sta ETH_STATE
     sta TCP_STATE
@@ -4977,3 +5073,263 @@ TX_DUMP_A: .byte $00
 TX_DUMP_X: .byte $00
 TX_DUMP_Y: .byte $00
 .endif
+
+;=============================================================================
+; Internal high helpers. These are still in the BASIC-mapped bank-4 window, but
+; outside the fixed public tables, keeping the main runtime below $7000.
+;=============================================================================
+DHCP_BOUND_TICK_IMPL:
+    lda DHCP_RENEW_ACTIVE
+    beq _dhcp_bound_done
+
+    jsr DHCP_FRAME_TICK
+    bcc _dhcp_bound_done
+
+    inc DHCP_RENEW_SUBTICKS
+    lda DHCP_RENEW_SUBTICKS
+    cmp #10
+    bcc _dhcp_bound_done
+    lda #$00
+    sta DHCP_RENEW_SUBTICKS
+
+    lda DHCP_RENEW_SECS_LO
+    ora DHCP_RENEW_SECS_HI
+    beq _dhcp_renew_now
+
+    lda DHCP_RENEW_SECS_LO
+    bne _dhcp_renew_dec_lo
+    lda DHCP_RENEW_SECS_HI
+    beq _dhcp_renew_now
+    dec DHCP_RENEW_SECS_HI
+    lda #$ff
+    sta DHCP_RENEW_SECS_LO
+    rts
+
+_dhcp_renew_dec_lo:
+    dec DHCP_RENEW_SECS_LO
+    lda DHCP_RENEW_SECS_LO
+    ora DHCP_RENEW_SECS_HI
+    bne _dhcp_bound_done
+
+_dhcp_renew_now:
+    jsr DHCP_SEND_REQUEST
+    bcs _dhcp_renew_busy
+    lda #DHCP_STATE_REQUEST_SENT
+    sta DHCP_STATE
+    lda #$01
+    sta DHCP_IN_PROGRESS
+    lda #$00
+    sta DHCP_RENEW_ACTIVE
+    sta DHCP_RETRY_TICKS
+    lda #DHCP_INITIAL_BACKOFF
+    sta DHCP_RETRY_BACKOFF
+    rts
+
+_dhcp_renew_busy:
+    lda #$09
+    sta DHCP_RENEW_SUBTICKS
+    lda #$01
+    sta DHCP_RENEW_SECS_LO
+    lda #$00
+    sta DHCP_RENEW_SECS_HI
+
+_dhcp_bound_done:
+    rts
+
+DHCP_SCHEDULE_RENEWAL_IMPL:
+    lda DHCP_LEASE_SECS+0
+    ora DHCP_LEASE_SECS+1
+    ora DHCP_LEASE_SECS+2
+    ora DHCP_LEASE_SECS+3
+    bne _dhcp_lease_present
+    lda #$00
+    sta DHCP_RENEW_ACTIVE
+    sta DHCP_RENEW_SUBTICKS
+    sta DHCP_RENEW_SECS_LO
+    sta DHCP_RENEW_SECS_HI
+    rts
+
+_dhcp_lease_present:
+    lda DHCP_LEASE_SECS+0
+    sta DHCP_RENEW_TMP0
+    lda DHCP_LEASE_SECS+1
+    sta DHCP_RENEW_TMP1
+    lda DHCP_LEASE_SECS+2
+    sta DHCP_RENEW_SECS_HI
+    lda DHCP_LEASE_SECS+3
+    sta DHCP_RENEW_SECS_LO
+
+    lsr DHCP_RENEW_TMP0
+    ror DHCP_RENEW_TMP1
+    ror DHCP_RENEW_SECS_HI
+    ror DHCP_RENEW_SECS_LO
+
+    lda DHCP_RENEW_TMP0
+    ora DHCP_RENEW_TMP1
+    beq _dhcp_renew_not_capped
+    lda #$ff
+    sta DHCP_RENEW_SECS_HI
+    sta DHCP_RENEW_SECS_LO
+    bra _dhcp_renew_enable
+
+_dhcp_renew_not_capped:
+    lda DHCP_RENEW_SECS_HI
+    bne _dhcp_renew_enable
+    lda DHCP_RENEW_SECS_LO
+    cmp #60
+    bcs _dhcp_renew_enable
+    lda #60
+    sta DHCP_RENEW_SECS_LO
+
+_dhcp_renew_enable:
+    lda #$00
+    sta DHCP_RENEW_SUBTICKS
+    lda #DHCP_TICK_FRAMES
+    sta DHCP_FRAME_TICKS
+    jsr ARP_READ_RASTER
+    lda ARP_CUR_RASTER_LO
+    sta DHCP_LAST_RASTER_LO
+    lda ARP_CUR_RASTER_HI
+    sta DHCP_LAST_RASTER_HI
+    lda #$01
+    sta DHCP_RENEW_ACTIVE
+    rts
+
+TCP_TIME_WAIT_FIN_SEQ_OK:
+    sec
+    lda REMOTE_ISN+3
+    sbc SEG_SEQ+3
+    sta TCP_SEQ_DIFF+3
+    lda REMOTE_ISN+2
+    sbc SEG_SEQ+2
+    sta TCP_SEQ_DIFF+2
+    lda REMOTE_ISN+1
+    sbc SEG_SEQ+1
+    sta TCP_SEQ_DIFF+1
+    lda REMOTE_ISN+0
+    sbc SEG_SEQ+0
+    sta TCP_SEQ_DIFF+0
+
+    lda TCP_RX_DATA_PAYLOAD_SIZE
+    clc
+    adc #$01
+    sta REMOTE_ISN_TMP
+    lda TCP_RX_DATA_PAYLOAD_SIZE+1
+    adc #$00
+    sta REMOTE_ISN_TMP+1
+
+    lda TCP_SEQ_DIFF+0
+    ora TCP_SEQ_DIFF+1
+    bne _time_wait_seq_bad
+    lda TCP_SEQ_DIFF+2
+    cmp REMOTE_ISN_TMP+1
+    bne _time_wait_seq_bad
+    lda TCP_SEQ_DIFF+3
+    cmp REMOTE_ISN_TMP
+    bne _time_wait_seq_bad
+    clc
+    rts
+
+_time_wait_seq_bad:
+    sec
+    rts
+
+TCP_FIN_RETRY_INIT:
+    lda #TCP_TX_MAX_RETRIES
+    sta CONNECT_RETRY_LEFT
+    lda #TCP_TX_RETRY_TICKS
+    sta CONNECT_RETRY_TICKS
+    jsr CONNECT_STAMP_TIMER
+    rts
+
+TCP_FIN_RETRY_TICK:
+    jsr CONNECT_FRAME_WRAP_TICK
+    bcc _fin_retry_wait
+
+    lda CONNECT_RETRY_TICKS
+    beq _fin_retry_expired
+    dec CONNECT_RETRY_TICKS
+_fin_retry_wait:
+    rts
+
+_fin_retry_expired:
+    lda CONNECT_RETRY_LEFT
+    beq _fin_retry_timeout
+
+    jsr TCP_RETRANSMIT_FIN
+    bcs _fin_retry_busy
+
+    dec CONNECT_RETRY_LEFT
+    lda #TCP_TX_RETRY_TICKS
+    sta CONNECT_RETRY_TICKS
+    jsr CONNECT_STAMP_TIMER
+    rts
+
+_fin_retry_busy:
+    lda #TCP_TX_BUSY_RETRY_TICKS
+    sta CONNECT_RETRY_TICKS
+    jsr CONNECT_STAMP_TIMER
+    rts
+
+_fin_retry_timeout:
+    lda #$00
+    sta CONNECT_RETRY_TICKS
+    sta CONNECT_RETRY_LEFT
+    lda #TCP_STATE_CLOSED
+    sta TCP_STATE
+    lda TCP_EVENT_FLAG
+    ora #EV_LOCAL_CLOSE
+    sta TCP_EVENT_FLAG
+    rts
+
+TCP_RETRANSMIT_FIN:
+    ldx #$00
+_fin_save_isn:
+    lda LOCAL_ISN,x
+    sta TX_SAVE_LOCAL_ISN,x
+    inx
+    cpx #$04
+    bne _fin_save_isn
+
+    ; LOCAL_ISN already points past our FIN; retransmit with FIN_seq.
+    lda LOCAL_ISN+3
+    bne _fin_dec_low
+    lda LOCAL_ISN+2
+    bne _fin_borrow_2
+    lda LOCAL_ISN+1
+    bne _fin_borrow_1
+    dec LOCAL_ISN+0
+_fin_borrow_1:
+    dec LOCAL_ISN+1
+_fin_borrow_2:
+    dec LOCAL_ISN+2
+_fin_dec_low:
+    dec LOCAL_ISN+3
+
+    lda #$00
+    sta TCP_DATA_PAYLOAD_SIZE
+    sta TCP_DATA_PAYLOAD_SIZE+1
+    lda #TCP_FLAG_FIN|TCP_FLAG_ACK
+    jsr ETH_BUILD_TCPIP_PACKET
+    php
+
+    ldx #$00
+_fin_restore_isn:
+    lda TX_SAVE_LOCAL_ISN,x
+    sta LOCAL_ISN,x
+    inx
+    cpx #$04
+    bne _fin_restore_isn
+
+    plp
+    bcs _fin_retx_fail
+    jsr ETH_PACKET_SEND
+    bcs _fin_retx_fail
+    clc
+    rts
+
+_fin_retx_fail:
+    sec
+    rts
+
+.cerror * > $8000, "internal high helpers exceed mapped bank-4 window"

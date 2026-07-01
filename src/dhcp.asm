@@ -38,6 +38,9 @@ DHCP_STATE_REQUEST_SENT     = $03
 DHCP_STATE_BOUND            = $04
 DHCP_STATE_FAILED           = $7F
 DHCP_TICK_FRAMES            = 6
+DHCP_TX_BUSY_TICK_FRAMES    = 1
+DHCP_INITIAL_BACKOFF        = 10       ; ~1s with DHCP_TICK_FRAMES=6 at 60Hz
+DHCP_MAX_BACKOFF            = $50      ; ~8s cap at 60Hz
 
 ; BOOTP/DHCP fixed header sizes
 BOOTP_FIXED_SIZE            = 236          ; up to 'options' field
@@ -47,7 +50,7 @@ DHCP_MIN_UDP_LEN            = UDP_DATA_BASE + BOOTP_FIXED_SIZE + 4
 DHCP_IN_PROGRESS:           .byte 0
 DHCP_STATE:                 .byte $00
 DHCP_RETRY_TICKS:           .byte $00
-DHCP_RETRY_BACKOFF:         .byte $20      ; ~3–4s initial (you tick at 100ms)
+DHCP_RETRY_BACKOFF:         .byte DHCP_INITIAL_BACKOFF
 DHCP_FRAME_TICKS:           .byte $00
 DHCP_LAST_RASTER_LO:        .byte $00
 DHCP_LAST_RASTER_HI:        .byte $00
@@ -64,6 +67,12 @@ DHCP_OPTS_PTR_HI:           .byte 0
 DHCP_OPTS_BASE_LO           .byte 0
 DHCP_OPTS_BASE_HI           .byte 0
 DHCP_OPTS_MAXY              .byte 0
+DHCP_RENEW_ACTIVE:          .byte 0
+DHCP_RENEW_SUBTICKS:        .byte 0
+DHCP_RENEW_SECS_LO:         .byte 0
+DHCP_RENEW_SECS_HI:         .byte 0
+DHCP_RENEW_TMP0:            .byte 0
+DHCP_RENEW_TMP1:            .byte 0
 pl_len:                     .byte 0,0
 opt_mask:                   .byte 0,0,0,0
 opt_router:                 .byte 0,0,0,0
@@ -133,7 +142,11 @@ _xid_ok:
 
     lda #$00
     sta DHCP_RETRY_TICKS
-    lda #$20
+    sta DHCP_RENEW_ACTIVE
+    sta DHCP_RENEW_SUBTICKS
+    sta DHCP_RENEW_SECS_LO
+    sta DHCP_RENEW_SECS_HI
+    lda #DHCP_INITIAL_BACKOFF
     sta DHCP_RETRY_BACKOFF
     lda #DHCP_TICK_FRAMES
     sta DHCP_FRAME_TICKS
@@ -165,6 +178,17 @@ ETH_DHCP_POLL:
     jsr ETH_RCV                        ; keep RX flowing
     jsr DHCP_TICK
     lda DHCP_STATE
+    rts
+
+DHCP_STATUS_TICK:
+    lda DHCP_STATE
+    cmp #DHCP_STATE_BOUND
+    beq DHCP_BOUND_TICK
+    lda DHCP_IN_PROGRESS
+    beq _dhcp_status_done
+    jmp DHCP_TICK
+
+_dhcp_status_done:
     rts
 
 ;=============================================================================
@@ -230,7 +254,38 @@ _retry_tx_soon:
 _done:
     rts
 
+DHCP_BOUND_TICK:
+    jmp DHCP_BOUND_TICK_IMPL
+
+DHCP_SCHEDULE_RENEWAL:
+    jmp DHCP_SCHEDULE_RENEWAL_IMPL
+
 DHCP_FRAME_TICK:
+    jsr ARP_READ_RASTER
+
+    lda ARP_CUR_RASTER_HI
+    cmp DHCP_LAST_RASTER_HI
+    bcc _dhcp_frame_elapsed
+    bne _dhcp_no_frame
+
+    lda ARP_CUR_RASTER_LO
+    cmp DHCP_LAST_RASTER_LO
+    bcc _dhcp_frame_elapsed
+
+_dhcp_no_frame:
+    lda ARP_CUR_RASTER_LO
+    sta DHCP_LAST_RASTER_LO
+    lda ARP_CUR_RASTER_HI
+    sta DHCP_LAST_RASTER_HI
+    clc
+    rts
+
+_dhcp_frame_elapsed:
+    lda ARP_CUR_RASTER_LO
+    sta DHCP_LAST_RASTER_LO
+    lda ARP_CUR_RASTER_HI
+    sta DHCP_LAST_RASTER_HI
+
     lda DHCP_FRAME_TICKS
     beq _dhcp_emit_tick
     dec DHCP_FRAME_TICKS
@@ -248,24 +303,31 @@ _dhcp_emit_tick:
 ;
 ;=============================================================================
 DHCP_BACKOFF:
-    ; exponential-ish up to ~6–8s
+    ; Exponential-ish network retry: ~1s, 2s, 4s, then ~8s cap.
     lda DHCP_RETRY_BACKOFF
     asl
-    cmp #$80
+    cmp #DHCP_MAX_BACKOFF
     bcc +
-    lda #$80
+    lda #DHCP_MAX_BACKOFF
 +   sta DHCP_RETRY_BACKOFF
     rts
 
 
 DHCP_RETRY_SOON:
     ; TX busy/not-ready is local controller timing, not a network timeout.
-    ; Retry on the next DHCP tick without increasing the network backoff.
+    ; Retry on the next frame window without increasing the network backoff.
     lda DHCP_RETRY_BACKOFF
     beq +
     sec
     sbc #$01
 +   sta DHCP_RETRY_TICKS
+    lda #DHCP_TX_BUSY_TICK_FRAMES
+    sta DHCP_FRAME_TICKS
+    jsr ARP_READ_RASTER
+    lda ARP_CUR_RASTER_LO
+    sta DHCP_LAST_RASTER_LO
+    lda ARP_CUR_RASTER_HI
+    sta DHCP_LAST_RASTER_HI
     rts
 
 ;=============================================================================
@@ -662,7 +724,7 @@ UDP_WRITE_LENGTH_AND_CHECKSUM:
     sta ETH_TX_FRAME_PAYLOAD+2
 
     ; IPv4 header checksum (over first 20 bytes)
-    jsr UDP_CALC_IPHDR_CHECKSUM
+    jsr CALC_IPV4_TX_CHECKSUM
 
     ; IPv4 permits a zero UDP checksum. Keeping DHCP checksums zero avoids
     ; servers silently dropping a REQUEST if an odd-length checksum path is
@@ -671,32 +733,6 @@ UDP_WRITE_LENGTH_AND_CHECKSUM:
     sta ETH_TX_FRAME_PAYLOAD+20+6
     sta ETH_TX_FRAME_PAYLOAD+20+7
     rts
-
-;=============================================================================
-; IPv4 header checksum (20 bytes at ETH_TX_FRAME_PAYLOAD)
-;=============================================================================
-UDP_CALC_IPHDR_CHECKSUM:
-    lda #$00
-    sta ETH_TX_FRAME_PAYLOAD+10
-    sta ETH_TX_FRAME_PAYLOAD+11
-
-    lda #<ETH_TX_FRAME_PAYLOAD
-    sta CHECKSUM_PTR_LO
-    lda #>ETH_TX_FRAME_PAYLOAD
-    sta CHECKSUM_PTR_HI
-    lda #20
-    sta CHECKSUM_LEN_LO
-    lda #$00
-    sta CHECKSUM_LEN_HI
-    jsr CHECKSUM_ONES_COMP
-
-    lda CHECKSUM_RESULT_HI
-    sta ETH_TX_FRAME_PAYLOAD+10
-    lda CHECKSUM_RESULT_LO
-    sta ETH_TX_FRAME_PAYLOAD+11
-    rts
-
-
 
 ;=============================================================================
 ; Handle inbound DHCP packets (UDP dst 68) in mainline
@@ -901,6 +937,8 @@ _ack_sane:
     cpy #4
     bne -
 _ack_dns_done:
+
+    jsr DHCP_SCHEDULE_RENEWAL
 
     lda #DHCP_STATE_BOUND
     sta DHCP_STATE
