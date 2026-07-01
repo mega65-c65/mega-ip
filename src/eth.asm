@@ -73,6 +73,7 @@ CONNECT_SYN_MAX_RETRIES     = 4
 TCP_TX_RETRY_TICKS          = 45
 TCP_TX_BUSY_RETRY_TICKS     = 5
 TCP_TX_MAX_RETRIES          = 6
+TIME_WAIT_TICK_FRAMES       = 6
 IP_PROTO_ICMP               = $01
 IP_PROTO_TCP                = $06
 IP_PROTO_UDP                = $11
@@ -153,6 +154,9 @@ ETH_RX_PAYLOAD_LEN_L:   .byte $00                   ; copied Ethernet payload le
 ETH_RX_PAYLOAD_LEN_H:   .byte $00
 TIME_WAIT_COUNTER_LO:   .byte $58                   ; 2×MSL = 60 s → 600 ticks of 100 ms → 0x0258
 TIME_WAIT_COUNTER_HI:   .byte $02
+TIME_WAIT_FRAME_TICKS:  .byte TIME_WAIT_TICK_FRAMES
+TIME_WAIT_LAST_RASTER_LO: .byte $00
+TIME_WAIT_LAST_RASTER_HI: .byte $00
 CHARACTER_MODE:         .byte $00                   ; $00 = C= gfx (no translation), $01 = ASCII->PETSCII
 
 ACK_REPLY_PENDING:      .byte 0
@@ -876,8 +880,12 @@ ETH_TCP_DISCONNECT:
 
     lda TCP_STATE
     cmp #TCP_STATE_ESTABLISHED
-    bne _not_connected
+    beq _disconnect_established
+    cmp #TCP_STATE_CLOSE_WAIT
+    beq _disconnect_close_wait
+    rts
 
+_disconnect_established:
     lda #TCP_FLAG_FIN|TCP_FLAG_ACK
     jsr ETH_BUILD_TCPIP_PACKET
     bcs _not_connected
@@ -888,6 +896,23 @@ ETH_TCP_DISCONNECT:
     jsr TCP_FIN_RETRY_INIT
 
     lda #TCP_STATE_FIN_WAIT_1
+    sta TCP_STATE
+
+    rts
+
+_disconnect_close_wait:
+    lda #TCP_FLAG_FIN|TCP_FLAG_ACK
+    jsr ETH_BUILD_TCPIP_PACKET
+    bcs _not_connected
+    jsr ETH_PACKET_SEND
+    bcs _not_connected
+
+    ; CALC_LOCAL_ISN must run while still in CLOSE_WAIT so the passive-close
+    ; FIN advances LOCAL_ISN before LAST_ACK starts validating the peer ACK.
+    jsr CALC_LOCAL_ISN
+    jsr TCP_FIN_RETRY_INIT
+
+    lda #TCP_STATE_LAST_ACK
     sta TCP_STATE
 
 _not_connected:
@@ -1078,6 +1103,7 @@ TCP_STATE_HANDLER:
     beq _rst_ignore
     jsr TCP_SEQ_CMP_SEG_SEQ_REMOTE
     bne _rst_ignore
+    jmp _rst_accepted
 
 _rst_syn_sent:
     ; In SYN-SENT, a RST is acceptable only if it ACKs our SYN.
@@ -1743,6 +1769,7 @@ _last_ack_seq_ok:
 
     lda #TCP_STATE_TIME_WAIT
     sta TCP_STATE
+    rts
 
     ;---------------------------------------------------------------------------
     ; SYN-RECEIVED (server waiting for final ACK)
@@ -2047,6 +2074,9 @@ _done
 ; and when it hits zero, moves TCP_STATE to CLOSED.
 ;=============================================================================
 TIME_WAIT_TICK:
+    jsr TIME_WAIT_FRAME_TICK
+    bcc _done
+
     sec                         ; prepare carry for SBC
     lda TIME_WAIT_COUNTER_LO
     sbc #1                      ; decrement low byte
@@ -2073,11 +2103,59 @@ TIME_WAIT_TICK:
 _done:
     rts
 
+TIME_WAIT_FRAME_TICK:
+    jsr ARP_READ_RASTER
+
+    lda ARP_CUR_RASTER_HI
+    cmp TIME_WAIT_LAST_RASTER_HI
+    bcc _tw_frame_elapsed
+    bne _tw_no_frame
+
+    lda ARP_CUR_RASTER_LO
+    cmp TIME_WAIT_LAST_RASTER_LO
+    bcc _tw_frame_elapsed
+
+_tw_no_frame:
+    lda ARP_CUR_RASTER_LO
+    sta TIME_WAIT_LAST_RASTER_LO
+    lda ARP_CUR_RASTER_HI
+    sta TIME_WAIT_LAST_RASTER_HI
+    clc
+    rts
+
+_tw_frame_elapsed:
+    lda ARP_CUR_RASTER_LO
+    sta TIME_WAIT_LAST_RASTER_LO
+    lda ARP_CUR_RASTER_HI
+    sta TIME_WAIT_LAST_RASTER_HI
+
+    lda TIME_WAIT_FRAME_TICKS
+    beq _tw_emit_tick
+    dec TIME_WAIT_FRAME_TICKS
+    bne _tw_no_tick
+
+_tw_emit_tick:
+    lda #TIME_WAIT_TICK_FRAMES
+    sta TIME_WAIT_FRAME_TICKS
+    sec
+    rts
+
+_tw_no_tick:
+    clc
+    rts
+
 TCP_TIME_WAIT_RESET:
     lda #$02
     sta TIME_WAIT_COUNTER_HI
     lda #$58
     sta TIME_WAIT_COUNTER_LO
+    lda #TIME_WAIT_TICK_FRAMES
+    sta TIME_WAIT_FRAME_TICKS
+    jsr ARP_READ_RASTER
+    lda ARP_CUR_RASTER_LO
+    sta TIME_WAIT_LAST_RASTER_LO
+    lda ARP_CUR_RASTER_HI
+    sta TIME_WAIT_LAST_RASTER_HI
     rts
 
 .include "rbuf.asm"
@@ -2955,6 +3033,9 @@ TCP_HARD_RESET:
     lda #$00
     sta TIME_WAIT_COUNTER_LO
     sta TIME_WAIT_COUNTER_HI
+    sta TIME_WAIT_FRAME_TICKS
+    sta TIME_WAIT_LAST_RASTER_LO
+    sta TIME_WAIT_LAST_RASTER_HI
 
     lda #$00
     sta LOCAL_ISN_TMP
@@ -4009,9 +4090,15 @@ ETH_CLEAR_DRIVER_STATE:
     sta DHCP_RENEW_SUBTICKS
     sta DHCP_RENEW_SECS_LO
     sta DHCP_RENEW_SECS_HI
+    sta DHCP_REQUEST_IS_RENEW
     sta TCP_EVENT_FLAG
     sta ETH_STATE
     sta TCP_STATE
+    sta TIME_WAIT_COUNTER_LO
+    sta TIME_WAIT_COUNTER_HI
+    sta TIME_WAIT_FRAME_TICKS
+    sta TIME_WAIT_LAST_RASTER_LO
+    sta TIME_WAIT_LAST_RASTER_HI
     sta CONNECT_ACTIVE
     sta CONNECT_SYN_SENT
     sta CONNECT_FAIL_LATCH
@@ -4518,6 +4605,8 @@ _dhcp_renew_dec_lo:
 _dhcp_renew_now:
     jsr DHCP_SEND_REQUEST
     bcs _dhcp_renew_busy
+    lda #$01
+    sta DHCP_REQUEST_IS_RENEW
     lda #DHCP_STATE_REQUEST_SENT
     sta DHCP_STATE
     lda #$01
@@ -4572,7 +4661,30 @@ DHCP_ACK_SANITY_IMPL:
     ora opt_mask+1
     ora opt_mask+2
     ora opt_mask+3
+    bne DHCP_ACK_MASK_READY
+
+    ; Renewal ACKs may omit option 1.  Keep using the mask from the active
+    ; lease, but still run the same nonzero/contiguous validation on it.
+    lda DHCP_REQUEST_IS_RENEW
     beq DHCP_ACK_SANITY_BAD
+
+    lda SUBNET_MASK+0
+    ora SUBNET_MASK+1
+    ora SUBNET_MASK+2
+    ora SUBNET_MASK+3
+    beq DHCP_ACK_SANITY_BAD
+
+    ldx #$00
+DHCP_ACK_KEEP_MASK_LOOP:
+    lda SUBNET_MASK,x
+    sta opt_mask,x
+    inx
+    cpx #$04
+    bne DHCP_ACK_KEEP_MASK_LOOP
+
+DHCP_ACK_MASK_READY:
+    jsr DHCP_MASK_CONTIGUOUS
+    bcs DHCP_ACK_SANITY_BAD
 
     ; ACK chaddr must match our client hardware address.
     lda #<ETH_RX_FRAME_PAYLOAD+8+$1c
@@ -4632,6 +4744,50 @@ DHCP_ACK_SOURCE_LOOP:
 
 DHCP_ACK_SANITY_BAD:
     sec
+    rts
+
+DHCP_MASK_CONTIGUOUS:
+    ldx #$00
+    ldy #$00
+DHCP_MASK_CONTIGUOUS_LOOP:
+    lda opt_mask,x
+    cpy #$00
+    beq DHCP_MASK_HEAD
+    cmp #$00
+    bne DHCP_MASK_BAD
+    beq DHCP_MASK_NEXT
+
+DHCP_MASK_HEAD:
+    cmp #$ff
+    beq DHCP_MASK_NEXT
+    cmp #$00
+    beq DHCP_MASK_ENTER_TAIL
+    cmp #$fe
+    beq DHCP_MASK_ENTER_TAIL
+    cmp #$fc
+    beq DHCP_MASK_ENTER_TAIL
+    cmp #$f8
+    beq DHCP_MASK_ENTER_TAIL
+    cmp #$f0
+    beq DHCP_MASK_ENTER_TAIL
+    cmp #$e0
+    beq DHCP_MASK_ENTER_TAIL
+    cmp #$c0
+    beq DHCP_MASK_ENTER_TAIL
+    cmp #$80
+    beq DHCP_MASK_ENTER_TAIL
+
+DHCP_MASK_BAD:
+    sec
+    rts
+
+DHCP_MASK_ENTER_TAIL:
+    ldy #$01
+DHCP_MASK_NEXT:
+    inx
+    cpx #$04
+    bne DHCP_MASK_CONTIGUOUS_LOOP
+    clc
     rts
 
 DHCP_SCHEDULE_RENEWAL_IMPL:

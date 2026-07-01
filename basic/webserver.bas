@@ -254,6 +254,7 @@
  4030 a$="Cache-Control: no-store, no-cache, must-revalidate"+cr$+"Pragma: no-cache"+cr$+"Expires: 0"+cr$+"Connection: close"+cr$+cr$:gosub 1000
  4040 lb$=chr$(123):rb$=chr$(125)
  4050 a$="<!doctype html><html><head><meta charset='utf-8'><title>drive 8 files</title></head><body>":gosub 1000
+ 4055 a$="<iframe name='dlframe' style='display:none'></iframe>":gosub 1000
  4060 a$="<h1>drive 8 files</h1><p><a href='/'>home</a> | <a href='/about.html'>about</a></p>":gosub 1000
  4070 a$="<h2>upload</h2><input id='file' type='file'><select id='type'>":gosub 1000
  4072 a$="<option value='p'>PRG/binary</option><option value='s'>SEQ/text</option></select>":gosub 1000
@@ -285,7 +286,8 @@
  4440 gosub 3800:tp$="s":pr$=chr$(80)+chr$(82)+chr$(71):pl$=chr$(112)+chr$(114)+chr$(103)
  4450 if instr(ln$,pr$)>0 or instr(ln$,pl$)>0 then tp$="p"
  4455 td$="SEQ":if tp$="p" then td$="PRG"
- 4460 a$="<tr><td><a href='/download?f="+ue$+"&t="+tp$+"'>"+nm$+"</a></td><td>"+td$+"</td><td align='right'>"+mid$(str$(bk),2)+" blocks</td>":gosub 1000
+ 4458 a$="<tr><td><a target='dlframe' download href='/download?f="+ue$+"&t="+tp$+"'>"+nm$+"</a></td>":gosub 1000
+ 4460 a$="<td>"+td$+"</td><td align='right'>"+mid$(str$(bk),2)+" blocks</td>":gosub 1000
  4465 a$="<td><form action='/rename'><input type='hidden' name='f' value='"+nm$+"'><input name='n' size='12'><button>Rename</button></form></td>":gosub 1000
  4470 a$="<td><form action='/delete'><input type='hidden' name='f' value='"+nm$+"'><button>Delete</button></form></td></tr>":gosub 1000
  4480 goto 4330
@@ -332,7 +334,7 @@
  6300 rem == receive upload body ===========================================
  6310 ub=0:bs$="":sys $42015,0
  6320 if ub>=cl then 6380
- 6330 sys $42024:sys $4701e:rreg a,x
+ 6330 sys $42024:sys $4761e:rreg a,x
  6340 if x=0 then 6330
  6350 bs$=bs$+chr$(a):ub=ub+1
  6360 if len(bs$)<128 then 6320

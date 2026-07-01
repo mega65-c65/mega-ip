@@ -74,6 +74,7 @@ DHCP_RENEW_SECS_LO:         .byte 0
 DHCP_RENEW_SECS_HI:         .byte 0
 DHCP_RENEW_TMP0:            .byte 0
 DHCP_RENEW_TMP1:            .byte 0
+DHCP_REQUEST_IS_RENEW:      .byte 0
 pl_len:                     .byte 0,0
 opt_mask:                   .byte 0,0,0,0
 opt_router:                 .byte 0,0,0,0
@@ -109,6 +110,7 @@ ETH_DHCP_START:
     DEBUG_STA DHCP_DISCOVER_TX_FAIL
     DEBUG_STA DHCP_REQUEST_TX_OK
     DEBUG_STA DHCP_REQUEST_TX_FAIL
+DHCP_RESTART_DISCOVERY:
     ldy #$00
 _loop:
     sta DHCP_SERVER_ID,y
@@ -148,6 +150,7 @@ _xid_ok:
     sta DHCP_RENEW_SUBTICKS
     sta DHCP_RENEW_SECS_LO
     sta DHCP_RENEW_SECS_HI
+    sta DHCP_REQUEST_IS_RENEW
     lda #DHCP_INITIAL_BACKOFF
     sta DHCP_RETRY_BACKOFF
     lda #DHCP_TICK_FRAMES
@@ -896,6 +899,8 @@ _srv_ok:
 +
     jsr DHCP_SEND_REQUEST
     bcs _offer_request_tx_busy
+    lda #$00
+    sta DHCP_REQUEST_IS_RENEW
     lda #DHCP_STATE_REQUEST_SENT
     sta DHCP_STATE
     lda #$00
@@ -950,6 +955,7 @@ _ack_dns_done:
     sta DHCP_STATE
 
     lda #0
+    sta DHCP_REQUEST_IS_RENEW
     sta DHCP_IN_PROGRESS
     rts
 
@@ -961,12 +967,11 @@ _got_nak:
     lda #$0a
     DEBUG_STA DHCP_DEBUG_STAGE
 
-    lda #DHCP_STATE_FAILED
-    sta DHCP_STATE
-
+    ; A NAK repudiates the current lease.  Drop the lease and restart DHCP
+    ; immediately instead of leaving callers on a stale address.
     lda #0
-    sta DHCP_IN_PROGRESS
-    rts
+    sta dhcp_msg_type
+    jmp DHCP_RESTART_DISCOVERY
 
 _out:
     rts
