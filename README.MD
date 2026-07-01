@@ -129,20 +129,27 @@ fail, `$20` TX timeout.
 The receive path also answers ordinary IPv4 ICMP echo requests, so another
 machine on the network can `ping` the MEGA65 while the stack is being polled.
 
-ML-only helper entries live at `$47000+` in bank 4. They do not replace the
-BASIC-facing calls; they add buffer and byte-oriented entry points for assembly
-programs.
+The stable application ABI is the BASIC-facing `$42000` jump table above.
+Secondary ML-only helpers currently live at `$47600+` in bank 4. They do not
+replace the BASIC-facing calls; they add buffer and byte-oriented entry points
+for assembly programs. Treat these helper addresses as experimental until the
+assembly/C API is finalized.
 
 | Address | Purpose | Notes |
 | --- | --- | --- |
-| `$47000` | TCP send byte | `A=byte` |
-| `$47003` | DNS lookup buffer | Blocking compatibility wrapper |
-| `$47006` | ML-safe init | Lightweight init/reset helper |
-| `$47009` | DHCP debug | `A/X/Y/Z = RX, UDP68, stage, msg` |
-| `$4700c` | DHCP TX debug | `A/X/Y/Z = discover ok/fail, request ok/fail` |
-| `$4700f` | DNS start buffer | Legacy `A/X=ptr, Y=bank, Z=len` |
-| `$47012` | DNS debug | `A/X/Y/Z = state, stage, tx ok, tx fail` |
-| `$47015` | DNS debug 2 | `A/X/Y/Z = rx, arp waits, parse fails, port hi` |
-| `$47018` | DNS start buffer, bank-1 workspace | `A/X=ptr, Y=len` when called locally or through `$4701b`; source must stay in physical `$12000-$1f7ff` |
-| `$4701b` | ML staged dispatcher | Argument-bearing far calls; args staged at bank-4 `$71c0` |
-| `$4701e` | ML receive byte | `X=1, A=byte` when data is available; `X=0` when empty |
+| `$47600` | TCP send byte | `A=byte` |
+| `$47603` | DNS lookup buffer | Blocking compatibility wrapper |
+| `$47606` | ML-safe init | Lightweight init/reset helper |
+| `$47609` | DHCP debug | `A/X/Y/Z = RX, UDP68, stage, msg` |
+| `$4760c` | DHCP TX debug | `A/X/Y/Z = discover ok/fail, request ok/fail` |
+| `$4760f` | DNS start buffer | Legacy `A/X=ptr, Y=bank, Z=len` |
+| `$47612` | DNS debug | `A/X/Y/Z = state, stage, tx ok, tx fail` |
+| `$47615` | DNS debug 2 | `A/X/Y/Z = rx, arp waits, parse fails, port hi` |
+| `$47618` | DNS start buffer, bank-1 workspace | `A/X=ptr, Y=len` when called locally or through `$4761b`; source must stay in physical `$12000-$1f7ff` |
+| `$4761b` | ML staged dispatcher | Argument-bearing far calls; args staged at bank-4 `$77c0` |
+| `$4761e` | ML receive byte | `X=1, A=byte` when data is available; `X=0` when empty |
+| `$47621` | ML receive block | Copies up to `Z` bytes into `A/X/Y` destination pointer/bank |
+| `$47624` | DNS debug 3 | `A/X/Y/Z = raw, IPv4, UDP, not-for-us` |
+| `$47627` | Connect debug | `A/X/Y/Z = event, reason, SYN-ACKs, bad ACKs` |
+| `$4762a` | Connect debug 2 | `A/X/Y/Z = SYN TX ok/fail, raw RX, TCP RX` |
+| `$4762d` | Connect debug 3 | `A/X/Y/Z = last RX dest class, EtherType, protocol` |

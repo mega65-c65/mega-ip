@@ -10,6 +10,11 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
+$stateBlockBase = 0x2100
+$mlExtensionTableBase = 0x7600
+$mlCallStagingBase = 0x77c0
+$basicDebugTableBase = 0x7800
+
 if (-not (Test-Path "target")) {
     New-Item -ItemType Directory -Path "target" | Out-Null
 }
@@ -39,15 +44,15 @@ foreach ($line in $asmOutput) {
 
 $api = $ranges | Where-Object { $_.Start -eq 0x2000 } | Select-Object -First 1
 if (-not $api) { Fail-Layout "Missing API jump-table range at `$2000." }
-if ($api.End -ge 0x2100) { Fail-Layout ("API jump table reaches `${0:x4}; it overlaps the state block at `$2100." -f $api.End) }
+if ($api.End -ge $stateBlockBase) { Fail-Layout ("API jump table reaches `${0:x4}; it overlaps the state block at `${1:x4}." -f $api.End, $stateBlockBase) }
 
-$runtime = $ranges | Where-Object { $_.Start -eq 0x2100 } | Select-Object -First 1
-if (-not $runtime) { Fail-Layout "Missing state/buffer/runtime range at `$2100." }
-if ($runtime.End -ge 0x7000) { Fail-Layout ("Runtime block reaches `${0:x4}; it overlaps the ML helper table at `$7000." -f $runtime.End) }
+$runtime = $ranges | Where-Object { $_.Start -eq $stateBlockBase } | Select-Object -First 1
+if (-not $runtime) { Fail-Layout ("Missing state/buffer/runtime range at `${0:x4}." -f $stateBlockBase) }
+if ($runtime.End -ge $mlExtensionTableBase) { Fail-Layout ("Runtime block reaches `${0:x4}; it overlaps the ML extension table at `${1:x4}." -f $runtime.End, $mlExtensionTableBase) }
 
-foreach ($requiredStart in 0x7000, 0x71c0, 0x7200) {
+foreach ($requiredStart in $mlExtensionTableBase, $mlCallStagingBase, $basicDebugTableBase) {
     if (-not ($ranges | Where-Object { $_.Start -eq $requiredStart } | Select-Object -First 1)) {
-        Fail-Layout ("Missing public helper range at `${0:x4}." -f $requiredStart)
+        Fail-Layout ("Missing secondary helper range at `${0:x4}." -f $requiredStart)
     }
 }
 
@@ -64,4 +69,4 @@ if ($ringStorage) {
     Fail-Layout ("RX ring payload must stay in bank 5, not assembled into bank 4 ({0}: {1})." -f $ringStorage[0].Path, $ringStorage[0].LineNumber)
 }
 
-Write-Output ("Layout OK (DEBUG={0}): API `$2000-`${1:x4}, state/buffers/runtime `$2100-`${2:x4}, helper tables preserved." -f $Debug, $api.End, $runtime.End)
+Write-Output ("Layout OK (DEBUG={0}): API `$2000-`${1:x4}, state/buffers/runtime `${2:x4}-`${3:x4}, secondary tables preserved." -f $Debug, $api.End, $stateBlockBase, $runtime.End)

@@ -91,9 +91,9 @@ RBUF_PTR_BANK = $fd
 RBUF_PTR_TOP = $fe
 ; Build with -D DEBUG=1 for diagnostics or -D DEBUG=0 for production.
 STATE_BLOCK_BASE = $2100
-ML_EXTENSION_TABLE_BASE = $7000
-ML_CALL_STAGING_BASE = $71c0
-BASIC_DEBUG_TABLE_BASE = $7200
+ML_EXTENSION_TABLE_BASE = $7600
+ML_CALL_STAGING_BASE = $77c0
+BASIC_DEBUG_TABLE_BASE = $7800
 
 .include "api.asm"
 .cerror * > STATE_BLOCK_BASE, "API jump table overlaps state/buffer block"
@@ -4480,10 +4480,361 @@ ETH_DEBUG_ZERO:
 .endif
 
 ;=============================================================================
-; ML extension entry points
+; Internal runtime helpers
+;=============================================================================
+DHCP_BOUND_TICK_IMPL:
+    lda DHCP_RENEW_ACTIVE
+    beq _dhcp_bound_done
+
+    jsr DHCP_FRAME_TICK
+    bcc _dhcp_bound_done
+
+    inc DHCP_RENEW_SUBTICKS
+    lda DHCP_RENEW_SUBTICKS
+    cmp #10
+    bcc _dhcp_bound_done
+    lda #$00
+    sta DHCP_RENEW_SUBTICKS
+
+    lda DHCP_RENEW_SECS_LO
+    ora DHCP_RENEW_SECS_HI
+    beq _dhcp_renew_now
+
+    lda DHCP_RENEW_SECS_LO
+    bne _dhcp_renew_dec_lo
+    lda DHCP_RENEW_SECS_HI
+    beq _dhcp_renew_now
+    dec DHCP_RENEW_SECS_HI
+    lda #$ff
+    sta DHCP_RENEW_SECS_LO
+    rts
+
+_dhcp_renew_dec_lo:
+    dec DHCP_RENEW_SECS_LO
+    lda DHCP_RENEW_SECS_LO
+    ora DHCP_RENEW_SECS_HI
+    bne _dhcp_bound_done
+
+_dhcp_renew_now:
+    jsr DHCP_SEND_REQUEST
+    bcs _dhcp_renew_busy
+    lda #DHCP_STATE_REQUEST_SENT
+    sta DHCP_STATE
+    lda #$01
+    sta DHCP_IN_PROGRESS
+    lda #$00
+    sta DHCP_RENEW_ACTIVE
+    sta DHCP_RETRY_TICKS
+    lda #DHCP_INITIAL_BACKOFF
+    sta DHCP_RETRY_BACKOFF
+    rts
+
+_dhcp_renew_busy:
+    lda #$09
+    sta DHCP_RENEW_SUBTICKS
+    lda #$01
+    sta DHCP_RENEW_SECS_LO
+    lda #$00
+    sta DHCP_RENEW_SECS_HI
+
+_dhcp_bound_done:
+    rts
+
+DHCP_REMEMBER_OFFER_SERVER_IMPL:
+    lda DHCP_SERVER_ID+0
+    ora DHCP_SERVER_ID+1
+    ora DHCP_SERVER_ID+2
+    ora DHCP_SERVER_ID+3
+    beq DHCP_REMEMBER_OFFER_BAD
+
+    ldx #$00
+DHCP_REMEMBER_OFFER_COPY:
+    lda DHCP_SERVER_ID,x
+    sta DHCP_SELECTED_SERVER_ID,x
+    inx
+    cpx #$04
+    bne DHCP_REMEMBER_OFFER_COPY
+    clc
+    rts
+
+DHCP_REMEMBER_OFFER_BAD:
+    sec
+    rts
+
+DHCP_ACK_SANITY_IMPL:
+    lda DHCP_OFFER_IP+0
+    ora DHCP_OFFER_IP+1
+    ora DHCP_OFFER_IP+2
+    ora DHCP_OFFER_IP+3
+    beq DHCP_ACK_SANITY_BAD
+
+    lda opt_mask+0
+    ora opt_mask+1
+    ora opt_mask+2
+    ora opt_mask+3
+    beq DHCP_ACK_SANITY_BAD
+
+    ; ACK chaddr must match our client hardware address.
+    lda #<ETH_RX_FRAME_PAYLOAD+8+$1c
+    clc
+    adc DHCP_IP_IHL_BYTES
+    sta DHCP_ACK_CHADDR_READ+1
+    lda #>ETH_RX_FRAME_PAYLOAD+8+$1c
+    adc #$00
+    sta DHCP_ACK_CHADDR_READ+2
+
+    ldx #$00
+DHCP_ACK_CHADDR_LOOP:
+DHCP_ACK_CHADDR_READ:
+    lda $ffff,x
+    cmp ETH_TX_FRAME_SRC_MAC,x
+    bne DHCP_ACK_SANITY_BAD
+    inx
+    cpx #$06
+    bne DHCP_ACK_CHADDR_LOOP
+
+    ; The ACK must come from the server selected from the OFFER.  If option 54
+    ; is present, compare it; otherwise fall back to the IPv4 source address.
+    lda DHCP_SELECTED_SERVER_ID+0
+    ora DHCP_SELECTED_SERVER_ID+1
+    ora DHCP_SELECTED_SERVER_ID+2
+    ora DHCP_SELECTED_SERVER_ID+3
+    beq DHCP_ACK_SANITY_BAD
+
+    lda DHCP_SERVER_ID+0
+    ora DHCP_SERVER_ID+1
+    ora DHCP_SERVER_ID+2
+    ora DHCP_SERVER_ID+3
+    beq DHCP_ACK_MATCH_SOURCE
+
+    ldx #$00
+DHCP_ACK_SERVER_ID_LOOP:
+    lda DHCP_SERVER_ID,x
+    cmp DHCP_SELECTED_SERVER_ID,x
+    bne DHCP_ACK_SANITY_BAD
+    inx
+    cpx #$04
+    bne DHCP_ACK_SERVER_ID_LOOP
+    clc
+    rts
+
+DHCP_ACK_MATCH_SOURCE:
+    ldx #$00
+DHCP_ACK_SOURCE_LOOP:
+    lda ETH_RX_FRAME_PAYLOAD+12,x
+    cmp DHCP_SELECTED_SERVER_ID,x
+    bne DHCP_ACK_SANITY_BAD
+    inx
+    cpx #$04
+    bne DHCP_ACK_SOURCE_LOOP
+    clc
+    rts
+
+DHCP_ACK_SANITY_BAD:
+    sec
+    rts
+
+DHCP_SCHEDULE_RENEWAL_IMPL:
+    lda DHCP_LEASE_SECS+0
+    ora DHCP_LEASE_SECS+1
+    ora DHCP_LEASE_SECS+2
+    ora DHCP_LEASE_SECS+3
+    bne _dhcp_lease_present
+    lda #$00
+    sta DHCP_RENEW_ACTIVE
+    sta DHCP_RENEW_SUBTICKS
+    sta DHCP_RENEW_SECS_LO
+    sta DHCP_RENEW_SECS_HI
+    rts
+
+_dhcp_lease_present:
+    lda DHCP_LEASE_SECS+0
+    sta DHCP_RENEW_TMP0
+    lda DHCP_LEASE_SECS+1
+    sta DHCP_RENEW_TMP1
+    lda DHCP_LEASE_SECS+2
+    sta DHCP_RENEW_SECS_HI
+    lda DHCP_LEASE_SECS+3
+    sta DHCP_RENEW_SECS_LO
+
+    lsr DHCP_RENEW_TMP0
+    ror DHCP_RENEW_TMP1
+    ror DHCP_RENEW_SECS_HI
+    ror DHCP_RENEW_SECS_LO
+
+    lda DHCP_RENEW_TMP0
+    ora DHCP_RENEW_TMP1
+    beq _dhcp_renew_not_capped
+    lda #$ff
+    sta DHCP_RENEW_SECS_HI
+    sta DHCP_RENEW_SECS_LO
+    bra _dhcp_renew_enable
+
+_dhcp_renew_not_capped:
+    lda DHCP_RENEW_SECS_HI
+    bne _dhcp_renew_enable
+    lda DHCP_RENEW_SECS_LO
+    cmp #60
+    bcs _dhcp_renew_enable
+    lda #60
+    sta DHCP_RENEW_SECS_LO
+
+_dhcp_renew_enable:
+    lda #$00
+    sta DHCP_RENEW_SUBTICKS
+    lda #DHCP_TICK_FRAMES
+    sta DHCP_FRAME_TICKS
+    jsr ARP_READ_RASTER
+    lda ARP_CUR_RASTER_LO
+    sta DHCP_LAST_RASTER_LO
+    lda ARP_CUR_RASTER_HI
+    sta DHCP_LAST_RASTER_HI
+    lda #$01
+    sta DHCP_RENEW_ACTIVE
+    rts
+
+TCP_TIME_WAIT_FIN_SEQ_OK:
+    sec
+    lda REMOTE_ISN+3
+    sbc SEG_SEQ+3
+    sta TCP_SEQ_DIFF+3
+    lda REMOTE_ISN+2
+    sbc SEG_SEQ+2
+    sta TCP_SEQ_DIFF+2
+    lda REMOTE_ISN+1
+    sbc SEG_SEQ+1
+    sta TCP_SEQ_DIFF+1
+    lda REMOTE_ISN+0
+    sbc SEG_SEQ+0
+    sta TCP_SEQ_DIFF+0
+
+    lda TCP_RX_DATA_PAYLOAD_SIZE
+    clc
+    adc #$01
+    sta REMOTE_ISN_TMP
+    lda TCP_RX_DATA_PAYLOAD_SIZE+1
+    adc #$00
+    sta REMOTE_ISN_TMP+1
+
+    lda TCP_SEQ_DIFF+0
+    ora TCP_SEQ_DIFF+1
+    bne _time_wait_seq_bad
+    lda TCP_SEQ_DIFF+2
+    cmp REMOTE_ISN_TMP+1
+    bne _time_wait_seq_bad
+    lda TCP_SEQ_DIFF+3
+    cmp REMOTE_ISN_TMP
+    bne _time_wait_seq_bad
+    clc
+    rts
+
+_time_wait_seq_bad:
+    sec
+    rts
+
+TCP_FIN_RETRY_INIT:
+    lda #TCP_TX_MAX_RETRIES
+    sta CONNECT_RETRY_LEFT
+    lda #TCP_TX_RETRY_TICKS
+    sta CONNECT_RETRY_TICKS
+    jsr CONNECT_STAMP_TIMER
+    rts
+
+TCP_FIN_RETRY_TICK:
+    jsr CONNECT_FRAME_WRAP_TICK
+    bcc _fin_retry_wait
+
+    lda CONNECT_RETRY_TICKS
+    beq _fin_retry_expired
+    dec CONNECT_RETRY_TICKS
+_fin_retry_wait:
+    rts
+
+_fin_retry_expired:
+    lda CONNECT_RETRY_LEFT
+    beq _fin_retry_timeout
+
+    jsr TCP_RETRANSMIT_FIN
+    bcs _fin_retry_busy
+
+    dec CONNECT_RETRY_LEFT
+    lda #TCP_TX_RETRY_TICKS
+    sta CONNECT_RETRY_TICKS
+    jsr CONNECT_STAMP_TIMER
+    rts
+
+_fin_retry_busy:
+    lda #TCP_TX_BUSY_RETRY_TICKS
+    sta CONNECT_RETRY_TICKS
+    jsr CONNECT_STAMP_TIMER
+    rts
+
+_fin_retry_timeout:
+    lda #$00
+    sta CONNECT_RETRY_TICKS
+    sta CONNECT_RETRY_LEFT
+    lda #TCP_STATE_CLOSED
+    sta TCP_STATE
+    lda TCP_EVENT_FLAG
+    ora #EV_LOCAL_CLOSE
+    sta TCP_EVENT_FLAG
+    rts
+
+TCP_RETRANSMIT_FIN:
+    ldx #$00
+_fin_save_isn:
+    lda LOCAL_ISN,x
+    sta TX_SAVE_LOCAL_ISN,x
+    inx
+    cpx #$04
+    bne _fin_save_isn
+
+    ; LOCAL_ISN already points past our FIN; retransmit with FIN_seq.
+    lda LOCAL_ISN+3
+    bne _fin_dec_low
+    lda LOCAL_ISN+2
+    bne _fin_borrow_2
+    lda LOCAL_ISN+1
+    bne _fin_borrow_1
+    dec LOCAL_ISN+0
+_fin_borrow_1:
+    dec LOCAL_ISN+1
+_fin_borrow_2:
+    dec LOCAL_ISN+2
+_fin_dec_low:
+    dec LOCAL_ISN+3
+
+    lda #$00
+    sta TCP_DATA_PAYLOAD_SIZE
+    sta TCP_DATA_PAYLOAD_SIZE+1
+    lda #TCP_FLAG_FIN|TCP_FLAG_ACK
+    jsr ETH_BUILD_TCPIP_PACKET
+    php
+
+    ldx #$00
+_fin_restore_isn:
+    lda TX_SAVE_LOCAL_ISN,x
+    sta LOCAL_ISN,x
+    inx
+    cpx #$04
+    bne _fin_restore_isn
+
+    plp
+    bcs _fin_retx_fail
+    jsr ETH_PACKET_SEND
+    bcs _fin_retx_fail
+    clc
+    rts
+
+_fin_retx_fail:
+    sec
+    rts
+
+;=============================================================================
+; Secondary ML extension entry points
 ;
-; These live outside the original BASIC-facing jump table so existing SYS
-; addresses and hard-coded BASIC peeks stay compatible.
+; These live outside the stable BASIC-facing jump table. They are useful for ML
+; experiments, but the supported application ABI remains the $2000/$42000 table.
 ;=============================================================================
 .cerror * > ML_EXTENSION_TABLE_BASE, "state/buffer/runtime block overlaps ML extension table"
 
@@ -4849,55 +5200,55 @@ ML_CALL_RET_Z:          .byte $00
 ;=============================================================================
 ; BASIC connect/SYN diagnostics.
 ;
-; These are intentionally outside the original BASIC jump table and the $7000
-; ML extension table so existing addresses stay fixed.
+; These are intentionally outside the original BASIC jump table and the ML
+; extension table so the public BASIC-facing addresses stay fixed.
 ;=============================================================================
 .cerror * > BASIC_DEBUG_TABLE_BASE, "ML call staging area overlaps BASIC debug table"
 
 * = BASIC_DEBUG_TABLE_BASE
 
 .if DEBUG
-    jmp ETH_CONNECT_TX_DEBUG1      ; $47200
-    jmp ETH_CONNECT_TX_DEBUG2      ; $47203
-    jmp ETH_CONNECT_TX_DEBUG3      ; $47206
-    jmp ETH_CONNECT_TX_DEBUG4      ; $47209
-    jmp ETH_CONNECT_TX_DEBUG5      ; $4720c
-    jmp ETH_CONNECT_TX_DEBUG6      ; $4720f
-    jmp ETH_DEBUG_ZERO             ; $47212 reserved
-    jmp ETH_DEBUG_ZERO             ; $47215 reserved
-    jmp ETH_DEBUG_ZERO             ; $47218 reserved
-    jmp ETH_CONNECT_RX_DEBUG1      ; $4721b
-    jmp ETH_CONNECT_RX_DEBUG2      ; $4721e
-    jmp ETH_CONNECT_RX_DEBUG3      ; $47221
-    jmp ETH_CONNECT_RX_DEBUG4      ; $47224
-    jmp ETH_TCP_TX_DEBUG1          ; $47227
-    jmp ETH_TCP_TX_DEBUG2          ; $4722a
-    jmp ETH_TCP_TX_DEBUG3          ; $4722d
-    jmp ETH_TCP_TX_DEBUG4          ; $47230
-    jmp ETH_TX_DUMP4               ; $47233
-    jmp ETH_TCP_TX_DEBUG5          ; $47236
-    jmp ETH_TCP_TX_DEBUG6          ; $47239
+    jmp ETH_CONNECT_TX_DEBUG1      ; $47800
+    jmp ETH_CONNECT_TX_DEBUG2      ; $47803
+    jmp ETH_CONNECT_TX_DEBUG3      ; $47806
+    jmp ETH_CONNECT_TX_DEBUG4      ; $47809
+    jmp ETH_CONNECT_TX_DEBUG5      ; $4780c
+    jmp ETH_CONNECT_TX_DEBUG6      ; $4780f
+    jmp ETH_DEBUG_ZERO             ; $47812 reserved
+    jmp ETH_DEBUG_ZERO             ; $47815 reserved
+    jmp ETH_DEBUG_ZERO             ; $47818 reserved
+    jmp ETH_CONNECT_RX_DEBUG1      ; $4781b
+    jmp ETH_CONNECT_RX_DEBUG2      ; $4781e
+    jmp ETH_CONNECT_RX_DEBUG3      ; $47821
+    jmp ETH_CONNECT_RX_DEBUG4      ; $47824
+    jmp ETH_TCP_TX_DEBUG1          ; $47827
+    jmp ETH_TCP_TX_DEBUG2          ; $4782a
+    jmp ETH_TCP_TX_DEBUG3          ; $4782d
+    jmp ETH_TCP_TX_DEBUG4          ; $47830
+    jmp ETH_TX_DUMP4               ; $47833
+    jmp ETH_TCP_TX_DEBUG5          ; $47836
+    jmp ETH_TCP_TX_DEBUG6          ; $47839
 .else
-    jmp ETH_DEBUG_ZERO             ; $47200
-    jmp ETH_DEBUG_ZERO             ; $47203
-    jmp ETH_DEBUG_ZERO             ; $47206
-    jmp ETH_DEBUG_ZERO             ; $47209
-    jmp ETH_DEBUG_ZERO             ; $4720c
-    jmp ETH_DEBUG_ZERO             ; $4720f
-    jmp ETH_DEBUG_ZERO             ; $47212
-    jmp ETH_DEBUG_ZERO             ; $47215
-    jmp ETH_DEBUG_ZERO             ; $47218
-    jmp ETH_DEBUG_ZERO             ; $4721b
-    jmp ETH_DEBUG_ZERO             ; $4721e
-    jmp ETH_DEBUG_ZERO             ; $47221
-    jmp ETH_DEBUG_ZERO             ; $47224
-    jmp ETH_DEBUG_ZERO             ; $47227
-    jmp ETH_DEBUG_ZERO             ; $4722a
-    jmp ETH_DEBUG_ZERO             ; $4722d
-    jmp ETH_DEBUG_ZERO             ; $47230
-    jmp ETH_DEBUG_ZERO             ; $47233
-    jmp ETH_DEBUG_ZERO             ; $47236
-    jmp ETH_DEBUG_ZERO             ; $47239
+    jmp ETH_DEBUG_ZERO             ; $47800
+    jmp ETH_DEBUG_ZERO             ; $47803
+    jmp ETH_DEBUG_ZERO             ; $47806
+    jmp ETH_DEBUG_ZERO             ; $47809
+    jmp ETH_DEBUG_ZERO             ; $4780c
+    jmp ETH_DEBUG_ZERO             ; $4780f
+    jmp ETH_DEBUG_ZERO             ; $47812
+    jmp ETH_DEBUG_ZERO             ; $47815
+    jmp ETH_DEBUG_ZERO             ; $47818
+    jmp ETH_DEBUG_ZERO             ; $4781b
+    jmp ETH_DEBUG_ZERO             ; $4781e
+    jmp ETH_DEBUG_ZERO             ; $47821
+    jmp ETH_DEBUG_ZERO             ; $47824
+    jmp ETH_DEBUG_ZERO             ; $47827
+    jmp ETH_DEBUG_ZERO             ; $4782a
+    jmp ETH_DEBUG_ZERO             ; $4782d
+    jmp ETH_DEBUG_ZERO             ; $47830
+    jmp ETH_DEBUG_ZERO             ; $47833
+    jmp ETH_DEBUG_ZERO             ; $47836
+    jmp ETH_DEBUG_ZERO             ; $47839
 .endif
 
 .if DEBUG
@@ -5074,356 +5425,4 @@ TX_DUMP_X: .byte $00
 TX_DUMP_Y: .byte $00
 .endif
 
-;=============================================================================
-; Internal high helpers. These are still in the BASIC-mapped bank-4 window, but
-; outside the fixed public tables, keeping the main runtime below $7000.
-;=============================================================================
-DHCP_BOUND_TICK_IMPL:
-    lda DHCP_RENEW_ACTIVE
-    beq _dhcp_bound_done
-
-    jsr DHCP_FRAME_TICK
-    bcc _dhcp_bound_done
-
-    inc DHCP_RENEW_SUBTICKS
-    lda DHCP_RENEW_SUBTICKS
-    cmp #10
-    bcc _dhcp_bound_done
-    lda #$00
-    sta DHCP_RENEW_SUBTICKS
-
-    lda DHCP_RENEW_SECS_LO
-    ora DHCP_RENEW_SECS_HI
-    beq _dhcp_renew_now
-
-    lda DHCP_RENEW_SECS_LO
-    bne _dhcp_renew_dec_lo
-    lda DHCP_RENEW_SECS_HI
-    beq _dhcp_renew_now
-    dec DHCP_RENEW_SECS_HI
-    lda #$ff
-    sta DHCP_RENEW_SECS_LO
-    rts
-
-_dhcp_renew_dec_lo:
-    dec DHCP_RENEW_SECS_LO
-    lda DHCP_RENEW_SECS_LO
-    ora DHCP_RENEW_SECS_HI
-    bne _dhcp_bound_done
-
-_dhcp_renew_now:
-    jsr DHCP_SEND_REQUEST
-    bcs _dhcp_renew_busy
-    lda #DHCP_STATE_REQUEST_SENT
-    sta DHCP_STATE
-    lda #$01
-    sta DHCP_IN_PROGRESS
-    lda #$00
-    sta DHCP_RENEW_ACTIVE
-    sta DHCP_RETRY_TICKS
-    lda #DHCP_INITIAL_BACKOFF
-    sta DHCP_RETRY_BACKOFF
-    rts
-
-_dhcp_renew_busy:
-    lda #$09
-    sta DHCP_RENEW_SUBTICKS
-    lda #$01
-    sta DHCP_RENEW_SECS_LO
-    lda #$00
-    sta DHCP_RENEW_SECS_HI
-
-_dhcp_bound_done:
-    rts
-
-DHCP_REMEMBER_OFFER_SERVER_IMPL:
-    lda DHCP_SERVER_ID+0
-    ora DHCP_SERVER_ID+1
-    ora DHCP_SERVER_ID+2
-    ora DHCP_SERVER_ID+3
-    beq DHCP_REMEMBER_OFFER_BAD
-
-    ldx #$00
-DHCP_REMEMBER_OFFER_COPY:
-    lda DHCP_SERVER_ID,x
-    sta DHCP_SELECTED_SERVER_ID,x
-    inx
-    cpx #$04
-    bne DHCP_REMEMBER_OFFER_COPY
-    clc
-    rts
-
-DHCP_REMEMBER_OFFER_BAD:
-    sec
-    rts
-
-DHCP_ACK_SANITY_IMPL:
-    lda DHCP_OFFER_IP+0
-    ora DHCP_OFFER_IP+1
-    ora DHCP_OFFER_IP+2
-    ora DHCP_OFFER_IP+3
-    beq DHCP_ACK_SANITY_BAD
-
-    lda opt_mask+0
-    ora opt_mask+1
-    ora opt_mask+2
-    ora opt_mask+3
-    beq DHCP_ACK_SANITY_BAD
-
-    ; ACK chaddr must match our client hardware address.
-    lda #<ETH_RX_FRAME_PAYLOAD+8+$1c
-    clc
-    adc DHCP_IP_IHL_BYTES
-    sta DHCP_ACK_CHADDR_READ+1
-    lda #>ETH_RX_FRAME_PAYLOAD+8+$1c
-    adc #$00
-    sta DHCP_ACK_CHADDR_READ+2
-
-    ldx #$00
-DHCP_ACK_CHADDR_LOOP:
-DHCP_ACK_CHADDR_READ:
-    lda $ffff,x
-    cmp ETH_TX_FRAME_SRC_MAC,x
-    bne DHCP_ACK_SANITY_BAD
-    inx
-    cpx #$06
-    bne DHCP_ACK_CHADDR_LOOP
-
-    ; The ACK must come from the server selected from the OFFER.  If option 54
-    ; is present, compare it; otherwise fall back to the IPv4 source address.
-    lda DHCP_SELECTED_SERVER_ID+0
-    ora DHCP_SELECTED_SERVER_ID+1
-    ora DHCP_SELECTED_SERVER_ID+2
-    ora DHCP_SELECTED_SERVER_ID+3
-    beq DHCP_ACK_SANITY_BAD
-
-    lda DHCP_SERVER_ID+0
-    ora DHCP_SERVER_ID+1
-    ora DHCP_SERVER_ID+2
-    ora DHCP_SERVER_ID+3
-    beq DHCP_ACK_MATCH_SOURCE
-
-    ldx #$00
-DHCP_ACK_SERVER_ID_LOOP:
-    lda DHCP_SERVER_ID,x
-    cmp DHCP_SELECTED_SERVER_ID,x
-    bne DHCP_ACK_SANITY_BAD
-    inx
-    cpx #$04
-    bne DHCP_ACK_SERVER_ID_LOOP
-    clc
-    rts
-
-DHCP_ACK_MATCH_SOURCE:
-    ldx #$00
-DHCP_ACK_SOURCE_LOOP:
-    lda ETH_RX_FRAME_PAYLOAD+12,x
-    cmp DHCP_SELECTED_SERVER_ID,x
-    bne DHCP_ACK_SANITY_BAD
-    inx
-    cpx #$04
-    bne DHCP_ACK_SOURCE_LOOP
-    clc
-    rts
-
-DHCP_ACK_SANITY_BAD:
-    sec
-    rts
-
-DHCP_SCHEDULE_RENEWAL_IMPL:
-    lda DHCP_LEASE_SECS+0
-    ora DHCP_LEASE_SECS+1
-    ora DHCP_LEASE_SECS+2
-    ora DHCP_LEASE_SECS+3
-    bne _dhcp_lease_present
-    lda #$00
-    sta DHCP_RENEW_ACTIVE
-    sta DHCP_RENEW_SUBTICKS
-    sta DHCP_RENEW_SECS_LO
-    sta DHCP_RENEW_SECS_HI
-    rts
-
-_dhcp_lease_present:
-    lda DHCP_LEASE_SECS+0
-    sta DHCP_RENEW_TMP0
-    lda DHCP_LEASE_SECS+1
-    sta DHCP_RENEW_TMP1
-    lda DHCP_LEASE_SECS+2
-    sta DHCP_RENEW_SECS_HI
-    lda DHCP_LEASE_SECS+3
-    sta DHCP_RENEW_SECS_LO
-
-    lsr DHCP_RENEW_TMP0
-    ror DHCP_RENEW_TMP1
-    ror DHCP_RENEW_SECS_HI
-    ror DHCP_RENEW_SECS_LO
-
-    lda DHCP_RENEW_TMP0
-    ora DHCP_RENEW_TMP1
-    beq _dhcp_renew_not_capped
-    lda #$ff
-    sta DHCP_RENEW_SECS_HI
-    sta DHCP_RENEW_SECS_LO
-    bra _dhcp_renew_enable
-
-_dhcp_renew_not_capped:
-    lda DHCP_RENEW_SECS_HI
-    bne _dhcp_renew_enable
-    lda DHCP_RENEW_SECS_LO
-    cmp #60
-    bcs _dhcp_renew_enable
-    lda #60
-    sta DHCP_RENEW_SECS_LO
-
-_dhcp_renew_enable:
-    lda #$00
-    sta DHCP_RENEW_SUBTICKS
-    lda #DHCP_TICK_FRAMES
-    sta DHCP_FRAME_TICKS
-    jsr ARP_READ_RASTER
-    lda ARP_CUR_RASTER_LO
-    sta DHCP_LAST_RASTER_LO
-    lda ARP_CUR_RASTER_HI
-    sta DHCP_LAST_RASTER_HI
-    lda #$01
-    sta DHCP_RENEW_ACTIVE
-    rts
-
-TCP_TIME_WAIT_FIN_SEQ_OK:
-    sec
-    lda REMOTE_ISN+3
-    sbc SEG_SEQ+3
-    sta TCP_SEQ_DIFF+3
-    lda REMOTE_ISN+2
-    sbc SEG_SEQ+2
-    sta TCP_SEQ_DIFF+2
-    lda REMOTE_ISN+1
-    sbc SEG_SEQ+1
-    sta TCP_SEQ_DIFF+1
-    lda REMOTE_ISN+0
-    sbc SEG_SEQ+0
-    sta TCP_SEQ_DIFF+0
-
-    lda TCP_RX_DATA_PAYLOAD_SIZE
-    clc
-    adc #$01
-    sta REMOTE_ISN_TMP
-    lda TCP_RX_DATA_PAYLOAD_SIZE+1
-    adc #$00
-    sta REMOTE_ISN_TMP+1
-
-    lda TCP_SEQ_DIFF+0
-    ora TCP_SEQ_DIFF+1
-    bne _time_wait_seq_bad
-    lda TCP_SEQ_DIFF+2
-    cmp REMOTE_ISN_TMP+1
-    bne _time_wait_seq_bad
-    lda TCP_SEQ_DIFF+3
-    cmp REMOTE_ISN_TMP
-    bne _time_wait_seq_bad
-    clc
-    rts
-
-_time_wait_seq_bad:
-    sec
-    rts
-
-TCP_FIN_RETRY_INIT:
-    lda #TCP_TX_MAX_RETRIES
-    sta CONNECT_RETRY_LEFT
-    lda #TCP_TX_RETRY_TICKS
-    sta CONNECT_RETRY_TICKS
-    jsr CONNECT_STAMP_TIMER
-    rts
-
-TCP_FIN_RETRY_TICK:
-    jsr CONNECT_FRAME_WRAP_TICK
-    bcc _fin_retry_wait
-
-    lda CONNECT_RETRY_TICKS
-    beq _fin_retry_expired
-    dec CONNECT_RETRY_TICKS
-_fin_retry_wait:
-    rts
-
-_fin_retry_expired:
-    lda CONNECT_RETRY_LEFT
-    beq _fin_retry_timeout
-
-    jsr TCP_RETRANSMIT_FIN
-    bcs _fin_retry_busy
-
-    dec CONNECT_RETRY_LEFT
-    lda #TCP_TX_RETRY_TICKS
-    sta CONNECT_RETRY_TICKS
-    jsr CONNECT_STAMP_TIMER
-    rts
-
-_fin_retry_busy:
-    lda #TCP_TX_BUSY_RETRY_TICKS
-    sta CONNECT_RETRY_TICKS
-    jsr CONNECT_STAMP_TIMER
-    rts
-
-_fin_retry_timeout:
-    lda #$00
-    sta CONNECT_RETRY_TICKS
-    sta CONNECT_RETRY_LEFT
-    lda #TCP_STATE_CLOSED
-    sta TCP_STATE
-    lda TCP_EVENT_FLAG
-    ora #EV_LOCAL_CLOSE
-    sta TCP_EVENT_FLAG
-    rts
-
-TCP_RETRANSMIT_FIN:
-    ldx #$00
-_fin_save_isn:
-    lda LOCAL_ISN,x
-    sta TX_SAVE_LOCAL_ISN,x
-    inx
-    cpx #$04
-    bne _fin_save_isn
-
-    ; LOCAL_ISN already points past our FIN; retransmit with FIN_seq.
-    lda LOCAL_ISN+3
-    bne _fin_dec_low
-    lda LOCAL_ISN+2
-    bne _fin_borrow_2
-    lda LOCAL_ISN+1
-    bne _fin_borrow_1
-    dec LOCAL_ISN+0
-_fin_borrow_1:
-    dec LOCAL_ISN+1
-_fin_borrow_2:
-    dec LOCAL_ISN+2
-_fin_dec_low:
-    dec LOCAL_ISN+3
-
-    lda #$00
-    sta TCP_DATA_PAYLOAD_SIZE
-    sta TCP_DATA_PAYLOAD_SIZE+1
-    lda #TCP_FLAG_FIN|TCP_FLAG_ACK
-    jsr ETH_BUILD_TCPIP_PACKET
-    php
-
-    ldx #$00
-_fin_restore_isn:
-    lda TX_SAVE_LOCAL_ISN,x
-    sta LOCAL_ISN,x
-    inx
-    cpx #$04
-    bne _fin_restore_isn
-
-    plp
-    bcs _fin_retx_fail
-    jsr ETH_PACKET_SEND
-    bcs _fin_retx_fail
-    clc
-    rts
-
-_fin_retx_fail:
-    sec
-    rts
-
-.cerror * > $8000, "internal high helpers exceed mapped bank-4 window"
+.cerror * > $8000, "fixed tables exceed mapped bank-4 window"
