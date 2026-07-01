@@ -5136,6 +5136,100 @@ _dhcp_renew_busy:
 _dhcp_bound_done:
     rts
 
+DHCP_REMEMBER_OFFER_SERVER_IMPL:
+    lda DHCP_SERVER_ID+0
+    ora DHCP_SERVER_ID+1
+    ora DHCP_SERVER_ID+2
+    ora DHCP_SERVER_ID+3
+    beq DHCP_REMEMBER_OFFER_BAD
+
+    ldx #$00
+DHCP_REMEMBER_OFFER_COPY:
+    lda DHCP_SERVER_ID,x
+    sta DHCP_SELECTED_SERVER_ID,x
+    inx
+    cpx #$04
+    bne DHCP_REMEMBER_OFFER_COPY
+    clc
+    rts
+
+DHCP_REMEMBER_OFFER_BAD:
+    sec
+    rts
+
+DHCP_ACK_SANITY_IMPL:
+    lda DHCP_OFFER_IP+0
+    ora DHCP_OFFER_IP+1
+    ora DHCP_OFFER_IP+2
+    ora DHCP_OFFER_IP+3
+    beq DHCP_ACK_SANITY_BAD
+
+    lda opt_mask+0
+    ora opt_mask+1
+    ora opt_mask+2
+    ora opt_mask+3
+    beq DHCP_ACK_SANITY_BAD
+
+    ; ACK chaddr must match our client hardware address.
+    lda #<ETH_RX_FRAME_PAYLOAD+8+$1c
+    clc
+    adc DHCP_IP_IHL_BYTES
+    sta DHCP_ACK_CHADDR_READ+1
+    lda #>ETH_RX_FRAME_PAYLOAD+8+$1c
+    adc #$00
+    sta DHCP_ACK_CHADDR_READ+2
+
+    ldx #$00
+DHCP_ACK_CHADDR_LOOP:
+DHCP_ACK_CHADDR_READ:
+    lda $ffff,x
+    cmp ETH_TX_FRAME_SRC_MAC,x
+    bne DHCP_ACK_SANITY_BAD
+    inx
+    cpx #$06
+    bne DHCP_ACK_CHADDR_LOOP
+
+    ; The ACK must come from the server selected from the OFFER.  If option 54
+    ; is present, compare it; otherwise fall back to the IPv4 source address.
+    lda DHCP_SELECTED_SERVER_ID+0
+    ora DHCP_SELECTED_SERVER_ID+1
+    ora DHCP_SELECTED_SERVER_ID+2
+    ora DHCP_SELECTED_SERVER_ID+3
+    beq DHCP_ACK_SANITY_BAD
+
+    lda DHCP_SERVER_ID+0
+    ora DHCP_SERVER_ID+1
+    ora DHCP_SERVER_ID+2
+    ora DHCP_SERVER_ID+3
+    beq DHCP_ACK_MATCH_SOURCE
+
+    ldx #$00
+DHCP_ACK_SERVER_ID_LOOP:
+    lda DHCP_SERVER_ID,x
+    cmp DHCP_SELECTED_SERVER_ID,x
+    bne DHCP_ACK_SANITY_BAD
+    inx
+    cpx #$04
+    bne DHCP_ACK_SERVER_ID_LOOP
+    clc
+    rts
+
+DHCP_ACK_MATCH_SOURCE:
+    ldx #$00
+DHCP_ACK_SOURCE_LOOP:
+    lda ETH_RX_FRAME_PAYLOAD+12,x
+    cmp DHCP_SELECTED_SERVER_ID,x
+    bne DHCP_ACK_SANITY_BAD
+    inx
+    cpx #$04
+    bne DHCP_ACK_SOURCE_LOOP
+    clc
+    rts
+
+DHCP_ACK_SANITY_BAD:
+    sec
+    rts
+
 DHCP_SCHEDULE_RENEWAL_IMPL:
     lda DHCP_LEASE_SECS+0
     ora DHCP_LEASE_SECS+1

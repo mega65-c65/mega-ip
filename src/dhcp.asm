@@ -56,6 +56,7 @@ DHCP_LAST_RASTER_LO:        .byte $00
 DHCP_LAST_RASTER_HI:        .byte $00
 DHCP_XID:                   .byte $12,$34,$56,$78
 DHCP_SERVER_ID:             .byte $00,$00,$00,$00
+DHCP_SELECTED_SERVER_ID:    .byte $00,$00,$00,$00
 DHCP_OFFER_IP:              .byte $00,$00,$00,$00  ; yiaddr from OFFER
 DHCP_LEASE_SECS:            .byte $00,$00,$00,$00
 ;DNS_SERVER:                 .byte $00,$00,$00,$00  ; new: primary DNS
@@ -111,6 +112,7 @@ ETH_DHCP_START:
     ldy #$00
 _loop:
     sta DHCP_SERVER_ID,y
+    sta DHCP_SELECTED_SERVER_ID,y
     sta DHCP_OFFER_IP,y
     sta DHCP_LEASE_SECS,y
     sta LOCAL_IP,Y
@@ -888,6 +890,10 @@ _got_offer:
     sta DHCP_SERVER_ID+3
 
 _srv_ok:
+    jsr DHCP_REMEMBER_OFFER_SERVER_IMPL
+    bcc +
+    rts
++
     jsr DHCP_SEND_REQUEST
     bcs _offer_request_tx_busy
     lda #DHCP_STATE_REQUEST_SENT
@@ -948,24 +954,7 @@ _ack_dns_done:
     rts
 
 _dhcp_ack_sanity:
-    lda DHCP_OFFER_IP+0
-    ora DHCP_OFFER_IP+1
-    ora DHCP_OFFER_IP+2
-    ora DHCP_OFFER_IP+3
-    beq _ack_bad
-
-    lda opt_mask+0
-    ora opt_mask+1
-    ora opt_mask+2
-    ora opt_mask+3
-    beq _ack_bad
-
-    clc
-    rts
-
-_ack_bad:
-    sec
-    rts
+    jmp DHCP_ACK_SANITY_IMPL
 
 _got_nak:
     DEBUG_INC DHCP_NAK_SEEN
