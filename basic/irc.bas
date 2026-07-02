@@ -64,7 +64,8 @@
 720 if a=13 and rd=1 then rd=0:rl$="":goto 780
 730 if a=13 then gosub 1220:goto 770 : rem process line and keep draining burst
 740 if rd=1 then 770
-750 if len(rl$)<250 then rl$=rl$+chr$(a):gosub 3340:goto 770
+750 if len(rl$)<250 then rl$=rl$+chr$(a):if ld=1 then gosub 3340
+755 if len(rl$)<250 then goto 770
 760 rd=1:rl$="":goto 780
 770 if iw=1 then gosub 4590
 775 bc=bc+1:if bc<224 then 680

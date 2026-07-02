@@ -64,6 +64,8 @@ EV_TX_TIMEOUT               = %00100000     ; data retransmit retries exhausted
 
 TCP_PAYLOAD_MAX             = 235
 TCP_PAYLOAD_PADDED_SIZE     = TCP_PAYLOAD_MAX + 1
+TCP_RECV_WINDOW_CAP_LO      = $00          ; advertise at most 1024 bytes
+TCP_RECV_WINDOW_CAP_HI      = $04          ; to avoid overrunning 45E100 RX FIFO
 DNS_HOST_BUFFER_SIZE        = 128
 DNS_HOST_MAX                = DNS_HOST_BUFFER_SIZE - 1
 BANK1_WORKSPACE_LOW_HI      = $20          ; bank-1 offset $2000 -> physical $12000
@@ -2336,7 +2338,6 @@ _cts_ready:
 ; Routine to copy packet in TX buffer to Ethernet buffer and do transmit
 ;=============================================================================
 ETH_PACKET_SEND:
-
     ; mega65 IO enable
     jsr MEGA65_IO_ENABLE
 
@@ -2631,6 +2632,23 @@ BUILD_TCP_HEADER:
     sbc #0
     and #RING_BUFFER_PAGE_MASK
     sta FREE_HI
+
+    ; The TCP ring is larger than the 45E100 hardware RX queue.  Advertising
+    ; the full free space lets fast peers burst more frames than polling can
+    ; drain, causing duplicate ACKs and retransmissions.
+    lda FREE_HI
+    cmp #TCP_RECV_WINDOW_CAP_HI
+    bcc _tcp_window_clamped
+    bne _tcp_window_use_cap
+    lda FREE_LO
+    cmp #TCP_RECV_WINDOW_CAP_LO+1
+    bcc _tcp_window_clamped
+_tcp_window_use_cap:
+    lda #TCP_RECV_WINDOW_CAP_LO
+    sta FREE_LO
+    lda #TCP_RECV_WINDOW_CAP_HI
+    sta FREE_HI
+_tcp_window_clamped:
 
     ; Write TCP window (16-bit, network order high:low in your struct)
     lda FREE_HI
@@ -3361,6 +3379,22 @@ ETH_MAYBE_WINUPDATE:
     ora _cur_free_hi
     beq _ret
 
+    ; Cap the advertised window to what the polled RX path can absorb without
+    ; overflowing the 45E100's small hardware FIFO.
+    lda _cur_free_hi
+    cmp #TCP_RECV_WINDOW_CAP_HI
+    bcc _cur_window_clamped
+    bne _cur_window_use_cap
+    lda _cur_free_lo
+    cmp #TCP_RECV_WINDOW_CAP_LO+1
+    bcc _cur_window_clamped
+_cur_window_use_cap:
+    lda #TCP_RECV_WINDOW_CAP_LO
+    sta _cur_free_lo
+    lda #TCP_RECV_WINDOW_CAP_HI
+    sta _cur_free_hi
+_cur_window_clamped:
+
     ; Always update after a zero-window advertisement.
     lda ADV_WINDOW_LAST_LO
     ora ADV_WINDOW_LAST_HI
@@ -3511,7 +3545,6 @@ ETH_GET_DNS_STATE:
 ; Copy A$ to the DNS HOST buffer (host_str) for lookup
 ;=============================================================================
 COPY_ASTR_TO_DNS_HOST:
-
     ; get size of A$ if defined
     FAR_PEEK $00, $FD60
 
@@ -3586,6 +3619,16 @@ ETH_GET_DNS_RESULT_IP:
     rts
 
 ;=============================================================================
+; Rotate the active RX hardware buffer after the current frame has been handled.
+;=============================================================================
+ETH_RX_ROTATE:
+    lda #$01
+    sta MEGA65_ETH_CTRL2
+    lda #$03
+    sta MEGA65_ETH_CTRL2
+    rts
+
+;=============================================================================
 ; Network recieve polling routine
 ;=============================================================================
 ETH_RCV:
@@ -3639,10 +3682,7 @@ _latch_frame:
     ora _len_lsb
     bne _len_nonzero
 
-    lda #$01
-    sta MEGA65_ETH_CTRL2
-    lda #$03
-    sta MEGA65_ETH_CTRL2
+    jsr ETH_RX_ROTATE
     rts
 
 _len_nonzero:
@@ -3653,10 +3693,7 @@ _chk_bad_crc:
     and #%10000000
     beq _chk_multicast
 
-    lda #$01
-    sta MEGA65_ETH_CTRL2
-    lda #$03
-    sta MEGA65_ETH_CTRL2
+    jsr ETH_RX_ROTATE
     rts
 
 _chk_multicast:
@@ -3673,10 +3710,7 @@ _chk_multicast:
     and #%00010000
     beq _chk_dest_ok
 
-    lda #$01
-    sta MEGA65_ETH_CTRL2
-    lda #$03
-    sta MEGA65_ETH_CTRL2
+    jsr ETH_RX_ROTATE
     rts
 
 _chk_dest_ok:
@@ -3702,10 +3736,7 @@ _accept_packet:
     sta _len_msb
     bcs _after_fcs                ; C=1 => no borrow
     ; underflow (len < 4) → drop
-    lda #$01
-    sta MEGA65_ETH_CTRL2
-    lda #$03
-    sta MEGA65_ETH_CTRL2
+    jsr ETH_RX_ROTATE
     rts
 
 _after_fcs:
@@ -3716,10 +3747,7 @@ _after_fcs:
     cmp #$0E
     bcs _ge14_ok
     ; < 14 → drop
-    lda #$01
-    sta MEGA65_ETH_CTRL2
-    lda #$03
-    sta MEGA65_ETH_CTRL2
+    jsr ETH_RX_ROTATE
     rts
 
 _ge14_ok:
@@ -3732,10 +3760,7 @@ _ge14_ok:
     cmp #$4E                      ; == 0x06 → check low byte
     bcc _do_copy                 ; <= 0x064D → safe
 _drop_oversize:
-    lda #$01
-    sta MEGA65_ETH_CTRL2
-    lda #$03
-    sta MEGA65_ETH_CTRL2
+    jsr ETH_RX_ROTATE
     rts
 
 _do_copy:
@@ -3768,10 +3793,7 @@ _len_msb:
 
     plp
 
-    lda #$01
-    sta MEGA65_ETH_CTRL2
-    lda #$03
-    sta MEGA65_ETH_CTRL2
+    jsr ETH_RX_ROTATE
 
     ; verify dest mac or broadcast from the copied Ethernet header
     jsr ETH_IS_PACKET_FOR_US

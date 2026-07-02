@@ -1,5 +1,5 @@
 ;=============================================================================
-; A-TERM
+; ANSI-TERM
 ; Simple 45GS02 assembly terminal for Mega-IP.
 ;
 ; The small BASIC launcher loads the CP437 font into bank 5, then loads
@@ -506,6 +506,8 @@ TERMINAL_LOOP:
     beq USER_DISCONNECT
     ldx TERM_MODE
     beq _send_key
+    jsr SEND_ANSI_CURSOR_KEY
+    bcs CHECK_RX
     jsr PETSCII_TO_ASCII_KEY
 _send_key:
     jsr SEND_BYTE_A
@@ -534,6 +536,7 @@ _rx_not_lf:
 _rx_petscii:
     jsr K_CHROUT
 RX_BYTE_DONE:
+    jsr TERMINAL_MAYBE_PUMP
     inc RX_BLOCK_INDEX
     lda RX_BLOCK_INDEX
     cmp RX_BLOCK_COUNT
@@ -583,7 +586,7 @@ TERMINAL_RESET_PUMP_STATE:
 TERMINAL_MAYBE_PUMP:
     inc RX_PUMP_COUNT
     lda RX_PUMP_COUNT
-    and #$0f
+    and #$07
     bne _terminal_no_pump
     jsr TERMINAL_POLL_STATUS
 _terminal_no_pump:
@@ -933,6 +936,49 @@ SEND_BYTE_A:
     lda #<MIP_ML_SEND_BYTE
     ldx #>MIP_ML_SEND_BYTE
     jmp FAR_CALL_AXY
+
+SEND_ANSI_CURSOR_KEY:
+    sta TEMP_A
+    cmp #$91
+    beq _ansi_key_up
+    cmp #$11
+    beq _ansi_key_down
+    cmp #$1d
+    beq _ansi_key_right
+    cmp #$9d
+    beq _ansi_key_left
+    lda TEMP_A
+    clc
+    rts
+
+_ansi_key_up:
+    lda #'A'
+    bra _ansi_key_send_final
+_ansi_key_down:
+    lda #'B'
+    bra _ansi_key_send_final
+_ansi_key_right:
+    lda #'C'
+    bra _ansi_key_send_final
+_ansi_key_left:
+    lda #'D'
+
+_ansi_key_send_final:
+    pha
+    lda #ESC
+    jsr SEND_BYTE_A
+    lda ANSI_CURSOR_APP_MODE
+    beq _ansi_key_csi
+    lda #'O'
+    bra _ansi_key_prefix_done
+_ansi_key_csi:
+    lda #'['
+_ansi_key_prefix_done:
+    jsr SEND_BYTE_A
+    pla
+    jsr SEND_BYTE_A
+    sec
+    rts
 
 FAR_CALL_NOARGS:
     sta FAR_TARGET_LO_VAR
@@ -2441,38 +2487,7 @@ _ansi_map_16_bg_normal:
     jmp ANSI_UPDATE_COLOR
 
 ANSI_DSR:
-    lda ANSI_PARAM0
-    cmp #5
-    beq _ansi_report_ok
-    cmp #6
-    beq _ansi_report_cursor
     rts
-_ansi_report_ok:
-    lda #ESC
-    jsr SEND_BYTE_A
-    lda #'['
-    jsr SEND_BYTE_A
-    lda #'0'
-    jsr SEND_BYTE_A
-    lda #'n'
-    jmp SEND_BYTE_A
-_ansi_report_cursor:
-    lda #ESC
-    jsr SEND_BYTE_A
-    lda #'['
-    jsr SEND_BYTE_A
-    lda ASCII_ROW
-    clc
-    adc #1
-    jsr SEND_DEC_A
-    lda #';'
-    jsr SEND_BYTE_A
-    lda ASCII_COL
-    clc
-    adc #1
-    jsr SEND_DEC_A
-    lda #'R'
-    jmp SEND_BYTE_A
 
 ANSI_DEVICE_ATTRIBUTES:
     lda ANSI_PARAM0
@@ -2496,6 +2511,15 @@ _ansi_da_done:
 
 ANSI_MODE_SET:
     lda ANSI_PARAM0
+    cmp #1
+    bne _ansi_mode_set_not_cursor_app
+    lda ANSI_PRIVATE
+    beq _ansi_mode_set_not_cursor_app
+    lda #1
+    sta ANSI_CURSOR_APP_MODE
+    rts
+_ansi_mode_set_not_cursor_app:
+    lda ANSI_PARAM0
     cmp #25
     beq CURSOR_SPRITE_SHOW
     cmp #7
@@ -2516,6 +2540,15 @@ _ansi_mode_set_done:
     rts
 
 ANSI_MODE_RESET:
+    lda ANSI_PARAM0
+    cmp #1
+    bne _ansi_mode_reset_not_cursor_app
+    lda ANSI_PRIVATE
+    beq _ansi_mode_reset_not_cursor_app
+    lda #0
+    sta ANSI_CURSOR_APP_MODE
+    rts
+_ansi_mode_reset_not_cursor_app:
     lda ANSI_PARAM0
     cmp #25
     beq CURSOR_SPRITE_DISABLE
@@ -2603,6 +2636,7 @@ ANSI_SOFT_RESET_STATE:
     sta ANSI_G0_GRAPHICS
     sta ANSI_G1_GRAPHICS
     sta ANSI_USE_G1
+    sta ANSI_CURSOR_APP_MODE
     lda #SCREEN_ROWS-1
     sta ASCII_SCROLL_BOTTOM
     jsr CURSOR_SPRITE_SHOW
@@ -3945,6 +3979,7 @@ ANSI_CHARSET_TARGET:    .byte 0
 ANSI_G0_GRAPHICS:       .byte 0
 ANSI_G1_GRAPHICS:       .byte 0
 ANSI_USE_G1:            .byte 0
+ANSI_CURSOR_APP_MODE:   .byte 0
 ASCII_WRAP_MODE:        .byte 1
 ASCII_SCROLL_TOP:       .byte 0
 ASCII_SCROLL_BOTTOM:    .byte SCREEN_ROWS-1
@@ -4028,7 +4063,7 @@ RX_BLOCK_BUF:
 
 MSG_TITLE:
     .byte CLR, CR
-    .text "A-TERM 0.1 - MEGA-IP ASSEMBLY TERMINAL"
+    .text "ANSI-TERM 0.1 - MEGA-IP ASSEMBLY TERMINAL"
     .byte CR, CR, 0
 MSG_RESET:
     .text "RESETTING ETHERNET..."
