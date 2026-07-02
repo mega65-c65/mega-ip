@@ -79,6 +79,7 @@ IP_PROTO_TCP                = $06
 IP_PROTO_UDP                = $11
 ICMP_TYPE_ECHO_REPLY        = $00
 ICMP_TYPE_ECHO_REQUEST      = $08
+ETH_RCV_BURST_MAX           = 8
 
 ; This code is loaded to bank 4, starting at $2000 (BLOAD"eth.bin",P($42000),R)
 ; The reason is so that the standard MAP for BASIC remains in effect.
@@ -86,6 +87,7 @@ EXEC_BANK = $04     ; code is running from $42000
 RING_BUFFER_BANK = $05
 RING_BUFFER_BANK_HI = $00
 RING_BUFFER_BASE = $0000
+RING_BUFFER_PAGE_MASK = $0f          ; 16 pages x 256 bytes = 4 KB
 RBUF_PTR_LO = $fb
 RBUF_PTR_HI = $fc
 RBUF_PTR_BANK = $fd
@@ -129,6 +131,7 @@ CONNECT_RETRY_LEFT:     .byte $00
 CONNECT_LAST_RASTER_LO: .byte $00
 CONNECT_LAST_RASTER_HI: .byte $00
 CONNECT_EXPECT_ACK:     .byte $00, $00, $00, $00
+CONNECT_SYN_ISS:        .byte $00, $00, $00, $00
 
 TCP_LISTEN_PORT:        .byte $00, $00              ; ---- Passive-accept (single slot) ----
 TCP_LISTEN_STATE:       .byte $00                   ; 0=idle, 1=LISTEN, 2=SYN_RCVD
@@ -165,9 +168,9 @@ ACK_REPLY_LEN_H:        .byte 0
 ACK_REPLY_PACKET:       .fill 60, $00               ; 60 bytes is enough (14+20+20), 60 gives slack
 
 RBUF_HEAD_LO:           .byte 0
-RBUF_HEAD_HI:           .byte 0                     ; 0..7
+RBUF_HEAD_HI:           .byte 0                     ; 0..15
 RBUF_TAIL_LO:           .byte 0
-RBUF_TAIL_HI:           .byte 0                     ; 0..7
+RBUF_TAIL_HI:           .byte 0                     ; 0..15
 
 TMP_TAIL_LO:            .byte 0
 TMP_TAIL_HI:            .byte 0
@@ -185,7 +188,9 @@ ADV_WINDOW_LAST_HI:     .byte 0
 
 SEG_SEQ:                .byte 0,0,0,0
 SEG_ACK:                .byte 0,0,0,0
+RX_META0:               .byte $00
 RX_META1:               .byte $00
+ETH_RCV_BURST_LEFT:     .byte $00
 tmp_raster:             .byte 0
 host_str:               .fill DNS_HOST_BUFFER_SIZE, $00
 
@@ -234,7 +239,7 @@ TCP_RX_DATA_PAYLOAD_SIZE:
 ; The incoming data ring payload lives in physical bank 5 at
 ; RING_BUFFER_BANK:RING_BUFFER_BASE. Only the head/tail indexes stay here.
 ; RBUF_PUT/RBUF_GET access the payload with 28-bit [$fb],z addressing, which
-; avoids changing BASIC's MAP and reclaims the 2 KB payload from bank 4.
+; avoids changing BASIC's MAP and keeps the 4 KB payload out of bank 4.
 
 ;=============================================================================
 ; OUTGOING TCP DATA QUEUE
@@ -624,10 +629,110 @@ CONNECT_STAMP_TIMER:
     sta CONNECT_LAST_RASTER_HI
     rts
 
+CONNECT_SET_EXPECT_FROM_SYN_ISS:
+    ldx #$00
+_expect_copy:
+    lda CONNECT_SYN_ISS,x
+    sta CONNECT_EXPECT_ACK,x
+    inx
+    cpx #$04
+    bne _expect_copy
+
+    inc CONNECT_EXPECT_ACK+3
+    bne _expect_done
+    inc CONNECT_EXPECT_ACK+2
+    bne _expect_done
+    inc CONNECT_EXPECT_ACK+1
+    bne _expect_done
+    inc CONNECT_EXPECT_ACK+0
+_expect_done:
+    rts
+
+CONNECT_PREPARE_SYN_ISN:
+    lda CONNECT_SYN_SENT
+    beq _capture_syn_iss
+
+    ldx #$00
+_restore_syn_iss:
+    lda CONNECT_SYN_ISS,x
+    sta LOCAL_ISN,x
+    inx
+    cpx #$04
+    bne _restore_syn_iss
+    jmp CONNECT_SET_EXPECT_FROM_SYN_ISS
+
+_capture_syn_iss:
+    ldx #$00
+_capture_syn_loop:
+    lda LOCAL_ISN,x
+    sta CONNECT_SYN_ISS,x
+    inx
+    cpx #$04
+    bne _capture_syn_loop
+    jmp CONNECT_SET_EXPECT_FROM_SYN_ISS
+
+.if DEBUG
+CONNECT_SNAPSHOT_SYN_TX:
+    lda ETH_TX_FRAME_PAYLOAD+20+2
+    sta CONNECT_SYN_TX_DST_PORT_HI_DBG
+    lda ETH_TX_FRAME_PAYLOAD+20+3
+    sta CONNECT_SYN_TX_DST_PORT_LO_DBG
+    lda ETH_TX_FRAME_PAYLOAD+20+0
+    sta CONNECT_SYN_TX_SRC_PORT_HI_DBG
+    lda ETH_TX_FRAME_PAYLOAD+20+1
+    sta CONNECT_SYN_TX_SRC_PORT_LO_DBG
+
+    lda ETH_TX_FRAME_PAYLOAD+16
+    sta CONNECT_SYN_TX_DST_IP_DBG+0
+    lda ETH_TX_FRAME_PAYLOAD+17
+    sta CONNECT_SYN_TX_DST_IP_DBG+1
+    lda ETH_TX_FRAME_PAYLOAD+18
+    sta CONNECT_SYN_TX_DST_IP_DBG+2
+    lda ETH_TX_FRAME_PAYLOAD+19
+    sta CONNECT_SYN_TX_DST_IP_DBG+3
+
+    lda ETH_TX_FRAME_PAYLOAD+20+4
+    sta CONNECT_SYN_TX_SEQ_DBG+0
+    lda ETH_TX_FRAME_PAYLOAD+20+5
+    sta CONNECT_SYN_TX_SEQ_DBG+1
+    lda ETH_TX_FRAME_PAYLOAD+20+6
+    sta CONNECT_SYN_TX_SEQ_DBG+2
+    lda ETH_TX_FRAME_PAYLOAD+20+7
+    sta CONNECT_SYN_TX_SEQ_DBG+3
+
+    lda ETH_TX_FRAME_PAYLOAD+20+13
+    sta CONNECT_SYN_TX_FLAGS_DBG
+    rts
+
+CONNECT_SNAPSHOT_SYNACK_RX:
+    lda SEG_SEQ+0
+    sta CONNECT_SYNACK_SEQ_DBG+0
+    lda SEG_SEQ+1
+    sta CONNECT_SYNACK_SEQ_DBG+1
+    lda SEG_SEQ+2
+    sta CONNECT_SYNACK_SEQ_DBG+2
+    lda SEG_SEQ+3
+    sta CONNECT_SYNACK_SEQ_DBG+3
+
+    lda SEG_ACK+0
+    sta CONNECT_SYNACK_ACK_DBG+0
+    lda SEG_ACK+1
+    sta CONNECT_SYNACK_ACK_DBG+1
+    lda SEG_ACK+2
+    sta CONNECT_SYNACK_ACK_DBG+2
+    lda SEG_ACK+3
+    sta CONNECT_SYNACK_ACK_DBG+3
+    rts
+.endif
+
 CONNECT_SEND_SYN:
+    jsr CONNECT_PREPARE_SYN_ISN
     lda #TCP_FLAG_SYN
     jsr ETH_BUILD_TCPIP_PACKET
     bcs _connect_syn_not_sent
+.if DEBUG
+    jsr CONNECT_SNAPSHOT_SYN_TX
+.endif
     jsr ETH_PACKET_SEND
     bcs _connect_syn_not_sent
     DEBUG_INC CONNECT_SYN_TX_OK_DBG
@@ -688,9 +793,9 @@ _connect_syn_timeout:
 ; Safe to call anytime (even when not connecting).
 ;=============================================================================
 ETH_CONNECT_POLL:
-    ; let mainline drain any deferred IRQ work
-    jsr ETH_PROCESS_DEFERRED
+    ; Drain inbound frames before deferred TX so ACKs reflect the latest RX state.
     jsr ETH_RCV
+    jsr ETH_PROCESS_DEFERRED
     jsr ARP_RETRY_TICK
     jsr DNS_TICK
 
@@ -1035,12 +1140,14 @@ ETH_PROCESS_DEFERRED:
     lda ACK_REPLY_PENDING
     beq _check_arp
 
-    lda #$00
-    sta ACK_REPLY_PENDING
-
     lda ACK_REPLY_LEN_L
     ora ACK_REPLY_LEN_H
-    beq _ack_done
+    bne _ack_has_len
+    lda #$00
+    sta ACK_REPLY_PENDING
+    bra _check_arp
+
+_ack_has_len:
     ldx ACK_REPLY_LEN_L
 _ack_copy_back:
     dex
@@ -1055,14 +1162,14 @@ _ack_copy_back:
     sta ETH_TX_LEN_MSB
 
     jsr ETH_PACKET_SEND
+    bcs _epd_done
+    lda #$00
+    sta ACK_REPLY_PENDING
 _ack_done:
 
 _check_arp:
     lda ARP_REPLY_PENDING
     beq _epd_done
-
-    lda #$00
-    sta ARP_REPLY_PENDING
 
     ldx #$3c
 _epd_copy:
@@ -1078,6 +1185,9 @@ _epd_copy:
     sta ETH_TX_LEN_MSB
 
     jsr ETH_PACKET_SEND
+    bcs _epd_done
+    lda #$00
+    sta ARP_REPLY_PENDING
 
 _epd_done:
     plp
@@ -1111,23 +1221,6 @@ _rst_syn_sent:
     and #TCP_FLAG_ACK
     beq _rst_ignore
 
-    lda LOCAL_ISN+0
-    sta CONNECT_EXPECT_ACK+0
-    lda LOCAL_ISN+1
-    sta CONNECT_EXPECT_ACK+1
-    lda LOCAL_ISN+2
-    sta CONNECT_EXPECT_ACK+2
-    lda LOCAL_ISN+3
-    sta CONNECT_EXPECT_ACK+3
-    inc CONNECT_EXPECT_ACK+3
-    bne _rst_syn_ack_ready
-    inc CONNECT_EXPECT_ACK+2
-    bne _rst_syn_ack_ready
-    inc CONNECT_EXPECT_ACK+1
-    bne _rst_syn_ack_ready
-    inc CONNECT_EXPECT_ACK+0
-
-_rst_syn_ack_ready:
     ldx #$00
 _rst_syn_ack_check:
     lda SEG_ACK,x
@@ -1352,21 +1445,54 @@ _copy_setup_done:
     sta RX_CONSUMED_LO
     sta RX_CONSUMED_HI
 
+    jsr RBUF_SAVE_PTR_ZP
+    jsr READ_TAIL_ATOMIC
+
+    sec
+    lda TMP_TAIL_LO
+    sbc RBUF_HEAD_LO
+    sta FREE_LO
+    lda TMP_TAIL_HI
+    sbc RBUF_HEAD_HI
+    and #RING_BUFFER_PAGE_MASK
+    sta FREE_HI
+
+    sec
+    lda FREE_LO
+    sbc #1
+    sta FREE_LO
+    lda FREE_HI
+    sbc #0
+    and #RING_BUFFER_PAGE_MASK
+    sta FREE_HI
+
+    lda RBUF_HEAD_HI
+    sta HHI
+    lda #<RING_BUFFER_BASE
+    sta RBUF_PTR_LO
+    lda #>RING_BUFFER_BASE
+    clc
+    adc HHI
+    sta RBUF_PTR_HI
+    lda #RING_BUFFER_BANK
+    sta RBUF_PTR_BANK
+    lda #RING_BUFFER_BANK_HI
+    sta RBUF_PTR_TOP
+    ldz RBUF_HEAD_LO
+
     ; ------------------ copy loop ------------------
 _lp_copy_data:
     lda RX_COPY_REM_LO
     ora RX_COPY_REM_HI
     beq _ack_what_we_took
 
-    jsr RBUF_IS_FULL
-    bcs _ack_what_we_took          ; ring full → ACK only consumed
+    lda FREE_LO
+    ora FREE_HI
+    beq _ack_what_we_took
 
 _payload_read:
     .byte $B9, $00, $00            ; LDA abs,Y (operands patched above)
-    phy
-    jsr RBUF_PUT                   ; (RBUF_PUT returns C=1 if full; we prechecked)
-    ply
-    bcs _ack_what_we_took
+    sta [RBUF_PTR_LO],z
 
 _byte_consumed:
     ; consumed++
@@ -1381,6 +1507,31 @@ _no_carry_cons:
     inc _payload_read+2            ; crossed page
 
 _no_page:
+    ; advance ring destination pointer
+    tza
+    clc
+    adc #1
+    taz
+    bne _no_ring_page
+    inc HHI
+    lda HHI
+    and #RING_BUFFER_PAGE_MASK
+    sta HHI
+    clc
+    adc #>RING_BUFFER_BASE
+    sta RBUF_PTR_HI
+
+_no_ring_page:
+    ; free--
+    sec
+    lda FREE_LO
+    sbc #1
+    sta FREE_LO
+    lda FREE_HI
+    sbc #0
+    and #RING_BUFFER_PAGE_MASK
+    sta FREE_HI
+
     ; remaining--
     sec
     lda RX_COPY_REM_LO
@@ -1397,6 +1548,12 @@ _no_page:
 
     ; ------------------ ACK exactly what we took ------------------
 _ack_what_we_took:
+    tza
+    sta RBUF_HEAD_LO
+    lda HHI
+    sta RBUF_HEAD_HI
+    jsr RBUF_RESTORE_PTR_ZP
+
     ; Make CALC_REMOTE_ISN add “consumed” bytes only
     lda RX_CONSUMED_LO
     sta TCP_RX_DATA_PAYLOAD_SIZE
@@ -1542,25 +1699,19 @@ _check_SYN:
 
 _got_SYNACK:
     DEBUG_INC CONNECT_SYNACK_RX_DBG
+.if DEBUG
+    jsr CONNECT_SNAPSHOT_SYNACK_RX
+.endif
 
-    ; SYN-ACK must acknowledge our SYN (LOCAL_ISN + 1).
-    lda LOCAL_ISN+0
-    sta CONNECT_EXPECT_ACK+0
-    lda LOCAL_ISN+1
-    sta CONNECT_EXPECT_ACK+1
-    lda LOCAL_ISN+2
-    sta CONNECT_EXPECT_ACK+2
-    lda LOCAL_ISN+3
-    sta CONNECT_EXPECT_ACK+3
-    inc CONNECT_EXPECT_ACK+3
-    bne _synack_ack_ready
-    inc CONNECT_EXPECT_ACK+2
-    bne _synack_ack_ready
-    inc CONNECT_EXPECT_ACK+1
-    bne _synack_ack_ready
-    inc CONNECT_EXPECT_ACK+0
-
-_synack_ack_ready:
+.if DEBUG
+    ldx #$00
+_synack_expect_dbg:
+    lda CONNECT_EXPECT_ACK,x
+    sta CONNECT_SYNACK_EXPECT_DBG,x
+    inx
+    cpx #$04
+    bne _synack_expect_dbg
+.endif
     ldx #$00
 _synack_ack_check:
     lda SEG_ACK,x
@@ -1587,16 +1738,16 @@ _synack_ack_check:
     lda #$00
     sta REMOTE_ISN_BUMP
 
-    ; The SYN we sent consumes 1 sequence number
-    inc LOCAL_ISN+3
-    bne _got_SYNACK_ahead
-    inc LOCAL_ISN+2
-    bne _got_SYNACK_ahead
-    inc LOCAL_ISN+1
-    bne _got_SYNACK_ahead
-    inc LOCAL_ISN+0
+    ; Our SYN consumes one sequence number. Use the already-validated
+    ; SYN_SEQ+1 value so handshake state is independent of mutable LOCAL_ISN.
+    ldx #$00
+_set_local_after_syn:
+    lda CONNECT_EXPECT_ACK,x
+    sta LOCAL_ISN,x
+    inx
+    cpx #$04
+    bne _set_local_after_syn
 
-_got_SYNACK_ahead:
     ; build & send the final ACK
     lda #TCP_FLAG_ACK
     jsr ETH_BUILD_TCPIP_PACKET
@@ -2319,10 +2470,15 @@ ETH_BUILD_TCPIP_PACKET:
 
     pha                             ; push the TCP_FLAG to stack
 
-    lda TCP_STATE                   ; dont do a ARP if we already are connected
+    lda TCP_STATE                   ; dont do a ARP if we already have a TCP peer
     cmp #TCP_STATE_ESTABLISHED
     beq _use_tcp_peer_mac
+    cmp #TCP_STATE_SYN_SENT
+    bne _route_lookup
+    lda TCP_PEER_MAC_VALID
+    bne _use_tcp_peer_mac
 
+_route_lookup:
     ; we need to check if we are on the same net to send the packet to.
     ; if we are, then we just need to check the arp cache for the mac address
     ; of the machine on the same net.  Otherwise, we use the mac address of
@@ -2452,28 +2608,28 @@ BUILD_TCP_HEADER:
     lda REMOTE_PORT+1
     sta TCP_HDR_DST_PORT+1
 
-    ; ---- compute free = (TAIL - HEAD - 1) mod 1024 ----
+    ; ---- compute free = (TAIL - HEAD - 1) modulo ring size ----
     jsr READ_HEAD_ATOMIC
     jsr READ_TAIL_ATOMIC
 
-    ; free := (TAIL - HEAD - 1) mod 1024
+    ; free := (TAIL - HEAD - 1) modulo ring size
     sec
     lda TMP_TAIL_LO
     sbc TMP_HEAD_LO
     sta FREE_LO
     lda TMP_TAIL_HI
     sbc TMP_HEAD_HI
-    and #$07                          ; 11-bit pages 0..7
+    and #RING_BUFFER_PAGE_MASK
     sta FREE_HI
 
-    ; subtract 1 (mod 1024)
+    ; subtract 1 modulo ring size
     sec
     lda FREE_LO
     sbc #1
     sta FREE_LO
     lda FREE_HI
     sbc #0
-    and #$07
+    and #RING_BUFFER_PAGE_MASK
     sta FREE_HI
 
     ; Write TCP window (16-bit, network order high:low in your struct)
@@ -2548,8 +2704,8 @@ _lp_done:
 
 WINUPDATE_THRESHOLD = $01    ; send update when we open by ≥1 bytes
 
-WINUPDATE_GROW_LO = $00
-WINUPDATE_GROW_HI = $01
+WINUPDATE_GROW_LO = $80
+WINUPDATE_GROW_HI = $00
 
 ;=============================================================================
 ; Routine to calculate the tcp checksum
@@ -3081,11 +3237,21 @@ TCP_EVENT_FLAG
 ; - Otherwise return 0=connected/ok, 1=disconnected
 ;=============================================================================
 ETH_STATUS_POLL:
-    ; 1) Do non-IRQ work first
-    jsr ETH_PROCESS_DEFERRED
-    
-    ; check for an handle any incoming packets
+    ; Drain a small burst of pending RX frames per poll.  One frame per poll
+    ; throttles streaming clients even when the application can consume data.
+    lda #ETH_RCV_BURST_MAX
+    sta ETH_RCV_BURST_LEFT
+_rx_burst_loop:
     jsr ETH_RCV
+    dec ETH_RCV_BURST_LEFT
+    beq _rx_burst_done
+    lda MEGA65_ETH_CTRL2
+    and #%00100000
+    bne _rx_burst_loop
+_rx_burst_done:
+
+    jsr ARP_CACHE_PURGE
+
     lda TCP_STATE
     cmp #TCP_STATE_ESTABLISHED
     bne _check_synack_tick
@@ -3108,6 +3274,7 @@ _after_tcp_ticks:
     jsr DNS_TICK
     jsr DHCP_STATUS_TICK
     jsr ETH_MAYBE_WINUPDATE
+    jsr ETH_PROCESS_DEFERRED
 
     ; 2) Let TIME_WAIT progress while BASIC polls
     lda TCP_STATE
@@ -3146,7 +3313,7 @@ _disconnected:
     rts
 
 ;=============================================================================
-; Computes free = (TAIL - HEAD - 1) mod 1024 (10-bit),
+; Computes free = (TAIL - HEAD - 1) modulo ring size,
 ; and if last advertised window was 0 and free >= threshold,
 ; sends a pure ACK to wake the sender.  No zero-page used.
 ;=============================================================================
@@ -3166,7 +3333,7 @@ ETH_MAYBE_WINUPDATE:
     ora REMOTE_PORT+1
     beq _ret                    ; don’t send if peer port unknown
 
-    ; ---- cur_free = (TAIL - HEAD - 1) mod 1024 ----
+    ; ---- cur_free = (TAIL - HEAD - 1) modulo ring size ----
     jsr READ_HEAD_ATOMIC              ; fills TMP_HEAD_LO/TMP_HEAD_HI
     jsr READ_TAIL_ATOMIC              ; fills TMP_TAIL_LO/TMP_TAIL_HI
 
@@ -3176,7 +3343,7 @@ ETH_MAYBE_WINUPDATE:
     sta _cur_free_lo
     lda TMP_TAIL_HI
     sbc TMP_HEAD_HI
-    and #$07
+    and #RING_BUFFER_PAGE_MASK
     sta _cur_free_hi
 
     ; cur_free -= 1
@@ -3186,7 +3353,7 @@ ETH_MAYBE_WINUPDATE:
     sta _cur_free_lo
     lda _cur_free_hi
     sbc #0
-    and #$07
+    and #RING_BUFFER_PAGE_MASK
     sta _cur_free_hi
 
     ; if free == 0, there is nothing useful to advertise
@@ -3424,9 +3591,6 @@ ETH_GET_DNS_RESULT_IP:
 ETH_RCV:
     jsr MEGA65_IO_ENABLE
 
-    ; update ARP cache
-    jsr ARP_CACHE_PURGE
-
     ; check if frame has been recieved
     lda MEGA65_ETH_CTRL2
     and #%00100000                  ; check RX bit for waiting frame
@@ -3444,10 +3608,26 @@ _latch_frame:
     ;        bit6 = 1 → unicast-to-me (matches MACADDR)
     ;        bit7 = 1 → CRC error (bad frame)
 
-    LDA_FAR $ff, $0de800
+    ; Copy both NIC metadata bytes in one DMA job.  This replaces two 1-byte
+    ; DMA reads in the hot receive path.
+    php
+    sei
+    sta $D707
+    .byte $80                   ; enhanced dma - src bits 20-27
+    .byte $ff                   ; ----------------------^
+    .byte $81                   ; enhanced dma - dest bits 20-27
+    .byte $00
+    .byte $00                   ; end of job options
+    .byte $00                   ; copy
+    .byte $02, $00              ; length = 2 metadata bytes
+    .byte $00, $e8, $0d         ; src eth RX buffer metadata ($ffde800)
+    .byte <RX_META0, >RX_META0, EXEC_BANK
+    .byte $00                   ; command high byte
+    .word $0000                 ; modulo (ignored)
+    plp
+
+    lda RX_META0
     sta _len_lsb
-    LDA_FAR $ff, $0de801
-    sta RX_META1
 
     ; build 16 bit length from meta
     lda RX_META1
@@ -4173,6 +4353,31 @@ CONNECT_CLEAR_DEBUG:
     sta CONNECT_LAST_TCP_SRC_IP_DBG+1
     sta CONNECT_LAST_TCP_SRC_IP_DBG+2
     sta CONNECT_LAST_TCP_SRC_IP_DBG+3
+    sta CONNECT_SYN_TX_DST_PORT_HI_DBG
+    sta CONNECT_SYN_TX_DST_PORT_LO_DBG
+    sta CONNECT_SYN_TX_SRC_PORT_HI_DBG
+    sta CONNECT_SYN_TX_SRC_PORT_LO_DBG
+    sta CONNECT_SYN_TX_DST_IP_DBG+0
+    sta CONNECT_SYN_TX_DST_IP_DBG+1
+    sta CONNECT_SYN_TX_DST_IP_DBG+2
+    sta CONNECT_SYN_TX_DST_IP_DBG+3
+    sta CONNECT_SYN_TX_SEQ_DBG+0
+    sta CONNECT_SYN_TX_SEQ_DBG+1
+    sta CONNECT_SYN_TX_SEQ_DBG+2
+    sta CONNECT_SYN_TX_SEQ_DBG+3
+    sta CONNECT_SYN_TX_FLAGS_DBG
+    sta CONNECT_SYNACK_SEQ_DBG+0
+    sta CONNECT_SYNACK_SEQ_DBG+1
+    sta CONNECT_SYNACK_SEQ_DBG+2
+    sta CONNECT_SYNACK_SEQ_DBG+3
+    sta CONNECT_SYNACK_ACK_DBG+0
+    sta CONNECT_SYNACK_ACK_DBG+1
+    sta CONNECT_SYNACK_ACK_DBG+2
+    sta CONNECT_SYNACK_ACK_DBG+3
+    sta CONNECT_SYNACK_EXPECT_DBG+0
+    sta CONNECT_SYNACK_EXPECT_DBG+1
+    sta CONNECT_SYNACK_EXPECT_DBG+2
+    sta CONNECT_SYNACK_EXPECT_DBG+3
     sta TCP_TX_ENQUEUE_OK_DBG
     sta TCP_TX_SEND_OK_DBG
     sta TCP_TX_ACK_SEEN_DBG
@@ -4262,6 +4467,16 @@ CONNECT_LAST_TCP_DST_PORT_HI_DBG: .byte $00
 CONNECT_LAST_TCP_DST_PORT_LO_DBG: .byte $00
 CONNECT_LAST_TCP_FLAGS_DBG:       .byte $00
 CONNECT_LAST_TCP_SRC_IP_DBG:      .byte $00, $00, $00, $00
+CONNECT_SYN_TX_DST_PORT_HI_DBG:   .byte $00
+CONNECT_SYN_TX_DST_PORT_LO_DBG:   .byte $00
+CONNECT_SYN_TX_SRC_PORT_HI_DBG:   .byte $00
+CONNECT_SYN_TX_SRC_PORT_LO_DBG:   .byte $00
+CONNECT_SYN_TX_DST_IP_DBG:        .byte $00, $00, $00, $00
+CONNECT_SYN_TX_SEQ_DBG:           .byte $00, $00, $00, $00
+CONNECT_SYN_TX_FLAGS_DBG:         .byte $00
+CONNECT_SYNACK_SEQ_DBG:           .byte $00, $00, $00, $00
+CONNECT_SYNACK_ACK_DBG:           .byte $00, $00, $00, $00
+CONNECT_SYNACK_EXPECT_DBG:        .byte $00, $00, $00, $00
 .endif
 CONNECT_LAST_RX_DC_DBG:      .byte $00
 
@@ -4502,6 +4717,9 @@ ETH_RBUF_GET_BLOCK:
     lda #$00
     sta RBUF_BLOCK_COUNT
 
+    php
+    sei
+
     lda $45
     sta RBUF_BLOCK_SAVE45
     lda $46
@@ -4520,18 +4738,63 @@ ETH_RBUF_GET_BLOCK:
     lda #$00
     sta $48
 
+    jsr RBUF_SAVE_PTR_ZP
+    jsr READ_HEAD_ATOMIC
+
+    lda RBUF_TAIL_LO
+    sta HLO
+    lda RBUF_TAIL_HI
+    sta HHI
+
+    lda #<RING_BUFFER_BASE
+    sta RBUF_PTR_LO
+    lda #>RING_BUFFER_BASE
+    clc
+    adc HHI
+    sta RBUF_PTR_HI
+    lda #RING_BUFFER_BANK
+    sta RBUF_PTR_BANK
+    lda #RING_BUFFER_BANK_HI
+    sta RBUF_PTR_TOP
+
 _rbuf_block_loop:
     lda RBUF_BLOCK_COUNT
     cmp RBUF_BLOCK_MAX
     bcs _rbuf_block_done
-    jsr RBUF_GET
-    bcs _rbuf_block_done
+
+    lda HLO
+    cmp TMP_HEAD_LO
+    bne _rbuf_block_not_empty
+    lda HHI
+    cmp TMP_HEAD_HI
+    beq _rbuf_block_done
+
+_rbuf_block_not_empty:
+    ldz HLO
+    lda [RBUF_PTR_LO],z
     ldz RBUF_BLOCK_COUNT
     sta [$45],z
+
     inc RBUF_BLOCK_COUNT
+
+    inc HLO
+    bne _rbuf_block_loop
+    inc HHI
+    lda HHI
+    and #RING_BUFFER_PAGE_MASK
+    sta HHI
+    clc
+    adc #>RING_BUFFER_BASE
+    sta RBUF_PTR_HI
     bra _rbuf_block_loop
 
 _rbuf_block_done:
+    lda HLO
+    sta RBUF_TAIL_LO
+    lda HHI
+    sta RBUF_TAIL_HI
+    jsr RBUF_RESTORE_PTR_ZP
+
     lda RBUF_BLOCK_SAVE45
     sta $45
     lda RBUF_BLOCK_SAVE46
@@ -4544,6 +4807,7 @@ _rbuf_block_done:
     lda RBUF_BLOCK_COUNT
     tax
     taz
+    plp
     rts
 
 RBUF_BLOCK_DEST_LO:   .byte $00
@@ -5240,14 +5504,14 @@ ETH_DNS_DEBUG2:
     rts
 
 ;=============================================================================
-; Return DNS RX-path counters for ML callers.
-; Out: A = raw accepted, X = IPv4, Y = UDP, Z = not-for-us drops.
+; Return DNS parser header counters for ML callers.
+; Out: A = QDCOUNT low, X = ANCOUNT low, Y = NSCOUNT low, Z = bounds fail.
 ;=============================================================================
 ETH_DNS_DEBUG3:
-    lda DNS_RAW_RX_COUNT
-    ldx DNS_IPV4_RX_COUNT
-    ldy DNS_UDP_RX_COUNT
-    ldz DNS_NOT_FOR_US_COUNT
+    lda DNS2_QD_LEFT
+    ldx DNS2_ANS_LEFT
+    ldy DNS2_NS_LEFT
+    ldz DNS2_BOUNDS_FAIL
     rts
 
 ;=============================================================================
@@ -5370,9 +5634,9 @@ ML_CALL_RET_Z:          .byte $00
     jmp ETH_CONNECT_TX_DEBUG4      ; $47809
     jmp ETH_CONNECT_TX_DEBUG5      ; $4780c
     jmp ETH_CONNECT_TX_DEBUG6      ; $4780f
-    jmp ETH_DEBUG_ZERO             ; $47812 reserved
-    jmp ETH_DEBUG_ZERO             ; $47815 reserved
-    jmp ETH_DEBUG_ZERO             ; $47818 reserved
+    jmp ETH_CONNECT_SYN_DEBUG1     ; $47812
+    jmp ETH_CONNECT_SYN_DEBUG2     ; $47815
+    jmp ETH_CONNECT_SYN_DEBUG3     ; $47818
     jmp ETH_CONNECT_RX_DEBUG1      ; $4781b
     jmp ETH_CONNECT_RX_DEBUG2      ; $4781e
     jmp ETH_CONNECT_RX_DEBUG3      ; $47821
@@ -5384,6 +5648,9 @@ ML_CALL_RET_Z:          .byte $00
     jmp ETH_TX_DUMP4               ; $47833
     jmp ETH_TCP_TX_DEBUG5          ; $47836
     jmp ETH_TCP_TX_DEBUG6          ; $47839
+    jmp ETH_CONNECT_SYNACK_DEBUG1  ; $4783c
+    jmp ETH_CONNECT_SYNACK_DEBUG2  ; $4783f
+    jmp ETH_CONNECT_SYNACK_DEBUG3  ; $47842
 .else
     jmp ETH_DEBUG_ZERO             ; $47800
     jmp ETH_DEBUG_ZERO             ; $47803
@@ -5405,6 +5672,9 @@ ML_CALL_RET_Z:          .byte $00
     jmp ETH_DEBUG_ZERO             ; $47833
     jmp ETH_DEBUG_ZERO             ; $47836
     jmp ETH_DEBUG_ZERO             ; $47839
+    jmp ETH_DEBUG_ZERO             ; $4783c
+    jmp ETH_DEBUG_ZERO             ; $4783f
+    jmp ETH_DEBUG_ZERO             ; $47842
 .endif
 
 .if DEBUG
@@ -5455,6 +5725,54 @@ ETH_CONNECT_TX_DEBUG6:
     lda ETH_TX_FRAME_DEST_MAC+4
     ldx ETH_TX_FRAME_DEST_MAC+5
     ldz ETH_STATE
+    rts
+
+; Out: A/X = captured SYN TCP dst port hi/lo, Y/Z = src port hi/lo.
+ETH_CONNECT_SYN_DEBUG1:
+    lda CONNECT_SYN_TX_DST_PORT_HI_DBG
+    ldx CONNECT_SYN_TX_DST_PORT_LO_DBG
+    ldy CONNECT_SYN_TX_SRC_PORT_HI_DBG
+    ldz CONNECT_SYN_TX_SRC_PORT_LO_DBG
+    rts
+
+; Out: A/X/Y/Z = captured SYN IPv4 destination address.
+ETH_CONNECT_SYN_DEBUG2:
+    lda CONNECT_SYN_TX_DST_IP_DBG+0
+    ldx CONNECT_SYN_TX_DST_IP_DBG+1
+    ldy CONNECT_SYN_TX_DST_IP_DBG+2
+    ldz CONNECT_SYN_TX_DST_IP_DBG+3
+    rts
+
+; Out: A/X/Y/Z = captured SYN sequence number.
+ETH_CONNECT_SYN_DEBUG3:
+    lda CONNECT_SYN_TX_SEQ_DBG+0
+    ldx CONNECT_SYN_TX_SEQ_DBG+1
+    ldy CONNECT_SYN_TX_SEQ_DBG+2
+    ldz CONNECT_SYN_TX_SEQ_DBG+3
+    rts
+
+; Out: A/X/Y/Z = captured SYN-ACK sequence number.
+ETH_CONNECT_SYNACK_DEBUG1:
+    lda CONNECT_SYNACK_SEQ_DBG+0
+    ldx CONNECT_SYNACK_SEQ_DBG+1
+    ldy CONNECT_SYNACK_SEQ_DBG+2
+    ldz CONNECT_SYNACK_SEQ_DBG+3
+    rts
+
+; Out: A/X/Y/Z = captured SYN-ACK ACK number.
+ETH_CONNECT_SYNACK_DEBUG2:
+    lda CONNECT_SYNACK_ACK_DBG+0
+    ldx CONNECT_SYNACK_ACK_DBG+1
+    ldy CONNECT_SYNACK_ACK_DBG+2
+    ldz CONNECT_SYNACK_ACK_DBG+3
+    rts
+
+; Out: A/X/Y/Z = ACK number expected for our SYN.
+ETH_CONNECT_SYNACK_DEBUG3:
+    lda CONNECT_SYNACK_EXPECT_DBG+0
+    ldx CONNECT_SYNACK_EXPECT_DBG+1
+    ldy CONNECT_SYNACK_EXPECT_DBG+2
+    ldz CONNECT_SYNACK_EXPECT_DBG+3
     rts
 
 ETH_DEBUG_ZERO:

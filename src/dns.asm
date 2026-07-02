@@ -896,7 +896,6 @@ DNS2_UDP_LEN_OK:
     bne DNS2_FAIL
     jsr DNS2_READ_BYTE
     sta DNS2_QD_LEFT
-    beq DNS2_FAIL
 
     ; ANCOUNT.
     jsr DNS2_READ_BYTE
@@ -915,6 +914,9 @@ DNS2_UDP_LEN_OK:
     sta DNS2_AR_HI
     jsr DNS2_READ_BYTE
     sta DNS2_AR_LEFT
+
+    lda DNS2_QD_LEFT
+    beq DNS2_FAIL
 
 DNS2_SKIP_QUESTIONS:
     lda DNS2_QD_LEFT

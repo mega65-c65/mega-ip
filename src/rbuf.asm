@@ -21,14 +21,14 @@ RBUF_PUT:
     lda RBUF_HEAD_HI
     sta HHI
 
-    ; next = head + 1 (11-bit)
+    ; next = head + 1 within the configured ring size
     clc
     lda HLO
     adc #1
     sta NEXT_LO
     lda HHI
     adc #0
-    and #$07
+    and #RING_BUFFER_PAGE_MASK
     sta NEXT_HI
 
     ; full? (next == tail)
@@ -47,7 +47,7 @@ _full:
     rts
 
 _not_full:
-    ; 2 KB RX ring payload lives in physical bank 5.  Build a 28-bit
+    ; RX ring payload lives in physical bank 5.  Build a 28-bit
     ; pointer to RING_BUFFER_BASE + (HHI << 8), then index by HLO.
     lda #<RING_BUFFER_BASE
     sta RBUF_PTR_LO
@@ -104,7 +104,7 @@ _not_empty:
     sta RBUF_PTR_LO
     lda #>RING_BUFFER_BASE
     clc
-    adc RBUF_TAIL_HI             ; select page 0..7
+    adc RBUF_TAIL_HI             ; select ring page
     sta RBUF_PTR_HI
     lda #RING_BUFFER_BANK
     sta RBUF_PTR_BANK
@@ -115,12 +115,12 @@ _not_empty:
     lda [RBUF_PTR_LO],z
     pha
 
-    ; tail = tail + 1 (11-bit)
+    ; tail = tail + 1 within the configured ring size
     inc RBUF_TAIL_LO
     bne _ok
     inc RBUF_TAIL_HI
     lda RBUF_TAIL_HI
-    and #$07
+    and #RING_BUFFER_PAGE_MASK
     sta RBUF_TAIL_HI
 _ok:
     lda CHARACTER_MODE
@@ -199,7 +199,7 @@ RBUF_IS_FULL:
     sta NEXT_LO
     lda HHI
     adc #0
-    and #$07
+    and #RING_BUFFER_PAGE_MASK
     sta NEXT_HI
     jsr READ_TAIL_ATOMIC
     lda NEXT_LO
