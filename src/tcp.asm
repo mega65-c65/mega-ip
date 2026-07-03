@@ -3,7 +3,6 @@
 ;=============================================================================
 ; Internal handler: let it flow with the runtime image.
 INCOMING_TCP_PACKET:
-    DEBUG_INC CONNECT_TCP_RX_DBG
 
     ; Only handle IPv4 TCP; drop others (e.g., mDNS/UDP)
     lda ETH_RX_FRAME_PAYLOAD+0
@@ -65,7 +64,7 @@ _passive_try:
     lda ETH_RX_TCP_FLAGS
     and #(TCP_FLAG_SYN | TCP_FLAG_ACK | TCP_FLAG_RST | TCP_FLAG_FIN)
     cmp #TCP_FLAG_SYN
-    bne _passive_done               ; not a pure SYN → let normal path drop it
+    bne _passive_done               ; not a pure SYN - let normal path drop it
 
     ; Source MAC must be an individual address, not multicast/broadcast.
     lda ETH_RX_FRAME_SRC_MAC
@@ -101,7 +100,7 @@ _passive_try:
     ;lda #$01
     ;sta REMOTE_ISN_BUMP             ; bump by 1 for SYN
     ;jsr CALC_REMOTE_ISN             ; REMOTE_ISN := SEG_SEQ + payload_len + bump
-                                    ; (for bare SYN, payload_len=0 → IRS+1)
+                                    ; (for bare SYN, payload_len=0 -> IRS+1)
 
     ; ----- REMOTE_ISN := SEG.SEQ + 1 (consume their SYN) -----
     lda ETH_RX_FRAME_PAYLOAD+4,x
@@ -200,7 +199,7 @@ _chk_sip:
     lda ETH_RX_FRAME_PAYLOAD+13,x
     sta ETH_RX_TCP_FLAGS
 
-    ; SEG.SEQ → SEG_SEQ[0..3] (big endian)
+    ; SEG.SEQ -> SEG_SEQ[0..3] (big endian)
     lda ETH_RX_FRAME_PAYLOAD+4,x
     sta SEG_SEQ+0
     lda ETH_RX_FRAME_PAYLOAD+5,x

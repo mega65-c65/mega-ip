@@ -125,7 +125,7 @@ ARP_REQUEST:
     ; start ARP resend driver
     lda ARP_STATE
     cmp #ARP_STATE_WAIT
-    beq _already_waiting          ; if we’re already in a wait cycle, don’t
+    beq _already_waiting          ; if we're already in a wait cycle, don't
                                   ; reset the retry budget
 
     lda #ARP_MAX_RETRIES
@@ -288,7 +288,7 @@ _build_reply:
     lda ETH_RX_FRAME_SRC_MAC+5
     sta ARP_REPLY_PACKET+37
 
-    ; TPA = requester’s SPA (from the ARP request payload)
+    ; TPA = requester's SPA (from the ARP request payload)
     lda ETH_RX_FRAME_PAYLOAD+14
     sta ARP_REPLY_PACKET+38
     lda ETH_RX_FRAME_PAYLOAD+15

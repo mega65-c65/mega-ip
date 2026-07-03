@@ -1,0 +1,35 @@
+100 rem mega-ip autoboot menu
+110 rem first program on disk; launched by boot or shift-run/stop
+120 background 0:border 0:print chr$(14);:key off
+130 gosub 1000
+140 getkey a$
+150 if a$="1" then gosub 2000:run"ansi-term"
+160 if a$="2" then gosub 2000:run"terminal"
+170 if a$="3" then gosub 2000:run"irc"
+180 if a$="4" then gosub 2000:run"webserver"
+190 if a$="q" or a$="Q" then print:print"{wht}ready.":end
+200 if a$="{home}" or a$="{clr}" then gosub 1000
+210 goto 140
+1000 print"{clr}{wht}";
+1010 print"{rvon}{red}M{cyn}E{lgrn}G{lblu}A{lred}-{orng}I{yel}P{cyn} TCP/IP Stack for the MEGA65                                      {rvof}"
+1020 print
+1030 print"{yel}                      Mega-IP Application Launcher"
+1040 print"{cyn}                      ==========================="
+1050 print
+1060 print"{wht}  Choose a program to start:"
+1070 print
+1080 print"{lgrn}    1{wht}  ANSI-Term       {gry3}Full ANSI/ASCII/PETSCII terminal"
+1090 print"{lgrn}    2{wht}  Terminal        {gry3}BASIC65 terminal sample"
+1100 print"{lgrn}    3{wht}  IRC             {gry3}Single-channel IRC chat client"
+1110 print"{lgrn}    4{wht}  Webserver       {gry3}BASIC65 HTTP/file server"
+1120 print
+1130 print"{lred}    Q{wht}  Quit to BASIC"
+1140 print
+1150 print"{cyn}  --------------------------------------------------------------"
+1160 print"{wht}  The selected program will load its own network library files."
+1170 print"{cyn}  --------------------------------------------------------------"
+1180 print
+1190 print"{lgrn}  Option? {wht}";
+1200 return
+2000 print:print"{yel}  Loading...{wht}"
+2010 return

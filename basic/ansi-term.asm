@@ -123,24 +123,6 @@ MIP_DNS_START_BUF_Y = $7618
 MIP_ML_CALL_STAGED  = $761b
 MIP_ML_RECV_BYTE    = $761e
 MIP_ML_RECV_BLOCK   = $7621
-MIP_DNS_DEBUG       = $7612
-MIP_DNS_DEBUG2      = $7615
-MIP_DNS_DEBUG3      = $7624
-MIP_CONNECT_DEBUG   = $7627
-MIP_CONNECT_DEBUG2  = $762a
-MIP_CONNECT_DEBUG3  = $762d
-MIP_TX_DEBUG2       = $7803
-MIP_TX_DEBUG3       = $7806
-MIP_TX_DEBUG4       = $7809
-MIP_SYN_DEBUG1      = $7812
-MIP_SYN_DEBUG2      = $7815
-MIP_SYN_DEBUG3      = $7818
-MIP_RX_DEBUG2       = $781e
-MIP_RX_DEBUG3       = $7821
-MIP_RX_DEBUG4       = $7824
-MIP_SYNACK_DEBUG1   = $783c
-MIP_SYNACK_DEBUG2   = $783f
-MIP_SYNACK_DEBUG3   = $7842
 
 ; Staging block at physical bank-4 $77c0.
 ML_STAGE_LO         = $77c0
@@ -166,6 +148,7 @@ PET_WHITE           = $05
 PET_RED             = $1c
 PET_CYAN            = $9f
 PET_GREEN           = $1e
+PET_LIGHT_GREEN     = $99
 PET_BLUE            = $1f
 PET_YELLOW          = $9e
 PET_HLINE           = $c0
@@ -429,7 +412,6 @@ _resolve_as_host:
     jsr DNS_START_LINEBUF
     cmp #1
     beq DNS_WAIT_START_OK
-    jsr PRINT_DNS_DEBUG
     lda #<MSG_LOOKUP_FAIL
     ldx #>MSG_LOOKUP_FAIL
     jsr PRINT_Z
@@ -454,7 +436,6 @@ DNS_WAIT_LOOP:
     bcc DNS_WAIT_LOOP
 
 DNS_FAILED:
-    jsr PRINT_DNS_DEBUG
     lda #<MSG_LOOKUP_FAIL
     ldx #>MSG_LOOKUP_FAIL
     jsr PRINT_Z
@@ -4982,302 +4963,6 @@ _hex_digit:
     adc #'0'
     jmp K_CHROUT
 
-CALL_DEBUG_TARGET:
-    jsr FAR_CALL_NOARGS
-    sta DBG_A
-    stx DBG_X
-    sty DBG_Y
-    tza
-    sta DBG_Z
-    rts
-
-PRINT_DBG_A:
-    lda DBG_A
-    jmp PRINT_HEX_A
-
-PRINT_DBG_X:
-    lda DBG_X
-    jmp PRINT_HEX_A
-
-PRINT_DBG_Y:
-    lda DBG_Y
-    jmp PRINT_HEX_A
-
-PRINT_DBG_Z:
-    lda DBG_Z
-    jmp PRINT_HEX_A
-
-PRINT_DNS_DEBUG:
-    lda #<MSG_DNS_DEBUG1
-    ldx #>MSG_DNS_DEBUG1
-    jsr PRINT_Z
-    lda #<MIP_DNS_DEBUG
-    ldx #>MIP_DNS_DEBUG
-    jsr CALL_DEBUG_TARGET
-    jsr PRINT_DBG_A
-    lda #<MSG_DBG_ST
-    ldx #>MSG_DBG_ST
-    jsr PRINT_Z
-    jsr PRINT_DBG_X
-    lda #<MSG_DBG_TX
-    ldx #>MSG_DBG_TX
-    jsr PRINT_Z
-    jsr PRINT_DBG_Y
-    lda #<MSG_DBG_TF
-    ldx #>MSG_DBG_TF
-    jsr PRINT_Z
-    jsr PRINT_DBG_Z
-    lda #CR
-    jsr K_CHROUT
-
-    lda #<MSG_DNS_DEBUG2
-    ldx #>MSG_DNS_DEBUG2
-    jsr PRINT_Z
-    lda #<MIP_DNS_DEBUG2
-    ldx #>MIP_DNS_DEBUG2
-    jsr CALL_DEBUG_TARGET
-    jsr PRINT_DBG_A
-    lda #<MSG_DBG_ARP
-    ldx #>MSG_DBG_ARP
-    jsr PRINT_Z
-    jsr PRINT_DBG_X
-    lda #<MSG_DBG_PF
-    ldx #>MSG_DBG_PF
-    jsr PRINT_Z
-    jsr PRINT_DBG_Y
-    lda #<MSG_DBG_P
-    ldx #>MSG_DBG_P
-    jsr PRINT_Z
-    jsr PRINT_DBG_Z
-    lda #CR
-    jsr K_CHROUT
-
-    lda #<MSG_DNS_DEBUG3
-    ldx #>MSG_DNS_DEBUG3
-    jsr PRINT_Z
-    lda #<MIP_DNS_DEBUG3
-    ldx #>MIP_DNS_DEBUG3
-    jsr CALL_DEBUG_TARGET
-    jsr PRINT_DBG_A
-    lda #<MSG_DBG_AN
-    ldx #>MSG_DBG_AN
-    jsr PRINT_Z
-    jsr PRINT_DBG_X
-    lda #<MSG_DBG_NS
-    ldx #>MSG_DBG_NS
-    jsr PRINT_Z
-    jsr PRINT_DBG_Y
-    lda #<MSG_DBG_BF
-    ldx #>MSG_DBG_BF
-    jsr PRINT_Z
-    jsr PRINT_DBG_Z
-    lda #CR
-    jmp K_CHROUT
-
-PRINT_CONNECT_DEBUG:
-    lda #<MSG_REMOTE_STORED
-    ldx #>MSG_REMOTE_STORED
-    jsr PRINT_Z
-    lda #<MIP_GET_REMOTE_IP
-    ldx #>MIP_GET_REMOTE_IP
-    jsr GET_IPBUF_TARGET
-    jsr PRINT_IPBUF_CR
-
-    lda #<MSG_CONN_DEBUG1
-    ldx #>MSG_CONN_DEBUG1
-    jsr PRINT_Z
-    lda #<MIP_CONNECT_DEBUG
-    ldx #>MIP_CONNECT_DEBUG
-    jsr CALL_DEBUG_TARGET
-    jsr PRINT_DBG_A
-    lda #<MSG_DBG_RS
-    ldx #>MSG_DBG_RS
-    jsr PRINT_Z
-    jsr PRINT_DBG_X
-    lda #<MSG_DBG_SA
-    ldx #>MSG_DBG_SA
-    jsr PRINT_Z
-    jsr PRINT_DBG_Y
-    lda #<MSG_DBG_BA
-    ldx #>MSG_DBG_BA
-    jsr PRINT_Z
-    jsr PRINT_DBG_Z
-    lda #CR
-    jsr K_CHROUT
-
-    lda #<MSG_CONN_DEBUG2
-    ldx #>MSG_CONN_DEBUG2
-    jsr PRINT_Z
-    lda #<MIP_CONNECT_DEBUG2
-    ldx #>MIP_CONNECT_DEBUG2
-    jsr CALL_DEBUG_TARGET
-    jsr PRINT_DBG_A
-    lda #<MSG_DBG_TF
-    ldx #>MSG_DBG_TF
-    jsr PRINT_Z
-    jsr PRINT_DBG_X
-    lda #<MSG_DBG_RAW
-    ldx #>MSG_DBG_RAW
-    jsr PRINT_Z
-    jsr PRINT_DBG_Y
-    lda #<MSG_DBG_TCP
-    ldx #>MSG_DBG_TCP
-    jsr PRINT_Z
-    jsr PRINT_DBG_Z
-    lda #CR
-    jsr K_CHROUT
-
-    lda #<MSG_CONN_DEBUG3
-    ldx #>MSG_CONN_DEBUG3
-    jsr PRINT_Z
-    lda #<MIP_CONNECT_DEBUG3
-    ldx #>MIP_CONNECT_DEBUG3
-    jsr CALL_DEBUG_TARGET
-    jsr PRINT_DBG_A
-    lda #<MSG_DBG_EH
-    ldx #>MSG_DBG_EH
-    jsr PRINT_Z
-    jsr PRINT_DBG_X
-    lda #<MSG_DBG_EL
-    ldx #>MSG_DBG_EL
-    jsr PRINT_Z
-    jsr PRINT_DBG_Y
-    lda #<MSG_DBG_PR
-    ldx #>MSG_DBG_PR
-    jsr PRINT_Z
-    jsr PRINT_DBG_Z
-    lda #CR
-    jsr K_CHROUT
-
-    lda #<MSG_SYN_PORTS
-    ldx #>MSG_SYN_PORTS
-    jsr PRINT_Z
-    lda #<MIP_SYN_DEBUG1
-    ldx #>MIP_SYN_DEBUG1
-    jsr CALL_DEBUG_TARGET
-    jsr PRINT_DBG_A
-    jsr PRINT_DBG_X
-    lda #<MSG_DBG_SP
-    ldx #>MSG_DBG_SP
-    jsr PRINT_Z
-    jsr PRINT_DBG_Y
-    jsr PRINT_DBG_Z
-    lda #CR
-    jsr K_CHROUT
-
-    lda #<MSG_SYN_DST
-    ldx #>MSG_SYN_DST
-    jsr PRINT_Z
-    lda #<MIP_SYN_DEBUG2
-    ldx #>MIP_SYN_DEBUG2
-    jsr CALL_DEBUG_TARGET
-    jsr PRINT_DBG_A
-    lda #'.'
-    jsr K_CHROUT
-    jsr PRINT_DBG_X
-    lda #'.'
-    jsr K_CHROUT
-    jsr PRINT_DBG_Y
-    lda #'.'
-    jsr K_CHROUT
-    jsr PRINT_DBG_Z
-    lda #CR
-    jsr K_CHROUT
-
-    lda #<MSG_SYN_SEQ
-    ldx #>MSG_SYN_SEQ
-    jsr PRINT_Z
-    lda #<MIP_SYN_DEBUG3
-    ldx #>MIP_SYN_DEBUG3
-    jsr CALL_DEBUG_TARGET
-    jsr PRINT_DBG_A
-    jsr PRINT_DBG_X
-    jsr PRINT_DBG_Y
-    jsr PRINT_DBG_Z
-    lda #CR
-    jsr K_CHROUT
-
-    lda #<MSG_SYNACK_SEQ
-    ldx #>MSG_SYNACK_SEQ
-    jsr PRINT_Z
-    lda #<MIP_SYNACK_DEBUG1
-    ldx #>MIP_SYNACK_DEBUG1
-    jsr CALL_DEBUG_TARGET
-    jsr PRINT_DBG_A
-    jsr PRINT_DBG_X
-    jsr PRINT_DBG_Y
-    jsr PRINT_DBG_Z
-    lda #CR
-    jsr K_CHROUT
-
-    lda #<MSG_SYNACK_ACK
-    ldx #>MSG_SYNACK_ACK
-    jsr PRINT_Z
-    lda #<MIP_SYNACK_DEBUG2
-    ldx #>MIP_SYNACK_DEBUG2
-    jsr CALL_DEBUG_TARGET
-    jsr PRINT_DBG_A
-    jsr PRINT_DBG_X
-    jsr PRINT_DBG_Y
-    jsr PRINT_DBG_Z
-    lda #CR
-    jsr K_CHROUT
-
-    lda #<MSG_SYNACK_EXPECT
-    ldx #>MSG_SYNACK_EXPECT
-    jsr PRINT_Z
-    lda #<MIP_SYNACK_DEBUG3
-    ldx #>MIP_SYNACK_DEBUG3
-    jsr CALL_DEBUG_TARGET
-    jsr PRINT_DBG_A
-    jsr PRINT_DBG_X
-    jsr PRINT_DBG_Y
-    jsr PRINT_DBG_Z
-    lda #CR
-    jsr K_CHROUT
-
-    lda #<MSG_RX_PORTS
-    ldx #>MSG_RX_PORTS
-    jsr PRINT_Z
-    lda #<MIP_RX_DEBUG2
-    ldx #>MIP_RX_DEBUG2
-    jsr CALL_DEBUG_TARGET
-    jsr PRINT_DBG_A
-    jsr PRINT_DBG_X
-    lda #<MSG_DBG_DP
-    ldx #>MSG_DBG_DP
-    jsr PRINT_Z
-    jsr PRINT_DBG_Y
-    jsr PRINT_DBG_Z
-    lda #CR
-    jsr K_CHROUT
-
-    lda #<MSG_RX_SRC
-    ldx #>MSG_RX_SRC
-    jsr PRINT_Z
-    lda #<MIP_RX_DEBUG3
-    ldx #>MIP_RX_DEBUG3
-    jsr CALL_DEBUG_TARGET
-    jsr PRINT_DBG_A
-    lda #'.'
-    jsr K_CHROUT
-    jsr PRINT_DBG_X
-    lda #'.'
-    jsr K_CHROUT
-    jsr PRINT_DBG_Y
-    lda #'.'
-    jsr K_CHROUT
-    jsr PRINT_DBG_Z
-    lda #<MSG_RX_FLAGS
-    ldx #>MSG_RX_FLAGS
-    jsr PRINT_Z
-    lda #<MIP_RX_DEBUG4
-    ldx #>MIP_RX_DEBUG4
-    jsr CALL_DEBUG_TARGET
-    jsr PRINT_DBG_A
-    lda #CR
-    jmp K_CHROUT
-
 PRINT_DHCP_STATE:
     lda TEMP_A
     cmp #1
@@ -5380,10 +5065,6 @@ DEC_PRINTED:            .byte 0
 TEMP_A:                 .byte 0
 TEMP_LO:                .byte 0
 TEMP_HI:                .byte 0
-DBG_A:                  .byte 0
-DBG_X:                  .byte 0
-DBG_Y:                  .byte 0
-DBG_Z:                  .byte 0
 TIMEOUT_LO:             .byte 0
 TIMEOUT_HI:             .byte 0
 TIMEOUT_FRAME_LAST:     .byte 0
@@ -5539,7 +5220,7 @@ MSG_TITLE:
     .fill 78, PET_HLINE
     .byte CR
     .byte PET_YELLOW
-    .text "   Mega-IP ANSI-Term 1.0"
+    .text "   Mega-IP ANSI-Term 1.1"
     .byte CR
     .byte PET_WHITE
     .text "   45GS02 Assembly Terminal for ANSI, ASCII, and PETSCII Systems"
@@ -5559,8 +5240,9 @@ MSG_RESET:
     .byte CR, 0
 MSG_CONFIG:
     .byte CR
+    .byte PET_LIGHT_GREEN
     .text "[D]HCP or [M]anual network setup? "
-    .byte 0
+    .byte PET_WHITE, 0
 MSG_DHCP_START:
     .byte CR
     .text "STARTING DHCP..."
@@ -5585,37 +5267,46 @@ MSG_SETTINGS_HDR:
     .text "NETWORK SETTINGS:"
     .byte CR, 0
 MSG_LOCAL_IP:
+    .byte PET_LIGHT_GREEN
     .text "LOCAL IP       : "
-    .byte 0
+    .byte PET_WHITE, 0
 MSG_GATEWAY:
+    .byte PET_LIGHT_GREEN
     .text "DEFAULT GATEWAY: "
-    .byte 0
+    .byte PET_WHITE, 0
 MSG_SUBNET:
+    .byte PET_LIGHT_GREEN
     .text "SUBNET MASK    : "
-    .byte 0
+    .byte PET_WHITE, 0
 MSG_DNS:
+    .byte PET_LIGHT_GREEN
     .text "PRIMARY DNS    : "
-    .byte 0
+    .byte PET_WHITE, 0
 MSG_NETWORK_READY:
     .text "NETWORK READY."
     .byte CR, 0
 MSG_TERM_MODE:
     .byte CR
+    .byte PET_LIGHT_GREEN
     .text "TERM MODE [A]SCII OR [P]ETSCII? "
-    .byte 0
+    .byte PET_WHITE, 0
 MSG_CONNECT_BY:
     .byte CR
+    .byte PET_LIGHT_GREEN
     .text "CONNECT BY [I]P ADDRESS, [H]OST NAME, OR [P]HONEBOOK? "
-    .byte 0
+    .byte PET_WHITE, 0
 MSG_REMOTE_IP:
+    .byte PET_LIGHT_GREEN
     .text "REMOTE IP      : "
-    .byte 0
+    .byte PET_WHITE, 0
 MSG_REMOTE_HOST:
+    .byte PET_LIGHT_GREEN
     .text "HOST NAME      : "
-    .byte 0
+    .byte PET_WHITE, 0
 MSG_REMOTE_PORT:
+    .byte PET_LIGHT_GREEN
     .text "REMOTE PORT    : "
-    .byte 0
+    .byte PET_WHITE, 0
 MSG_BAD_HOST:
     .text "BAD HOST NAME."
     .byte CR, 0
@@ -5632,15 +5323,6 @@ MSG_RESOLVED_TO:
 MSG_LOOKUP_FAIL:
     .text "HOST LOOKUP FAILED."
     .byte CR, 0
-MSG_DNS_DEBUG1:
-    .text "DNS DEBUG S="
-    .byte 0
-MSG_DNS_DEBUG2:
-    .text "DNS DEBUG RX="
-    .byte 0
-MSG_DNS_DEBUG3:
-    .text "DNS DEBUG QD="
-    .byte 0
 MSG_BAD_IP:
     .text "BAD IP ADDRESS."
     .byte CR, 0
@@ -5676,7 +5358,7 @@ MSG_PHONE_USER_LINE:
     .text "      User ID: "
     .byte 0
 MSG_PHONE_COMMAND:
-    .byte CR, PET_GREEN
+    .byte CR, PET_LIGHT_GREEN
     .text "   #=Dial  < >=Page  A=Add  E=Edit  D=Del  R=Reload  Q=Quit: "
     .byte PET_WHITE, 0
 MSG_PHONE_ADD_TITLE:
@@ -5706,20 +5388,25 @@ MSG_PHONE_EDIT_TITLE:
     .byte CR, CR
     .byte PET_WHITE, 0
 MSG_PHONE_NAME:
+    .byte PET_LIGHT_GREEN
     .text "NAME    : "
-    .byte 0
+    .byte PET_WHITE, 0
 MSG_PHONE_HOST:
+    .byte PET_LIGHT_GREEN
     .text "HOST/IP : "
-    .byte 0
+    .byte PET_WHITE, 0
 MSG_PHONE_PORT:
+    .byte PET_LIGHT_GREEN
     .text "PORT    : "
-    .byte 0
+    .byte PET_WHITE, 0
 MSG_PHONE_TYPE:
+    .byte PET_LIGHT_GREEN
     .text "TYPE [A/P]: "
-    .byte 0
+    .byte PET_WHITE, 0
 MSG_PHONE_USER:
+    .byte PET_LIGHT_GREEN
     .text "USER ID : "
-    .byte 0
+    .byte PET_WHITE, 0
 MSG_PHONE_BLANK_KEEP:
     .text "LEAVE A FIELD BLANK TO KEEP ITS CURRENT VALUE."
     .byte CR, CR, 0
@@ -5733,15 +5420,16 @@ MSG_PHONE_BAD_TYPE:
     .text "TYPE MUST BE A OR P."
     .byte CR, 0
 MSG_PHONE_PICK:
-    .byte CR, PET_GREEN
+    .byte CR, PET_LIGHT_GREEN
     .text "ENTRY NUMBER: "
     .byte PET_WHITE, 0
 MSG_PHONE_BAD_ENTRY:
     .text "BAD ENTRY."
     .byte CR, 0
 MSG_PHONE_DELETE_CONFIRM:
+    .byte PET_LIGHT_GREEN
     .text "DELETE THIS ENTRY [Y/N]? "
-    .byte 0
+    .byte PET_WHITE, 0
 MSG_PHONE_SAVED:
     .text "PHONEBOOK SAVED."
     .byte CR, 0
@@ -5771,102 +5459,6 @@ MSG_DOTS_CR:
 MSG_CONNECT_FAIL:
     .text "CONNECT FAILED - PRESS ANY KEY."
     .byte CR, 0
-MSG_REMOTE_STORED:
-    .text "REMOTE STORED="
-    .byte 0
-MSG_CONN_DEBUG1:
-    .text "CONNECT DEBUG EV="
-    .byte 0
-MSG_CONN_DEBUG2:
-    .text "CONNECT DEBUG TX="
-    .byte 0
-MSG_CONN_DEBUG3:
-    .text "CONNECT DEBUG DC="
-    .byte 0
-MSG_DBG_ST:
-    .text " ST="
-    .byte 0
-MSG_DBG_TX:
-    .text " TX="
-    .byte 0
-MSG_DBG_TF:
-    .text " TF="
-    .byte 0
-MSG_DBG_ARP:
-    .text " ARP="
-    .byte 0
-MSG_DBG_PF:
-    .text " PF="
-    .byte 0
-MSG_DBG_P:
-    .text " P="
-    .byte 0
-MSG_DBG_AN:
-    .text " AN="
-    .byte 0
-MSG_DBG_NS:
-    .text " NS="
-    .byte 0
-MSG_DBG_BF:
-    .text " BF="
-    .byte 0
-MSG_DBG_RS:
-    .text " RS="
-    .byte 0
-MSG_DBG_SA:
-    .text " SA="
-    .byte 0
-MSG_DBG_BA:
-    .text " BA="
-    .byte 0
-MSG_DBG_RAW:
-    .text " RAW="
-    .byte 0
-MSG_DBG_TCP:
-    .text " TCP="
-    .byte 0
-MSG_DBG_EH:
-    .text " EH="
-    .byte 0
-MSG_DBG_EL:
-    .text " EL="
-    .byte 0
-MSG_DBG_PR:
-    .text " PR="
-    .byte 0
-MSG_DBG_SP:
-    .text " SP="
-    .byte 0
-MSG_DBG_DP:
-    .text " DP="
-    .byte 0
-MSG_SYN_PORTS:
-    .text "SYN PORT DP="
-    .byte 0
-MSG_SYN_DST:
-    .text "SYN DST="
-    .byte 0
-MSG_SYN_SEQ:
-    .text "SYN SEQ="
-    .byte 0
-MSG_SYNACK_SEQ:
-    .text "SYNACK SEQ="
-    .byte 0
-MSG_SYNACK_ACK:
-    .text "SYNACK ACK="
-    .byte 0
-MSG_SYNACK_EXPECT:
-    .text "EXP ACK="
-    .byte 0
-MSG_RX_PORTS:
-    .text "RX PORT SP="
-    .byte 0
-MSG_RX_SRC:
-    .text "RX SRC="
-    .byte 0
-MSG_RX_FLAGS:
-    .text " FL="
-    .byte 0
 MSG_CONNECTED:
     .text "CONNECTED. CTRL-W OR F7 DISCONNECTS."
     .byte CR, CR, 0

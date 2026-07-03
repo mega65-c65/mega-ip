@@ -50,7 +50,7 @@ TCP_STATE_TIME_WAIT         = $0a
 ; A bitfield returned by CONNECT_* entry points
 CONN_CONNECTED              = %00000001     ; ESTABLISHED
 CONN_FAILED                 = %00000010     ; handshake failed / RST / closed
-CONN_IN_PROGRESS            = %00000100     ; we’re working on it
+CONN_IN_PROGRESS            = %00000100     ; we're working on it
 CONN_ARP_WAIT               = %00001000     ; ARP request outstanding
 CONN_SYN_SENT               = %00010000     ; SYN has been sent
 
@@ -58,7 +58,7 @@ CONN_SYN_SENT               = %00010000     ; SYN has been sent
 EV_RST                      = %00000001     ; hard reset seen (peer RST)          [existing]
 EV_PEER_FIN                 = %00000010     ; peer initiated close (we saw FIN)
 EV_LOCAL_CLOSE              = %00000100     ; our FIN exchange completed
-EV_TIMEWAIT_DONE            = %00001000     ; TIME_WAIT expired → CLOSED
+EV_TIMEWAIT_DONE            = %00001000     ; TIME_WAIT expired - CLOSED
 EV_CONNECT_FAIL             = %00010000     ; SYN handshake failed / timeout
 EV_TX_TIMEOUT               = %00100000     ; data retransmit retries exhausted
 
@@ -95,11 +95,9 @@ RBUF_PTR_LO = $fb
 RBUF_PTR_HI = $fc
 RBUF_PTR_BANK = $fd
 RBUF_PTR_TOP = $fe
-; Build with -D DEBUG=1 for diagnostics or -D DEBUG=0 for production.
 STATE_BLOCK_BASE = $2100
 ML_EXTENSION_TABLE_BASE = $7600
 ML_CALL_STAGING_BASE = $77c0
-BASIC_DEBUG_TABLE_BASE = $7800
 
 .include "api.asm"
 .cerror * > STATE_BLOCK_BASE, "API jump table overlaps state/buffer block"
@@ -158,7 +156,7 @@ ETH_RX_FRAME_LEN_L:     .byte $00                   ; copied Ethernet frame leng
 ETH_RX_FRAME_LEN_H:     .byte $00
 ETH_RX_PAYLOAD_LEN_L:   .byte $00                   ; copied Ethernet payload length, excluding header/FCS
 ETH_RX_PAYLOAD_LEN_H:   .byte $00
-TIME_WAIT_COUNTER_LO:   .byte $58                   ; 2×MSL = 60 s → 600 ticks of 100 ms → 0x0258
+TIME_WAIT_COUNTER_LO:   .byte $58                   ; 2*MSL = 60 s -> 600 ticks of 100 ms -> 0x0258
 TIME_WAIT_COUNTER_HI:   .byte $02
 TIME_WAIT_FRAME_TICKS:  .byte TIME_WAIT_TICK_FRAMES
 TIME_WAIT_LAST_RASTER_LO: .byte $00
@@ -282,24 +280,6 @@ TCP_RST_SAVE_BUMP:        .byte 0
 TCP_RST_TCP_OFF:          .byte 0
 TCP_RST_REPLY_FLAGS:      .byte 0
 
-.if DEBUG
-TCP_TX_ENQUEUE_OK_DBG:  .byte 0
-TCP_TX_SEND_OK_DBG:     .byte 0
-TCP_TX_ACK_SEEN_DBG:    .byte 0
-TCP_TX_ACK_MATCH_DBG:   .byte 0
-TCP_TX_TIMEOUT_DBG:     .byte 0
-TCP_TX_TIMEOUT_LEN_DBG: .byte 0
-TCP_TX_TIMEOUT_RETRY_DBG: .byte 0
-TCP_TX_SEND_FAIL_DBG:   .byte 0
-TCP_TX_RETX_OK_DBG:     .byte 0
-TCP_TX_RETX_FAIL_DBG:   .byte 0
-TCP_TX_BASE_RAW_DBG:    .byte 0
-TCP_TX_BASE_DISPATCH_DBG: .byte 0
-TCP_TX_BASE_HANDLER_DBG: .byte 0
-TCP_TX_LAST_ACK_DBG:    .byte 0,0,0,0
-TCP_TX_TIMEOUT_EXPECT_DBG: .byte 0,0,0,0
-TCP_TX_TIMEOUT_ACK_DBG: .byte 0,0,0,0
-.endif
 
 TX_APP_QUEUE:
     .fill 256, $00
@@ -382,7 +362,7 @@ ETH_INIT:
     ; - Broadcast ON   (bit4 = 1)  [needed for ARP etc.]
     ; - Promiscuous OFF (NOPROM=1, bit0 = 1)
     lda MEGA65_ETH_CTRL3
-    and #%11011111        ; clear bit5 (MCST=0 → no multicast)
+    and #%11011111        ; clear bit5 (MCST=0 -> no multicast)
     ora #%00010001        ; set bit4 (BCST=1) and bit0 (NOPROM=1)
     sta MEGA65_ETH_CTRL3
     jmp _more
@@ -556,7 +536,7 @@ ETH_TCP_CONNECT_START:
     sta CONNECT_LAST_RASTER_LO
     sta CONNECT_LAST_RASTER_HI
     sta TCP_EVENT_FLAG
-    jsr CONNECT_CLEAR_DEBUG
+    sta CONNECT_LAST_RX_DEST_CLASS
 
     lda #$01
     sta CONNECT_ACTIVE
@@ -570,7 +550,7 @@ _query_cache:
     jsr ARP_QUERY_CACHE
     beq _need_arp
 
-    ; Have MAC → send SYN immediately
+    ; Have MAC -> send SYN immediately
     jsr CONNECT_SEND_SYN
     bcs _syn_send_busy
     lda #CONN_IN_PROGRESS|CONN_SYN_SENT
@@ -679,71 +659,14 @@ _capture_syn_loop:
     bne _capture_syn_loop
     jmp CONNECT_SET_EXPECT_FROM_SYN_ISS
 
-.if DEBUG
-CONNECT_SNAPSHOT_SYN_TX:
-    lda ETH_TX_FRAME_PAYLOAD+20+2
-    sta CONNECT_SYN_TX_DST_PORT_HI_DBG
-    lda ETH_TX_FRAME_PAYLOAD+20+3
-    sta CONNECT_SYN_TX_DST_PORT_LO_DBG
-    lda ETH_TX_FRAME_PAYLOAD+20+0
-    sta CONNECT_SYN_TX_SRC_PORT_HI_DBG
-    lda ETH_TX_FRAME_PAYLOAD+20+1
-    sta CONNECT_SYN_TX_SRC_PORT_LO_DBG
-
-    lda ETH_TX_FRAME_PAYLOAD+16
-    sta CONNECT_SYN_TX_DST_IP_DBG+0
-    lda ETH_TX_FRAME_PAYLOAD+17
-    sta CONNECT_SYN_TX_DST_IP_DBG+1
-    lda ETH_TX_FRAME_PAYLOAD+18
-    sta CONNECT_SYN_TX_DST_IP_DBG+2
-    lda ETH_TX_FRAME_PAYLOAD+19
-    sta CONNECT_SYN_TX_DST_IP_DBG+3
-
-    lda ETH_TX_FRAME_PAYLOAD+20+4
-    sta CONNECT_SYN_TX_SEQ_DBG+0
-    lda ETH_TX_FRAME_PAYLOAD+20+5
-    sta CONNECT_SYN_TX_SEQ_DBG+1
-    lda ETH_TX_FRAME_PAYLOAD+20+6
-    sta CONNECT_SYN_TX_SEQ_DBG+2
-    lda ETH_TX_FRAME_PAYLOAD+20+7
-    sta CONNECT_SYN_TX_SEQ_DBG+3
-
-    lda ETH_TX_FRAME_PAYLOAD+20+13
-    sta CONNECT_SYN_TX_FLAGS_DBG
-    rts
-
-CONNECT_SNAPSHOT_SYNACK_RX:
-    lda SEG_SEQ+0
-    sta CONNECT_SYNACK_SEQ_DBG+0
-    lda SEG_SEQ+1
-    sta CONNECT_SYNACK_SEQ_DBG+1
-    lda SEG_SEQ+2
-    sta CONNECT_SYNACK_SEQ_DBG+2
-    lda SEG_SEQ+3
-    sta CONNECT_SYNACK_SEQ_DBG+3
-
-    lda SEG_ACK+0
-    sta CONNECT_SYNACK_ACK_DBG+0
-    lda SEG_ACK+1
-    sta CONNECT_SYNACK_ACK_DBG+1
-    lda SEG_ACK+2
-    sta CONNECT_SYNACK_ACK_DBG+2
-    lda SEG_ACK+3
-    sta CONNECT_SYNACK_ACK_DBG+3
-    rts
-.endif
 
 CONNECT_SEND_SYN:
     jsr CONNECT_PREPARE_SYN_ISN
     lda #TCP_FLAG_SYN
     jsr ETH_BUILD_TCPIP_PACKET
     bcs _connect_syn_not_sent
-.if DEBUG
-    jsr CONNECT_SNAPSHOT_SYN_TX
-.endif
     jsr ETH_PACKET_SEND
     bcs _connect_syn_not_sent
-    DEBUG_INC CONNECT_SYN_TX_OK_DBG
     jsr TCP_SAVE_PEER_MAC
 
     lda #$01
@@ -757,7 +680,6 @@ CONNECT_SEND_SYN:
     rts
 
 _connect_syn_not_sent:
-    DEBUG_INC CONNECT_SYN_TX_FAIL_DBG
     sec
     rts
 
@@ -797,7 +719,7 @@ _connect_syn_timeout:
 
 ;=============================================================================
 ; ETH_CONNECT_POLL
-; Drive the connect attempt forward (ARP→SYN) and report status in A.
+; Drive the connect attempt forward (ARP->SYN) and report status in A.
 ; Safe to call anytime (even when not connecting).
 ;=============================================================================
 ETH_CONNECT_POLL:
@@ -832,7 +754,7 @@ _chk_state:
     rts
 
 _not_est:
-    ; If ARP finished and we haven’t sent SYN yet, send it now
+    ; If ARP finished and we haven't sent SYN yet, send it now
     lda CONNECT_SYN_SENT
     beq _try_send_after_arp
 
@@ -848,7 +770,7 @@ _try_send_after_arp:
     cmp #ETH_STATE_ARP_WAITING
     beq _inprog                   ; still resolving MAC
 
-    ; ARP done → verify cache then send SYN
+    ; ARP done -> verify cache then send SYN
     jsr CONNECT_SET_ARP_QUERY
     jsr ARP_QUERY_CACHE
     beq _inprog                   ; still not populated (rare)
@@ -880,7 +802,6 @@ _ret:
     rts
 
 _fail:
-    jsr CONNECT_SNAPSHOT_FAIL
     lda #$00
     sta CONNECT_ACTIVE
     sta CONNECT_SYN_SENT
@@ -920,7 +841,7 @@ ETH_CONNECT_CANCEL:
     lda #TCP_FLAG_RST
     jsr ETH_BUILD_TCPIP_PACKET
     bcc +
-    jmp _clear_only               ; build failed → just clear
+    jmp _clear_only               ; build failed -> just clear
 +   jsr ETH_PACKET_SEND
 
 _clear_only:
@@ -962,7 +883,7 @@ ETH_TCP_LISTEN_START:
     jsr TCP_TX_RESET
     jsr TCP_OOO_CLEAR
 
-    ; clean RX/TX rings (optional but safest for “fresh” accept)
+    ; clean RX/TX rings (optional but safest for 'fresh' accept)
     ;jsr RBUF_RESET_RX
     ;jsr RBUF_RESET_TX
 
@@ -1214,7 +1135,7 @@ TCP_STATE_HANDLER:
     and #TCP_FLAG_RST
     beq _not_RST
 
-    ; remote sent RST → tear down immediately
+    ; remote sent RST -> tear down immediately
     lda TCP_STATE
     cmp #TCP_STATE_SYN_SENT
     beq _rst_syn_sent
@@ -1330,7 +1251,7 @@ _copy_payload_and_ack:
     jsr TCP_SEQ_CMP_SEG_SEQ_REMOTE
     bmi _seg_in_past         ; SEG.SEQ <  RCV.NXT -> overlap on left
     beq _seg_in_order        ; SEG.SEQ == RCV.NXT -> in-order
-    ; SEG.SEQ > RCV.NXT → out-of-order future → dup-ACK current RCV.NXT
+    ; SEG.SEQ > RCV.NXT -> out-of-order future -> dup-ACK current RCV.NXT
 _seg_in_future:
     jsr TCP_OOO_SAVE_CURRENT
     jsr TCP_DEFER_DUP_ACK
@@ -1353,7 +1274,7 @@ _seg_in_past:
     sbc SEG_SEQ+0
     bne _dup_entire_ack
 
-    ; If SKIP >= seg_len → whole segment duplicate → dup-ACK and return
+    ; If SKIP >= seg_len -> whole segment duplicate -> dup-ACK and return
     lda SKIP_HI
     cmp RX_COPY_REM_HI
     bcc _have_tail
@@ -1556,7 +1477,7 @@ _ack_what_we_took:
     sta RBUF_HEAD_HI
     jsr RBUF_RESTORE_PTR_ZP
 
-    ; Make CALC_REMOTE_ISN add “consumed” bytes only
+    ; Make CALC_REMOTE_ISN add ->consumed-> bytes only
     lda RX_CONSUMED_LO
     sta TCP_RX_DATA_PAYLOAD_SIZE
     lda RX_CONSUMED_HI
@@ -1659,7 +1580,7 @@ _peer_fin_active_close:
 
 
 _got_FIN_IN_ESTABLISHED:
-    ; peer wants to close → ACK their FIN
+    ; peer wants to close -> ACK their FIN
     lda #$01
     sta REMOTE_ISN_BUMP
     jsr CALC_REMOTE_ISN              ; +1 for the FIN
@@ -1705,20 +1626,7 @@ _check_SYN:
     bne _done
 
 _got_SYNACK:
-    DEBUG_INC CONNECT_SYNACK_RX_DBG
-.if DEBUG
-    jsr CONNECT_SNAPSHOT_SYNACK_RX
-.endif
 
-.if DEBUG
-    ldx #$00
-_synack_expect_dbg:
-    lda CONNECT_EXPECT_ACK,x
-    sta CONNECT_SYNACK_EXPECT_DBG,x
-    inx
-    cpx #$04
-    bne _synack_expect_dbg
-.endif
     ldx #$00
 _synack_ack_check:
     lda SEG_ACK,x
@@ -1769,7 +1677,6 @@ _set_local_after_syn:
     rts
 
 _synack_bad_ack:
-    DEBUG_INC CONNECT_SYNACK_BAD_ACK_DBG
     jmp _done
 
     ;---------------------------------------------------------------------------
@@ -1919,7 +1826,7 @@ _last_ack_seq_ok:
     jsr TCP_SEQ_CMP_SEG_ACK_LOCAL_ISN
     bne _done
 
-    ; peer ACK’d your FIN, now go TIME_WAIT
+    ; peer ACKed your FIN, now go TIME_WAIT
     jsr TCP_TIME_WAIT_RESET
     lda #$00
     sta CONNECT_RETRY_TICKS
@@ -2552,12 +2459,12 @@ TIME_WAIT_TICK:
     sbc #0                      ; subtract borrow into high byte
     sta TIME_WAIT_COUNTER_HI
 
-    ; if counter ≠ 0 yet, just return
+    ; if counter -> 0 yet, just return
     lda TIME_WAIT_COUNTER_LO
     ora TIME_WAIT_COUNTER_HI
     bne _done
 
-    ; counter reached zero → close the socket
+    ; counter reached zero -> close the socket
     lda #TCP_STATE_CLOSED
     sta TCP_STATE
 
@@ -2688,8 +2595,8 @@ php
 sei
     ; inline DMA to copy our buffer to TX buffer
     sta $D707
-    .byte $80          ; enhanced DMA: SRC bits 20–27
-    .byte $00    ; = $04   ← ensure source is bank $04 (your code/data bank)
+    .byte $80          ; enhanced DMA: SRC bits 20-27
+    .byte $00    ; = $04   -> ensure source is bank $04 (your code/data bank)
 
     .byte $81                   ; enhanced dma - dest bits 20-27
     .byte $ff                   ; ----------------------^
@@ -2850,7 +2757,7 @@ _no_mac_yet:
 
 _already_waiting:
     pla                 ; restore A if the caller pushed it earlier
-    sec                 ; C=1 → not ready; caller must retry later
+    sec                 ; C=1 -> not ready; caller must retry later
     rts
 
 
@@ -2984,7 +2891,7 @@ _tcp_window_clamped:
     lda LOCAL_ISN+3
     sta TCP_HDR_SEQ_NUM+3
 
-    ; copy the REMOTE_ISN into the TCP header’s Ack field
+    ; copy the REMOTE_ISN into the TCP header's Ack field
     lda REMOTE_ISN+0
     sta TCP_HDR_ACK_NUM+0
     lda REMOTE_ISN+1
@@ -3033,7 +2940,7 @@ _lp_data_copy:
 _lp_done:
     rts
 
-WINUPDATE_THRESHOLD = $01    ; send update when we open by ≥1 bytes
+WINUPDATE_THRESHOLD = $01    ; send update when we open by >=1 bytes
 
 WINUPDATE_GROW_LO = $80
 WINUPDATE_GROW_HI = $00
@@ -3295,11 +3202,11 @@ _done:
 ; =============================================================================
 CALC_LOCAL_ISN:
     ; decide if we should bump LOCAL_ISN:
-    ;  • Always bump if we’re finalizing the handshake (state = SYN_SENT)
-    ;  • Or if this packet carries PSH (data) or FIN
+    ;  -> Always bump if we're finalizing the handshake (state = SYN_SENT)
+    ;  -> Or if this packet carries PSH (data) or FIN
     lda TCP_STATE
     cmp #TCP_STATE_SYN_SENT
-    beq _add_one                        ; handshake‐ACK must consume the SYN
+    beq _add_one                        ; handshake->ACK must consume the SYN
 
     cmp #TCP_STATE_ESTABLISHED          ; dont change seq # if not established
     beq _check_established_flags
@@ -3323,7 +3230,7 @@ _check_established_flags:
 
     lda TCP_HDR_FLGS_OFFS+1
     cmp #TCP_FLAG_ACK
-    beq _done                        ; if it’s _exactly_ ACK, skip bump
+    beq _done                        ; if it's _exactly_ ACK, skip bump
 
 _add_payload_size:
     ; get payload size to add
@@ -3479,9 +3386,9 @@ _tcp_ok
     lda _tmp_len_hi
     sbc #$00
     sta TCP_RX_DATA_PAYLOAD_SIZE+1     ; MSB
-    bcs _done                           ; carry=1 → no borrow → non-negative
+    bcs _done                           ; carry=1 -> no borrow -> non-negative
 
-    ; underflow → clamp to zero (defensive)
+    ; underflow -> clamp to zero (defensive)
     lda #$00
     sta TCP_RX_DATA_PAYLOAD_SIZE
     sta TCP_RX_DATA_PAYLOAD_SIZE+1
@@ -3562,7 +3469,7 @@ TCP_EVENT_FLAG
 ;=============================================================================
 ; ETH_STATUS_POLL
 ; - Flush deferred TX (ACK/ARP) so IRQ never has to send
-; - If we previously advertised a 0 window and we’ve freed space,
+; - If we previously advertised a 0 window and we've freed space,
 ;   send a pure ACK to wake the peer (ETH_MAYBE_WINUPDATE)
 ; - Advance TIME_WAIT
 ; - If any events are latched, return them (and clear)
@@ -3623,7 +3530,7 @@ _no_ooo_flush_ack:
 
 _check_events:
     lda TCP_EVENT_FLAG
-    beq _check_state          ; no events → fall through
+    beq _check_state          ; no events -> fall through
     pha
     lda #$00
     sta TCP_EVENT_FLAG        ; clear sticky bits after read
@@ -3639,7 +3546,7 @@ _check_state:
     cmp #TCP_STATE_CLOSED
     beq _disconnected
 
-    ; transitional states → treat as "ok" (0) for the poller
+    ; transitional states -> treat as "ok" (0) for the poller
     lda #$00
     rts
 
@@ -3666,11 +3573,11 @@ ETH_MAYBE_WINUPDATE:
     ora REMOTE_IP+1
     ora REMOTE_IP+2
     ora REMOTE_IP+3
-    beq _ret                    ; don’t send if peer IP unknown
+    beq _ret                    ; don't send if peer IP unknown
 
     lda REMOTE_PORT
     ora REMOTE_PORT+1
-    beq _ret                    ; don’t send if peer port unknown
+    beq _ret                    ; don't send if peer port unknown
 
     ; ---- cur_free = (TAIL - HEAD - 1) modulo ring size ----
     jsr READ_HEAD_ATOMIC              ; fills TMP_HEAD_LO/TMP_HEAD_HI
@@ -3753,9 +3660,9 @@ _cur_gt_last:
     ; ---- Only act if we last advertised 0 ----
     lda ADV_WINDOW_LAST_LO
     ora ADV_WINDOW_LAST_HI
-    bne _ret                           ; last adv wasn’t zero → nothing to do
+    bne _ret                           ; last adv wasn't zero -> nothing to do
 
-    ; if free == 0 → nothing to send
+    ; if free == 0 -> nothing to send
     lda _cur_free_lo
     ora _cur_free_hi
     beq _ret
@@ -3963,14 +3870,14 @@ ETH_RCV:
 
 _latch_frame:
 
-    ; --- Early filter using NIC’s 2 status bytes (before any DMA) ---
+    ; --- Early filter using NIC's 2 status bytes (before any DMA) ---
     ; Buffer layout per MEGA65 doc (per received frame):
     ;   +0 : length LSB
     ;   +1 : [bits 0..3: length MSB nibble]
-    ;        bit4 = 1 → multicast
-    ;        bit5 = 1 → broadcast
-    ;        bit6 = 1 → unicast-to-me (matches MACADDR)
-    ;        bit7 = 1 → CRC error (bad frame)
+    ;        bit4 = 1 -> multicast
+    ;        bit5 = 1 -> broadcast
+    ;        bit6 = 1 -> unicast-to-me (matches MACADDR)
+    ;        bit7 = 1 -> CRC error (bad frame)
 
     ; Copy both NIC metadata bytes in one DMA job.  This replaces two 1-byte
     ; DMA reads in the hot receive path.
@@ -4040,12 +3947,9 @@ _chk_dest_ok:
     jmp _accept_packet
 
 _accept_packet:
-    DEBUG_INC DHCP_RX_ACCEPTS
-    DEBUG_INC CONNECT_RAW_RX_DBG
     lda DNS_STATE
     cmp #DNS_STATE_WAIT
     bne +
-    DEBUG_INC DNS_RAW_RX_COUNT
 +
     ; --- subtract FCS (4 bytes), drop on underflow ---
     sec
@@ -4056,7 +3960,7 @@ _accept_packet:
     sbc #$00
     sta _len_msb
     bcs _after_fcs                ; C=1 => no borrow
-    ; underflow (len < 4) → drop
+    ; underflow (len < 4) -> drop
     jsr ETH_RX_ROTATE
     rts
 
@@ -4067,7 +3971,7 @@ _after_fcs:
     lda _len_lsb
     cmp #$0E
     bcs _ge14_ok
-    ; < 14 → drop
+    ; < 14 -> drop
     jsr ETH_RX_ROTATE
     rts
 
@@ -4075,11 +3979,11 @@ _ge14_ok:
     ; --- drop frames larger than our 14-byte header + 1600-byte payload buffer ---
     lda _len_msb
     cmp #$06
-    bcc _do_copy                 ; < 0x0600 → safe
+    bcc _do_copy                 ; < 0x0600 -> safe
     bne _drop_oversize
     lda _len_lsb
-    cmp #$4E                      ; == 0x06 → check low byte
-    bcc _do_copy                 ; <= 0x064D → safe
+    cmp #$4E                      ; == 0x06 -> check low byte
+    bcc _do_copy                 ; <= 0x064D -> safe
 _drop_oversize:
     jsr ETH_RX_ROTATE
     rts
@@ -4118,20 +4022,15 @@ _len_msb:
 
     ; verify dest mac or broadcast from the copied Ethernet header
     jsr ETH_IS_PACKET_FOR_US
-    sta CONNECT_LAST_RX_DC_DBG
-    DEBUG_INC CONNECT_COPY_RX_DBG
+    sta CONNECT_LAST_RX_DEST_CLASS
     lda ETH_RX_TYPE
-    DEBUG_STA CONNECT_LAST_RX_TYPE_HI_DBG
     lda ETH_RX_TYPE+1
-    DEBUG_STA CONNECT_LAST_RX_TYPE_LO_DBG
     lda ETH_RX_FRAME_PAYLOAD+9
-    DEBUG_STA CONNECT_LAST_RX_PROTO_DBG
-    lda CONNECT_LAST_RX_DC_DBG
+    lda CONNECT_LAST_RX_DEST_CLASS
     bne _chk_eth_type
     lda DNS_STATE
     cmp #DNS_STATE_WAIT
     bne _unknown_packet
-    DEBUG_INC DNS_NOT_FOR_US_COUNT
     jmp _unknown_packet
 
 _chk_eth_type:
@@ -4165,7 +4064,7 @@ _arp_len_ok:
     beq _call_arp_reply
     cmp #$02                            ; = 2 (reply)?
     beq _call_arp_update_cache
-    rts                                 ; neither request nor reply → ignore
+    rts                                 ; neither request nor reply -> ignore
 
 _call_arp_reply:
     jmp ARP_REPLY
@@ -4180,7 +4079,6 @@ _is_ipv4:
     lda DNS_STATE
     cmp #DNS_STATE_WAIT
     bne +
-    DEBUG_INC DNS_IPV4_RX_COUNT
 +
     ; IPv4 protocol dispatch
     lda ETH_RX_FRAME_HEADER+23         ; Protocol (14 + 9)
@@ -4200,7 +4098,6 @@ _udp_demux:
     lda DNS_STATE
     cmp #DNS_STATE_WAIT
     bne +
-    DEBUG_INC DNS_UDP_RX_COUNT
 +
     ; Compute IHL in bytes: IHL field is low nibble of first IP byte, units of 4 bytes
     lda ETH_RX_FRAME_HEADER+14         ; Version/IHL at start of IP header
@@ -4229,43 +4126,18 @@ _udp_header_ok:
     cmp #<(UDP_PORT_DHCP_CLIENT)
     bne _udp_maybe_dns
 
-    ; DHCP → handle and return
-    DEBUG_INC DHCP_UDP68_HITS
+    ; DHCP -> handle and return
     jsr DHCP_ON_UDP
     rts
 
 _udp_maybe_dns:
-    ; Not DHCP(68) — let your DNS handler decide (it already drops non-DNS)
+    ; Not DHCP(68) -> let your DNS handler decide (it already drops non-DNS)
     jmp DNS_UDP_IN
 
 _call_incoming_tcp:
     jsr TCP_RX_CHECKSUM_OK
     bcs _unknown_packet
 
-.if DEBUG
-    inc CONNECT_TCP_DISPATCH_DBG
-    lda ETH_RX_FRAME_PAYLOAD
-    and #$0F
-    asl
-    asl
-    tax
-    lda ETH_RX_FRAME_PAYLOAD+0,x
-    sta CONNECT_LAST_TCP_SRC_PORT_HI_DBG
-    lda ETH_RX_FRAME_PAYLOAD+1,x
-    sta CONNECT_LAST_TCP_SRC_PORT_LO_DBG
-    lda ETH_RX_FRAME_PAYLOAD+2,x
-    sta CONNECT_LAST_TCP_DST_PORT_HI_DBG
-    lda ETH_RX_FRAME_PAYLOAD+3,x
-    sta CONNECT_LAST_TCP_DST_PORT_LO_DBG
-    lda ETH_RX_FRAME_PAYLOAD+13,x
-    sta CONNECT_LAST_TCP_FLAGS_DBG
-    ldx #$03
-_tcp_dbg_ip:
-    lda ETH_RX_FRAME_PAYLOAD+12,x
-    sta CONNECT_LAST_TCP_SRC_IP_DBG,x
-    dex
-    bpl _tcp_dbg_ip
-.endif
     jmp INCOMING_TCP_PACKET
 
 _unknown_packet:
@@ -4672,157 +4544,7 @@ _connect_frame_elapsed:
     sec
     rts
 
-CONNECT_CLEAR_DEBUG:
-.if DEBUG
-    lda #$00
-    sta CONNECT_FAIL_REASON_DBG
-    sta CONNECT_SYNACK_RX_DBG
-    sta CONNECT_SYNACK_BAD_ACK_DBG
-    sta CONNECT_SYN_TX_OK_DBG
-    sta CONNECT_SYN_TX_FAIL_DBG
-    sta CONNECT_RAW_RX_DBG
-    sta CONNECT_TCP_RX_DBG
-    sta CONNECT_COPY_RX_DBG
-    sta CONNECT_TCP_DISPATCH_DBG
-    sta CONNECT_LAST_RX_DC_DBG
-    sta CONNECT_LAST_RX_TYPE_HI_DBG
-    sta CONNECT_LAST_RX_TYPE_LO_DBG
-    sta CONNECT_LAST_RX_PROTO_DBG
-    sta CONNECT_LAST_TCP_SRC_PORT_HI_DBG
-    sta CONNECT_LAST_TCP_SRC_PORT_LO_DBG
-    sta CONNECT_LAST_TCP_DST_PORT_HI_DBG
-    sta CONNECT_LAST_TCP_DST_PORT_LO_DBG
-    sta CONNECT_LAST_TCP_FLAGS_DBG
-    sta CONNECT_LAST_TCP_SRC_IP_DBG+0
-    sta CONNECT_LAST_TCP_SRC_IP_DBG+1
-    sta CONNECT_LAST_TCP_SRC_IP_DBG+2
-    sta CONNECT_LAST_TCP_SRC_IP_DBG+3
-    sta CONNECT_SYN_TX_DST_PORT_HI_DBG
-    sta CONNECT_SYN_TX_DST_PORT_LO_DBG
-    sta CONNECT_SYN_TX_SRC_PORT_HI_DBG
-    sta CONNECT_SYN_TX_SRC_PORT_LO_DBG
-    sta CONNECT_SYN_TX_DST_IP_DBG+0
-    sta CONNECT_SYN_TX_DST_IP_DBG+1
-    sta CONNECT_SYN_TX_DST_IP_DBG+2
-    sta CONNECT_SYN_TX_DST_IP_DBG+3
-    sta CONNECT_SYN_TX_SEQ_DBG+0
-    sta CONNECT_SYN_TX_SEQ_DBG+1
-    sta CONNECT_SYN_TX_SEQ_DBG+2
-    sta CONNECT_SYN_TX_SEQ_DBG+3
-    sta CONNECT_SYN_TX_FLAGS_DBG
-    sta CONNECT_SYNACK_SEQ_DBG+0
-    sta CONNECT_SYNACK_SEQ_DBG+1
-    sta CONNECT_SYNACK_SEQ_DBG+2
-    sta CONNECT_SYNACK_SEQ_DBG+3
-    sta CONNECT_SYNACK_ACK_DBG+0
-    sta CONNECT_SYNACK_ACK_DBG+1
-    sta CONNECT_SYNACK_ACK_DBG+2
-    sta CONNECT_SYNACK_ACK_DBG+3
-    sta CONNECT_SYNACK_EXPECT_DBG+0
-    sta CONNECT_SYNACK_EXPECT_DBG+1
-    sta CONNECT_SYNACK_EXPECT_DBG+2
-    sta CONNECT_SYNACK_EXPECT_DBG+3
-    sta TCP_TX_ENQUEUE_OK_DBG
-    sta TCP_TX_SEND_OK_DBG
-    sta TCP_TX_ACK_SEEN_DBG
-    sta TCP_TX_ACK_MATCH_DBG
-    sta TCP_TX_TIMEOUT_DBG
-    sta TCP_TX_TIMEOUT_LEN_DBG
-    sta TCP_TX_TIMEOUT_RETRY_DBG
-    sta TCP_TX_SEND_FAIL_DBG
-    sta TCP_TX_RETX_OK_DBG
-    sta TCP_TX_RETX_FAIL_DBG
-    sta TCP_TX_BASE_RAW_DBG
-    sta TCP_TX_BASE_DISPATCH_DBG
-    sta TCP_TX_BASE_HANDLER_DBG
-    sta TCP_TX_LAST_ACK_DBG+0
-    sta TCP_TX_LAST_ACK_DBG+1
-    sta TCP_TX_LAST_ACK_DBG+2
-    sta TCP_TX_LAST_ACK_DBG+3
-    sta TCP_TX_TIMEOUT_EXPECT_DBG+0
-    sta TCP_TX_TIMEOUT_EXPECT_DBG+1
-    sta TCP_TX_TIMEOUT_EXPECT_DBG+2
-    sta TCP_TX_TIMEOUT_EXPECT_DBG+3
-    sta TCP_TX_TIMEOUT_ACK_DBG+0
-    sta TCP_TX_TIMEOUT_ACK_DBG+1
-    sta TCP_TX_TIMEOUT_ACK_DBG+2
-    sta TCP_TX_TIMEOUT_ACK_DBG+3
-.endif
-    rts
-
-CONNECT_SNAPSHOT_FAIL:
-.if DEBUG
-    lda CONNECT_FAIL_REASON_DBG
-    bne _connect_reason_done
-
-    lda CONNECT_FAIL_LATCH
-    beq _connect_not_rst
-    lda #$02
-    sta CONNECT_FAIL_REASON_DBG
-    rts
-
-_connect_not_rst:
-    lda CONNECT_SYNACK_BAD_ACK_DBG
-    beq _connect_not_bad_ack
-    lda #$04
-    sta CONNECT_FAIL_REASON_DBG
-    rts
-
-_connect_not_bad_ack:
-    lda CONNECT_SYNACK_RX_DBG
-    beq _connect_not_seen_synack
-    lda #$05
-    sta CONNECT_FAIL_REASON_DBG
-    rts
-
-_connect_not_seen_synack:
-    lda CONNECT_SYN_SENT
-    beq _connect_generic_fail
-    lda CONNECT_RETRY_LEFT
-    bne _connect_generic_fail
-    lda #$01
-    sta CONNECT_FAIL_REASON_DBG
-    rts
-
-_connect_generic_fail:
-    lda #$03
-    sta CONNECT_FAIL_REASON_DBG
-
-_connect_reason_done:
-.endif
-    rts
-
-.if DEBUG
-CONNECT_FAIL_REASON_DBG:     .byte $00
-CONNECT_SYNACK_RX_DBG:       .byte $00
-CONNECT_SYNACK_BAD_ACK_DBG:  .byte $00
-CONNECT_SYN_TX_OK_DBG:       .byte $00
-CONNECT_SYN_TX_FAIL_DBG:     .byte $00
-CONNECT_RAW_RX_DBG:          .byte $00
-CONNECT_TCP_RX_DBG:          .byte $00
-CONNECT_COPY_RX_DBG:         .byte $00
-CONNECT_TCP_DISPATCH_DBG:    .byte $00
-CONNECT_LAST_RX_TYPE_HI_DBG: .byte $00
-CONNECT_LAST_RX_TYPE_LO_DBG: .byte $00
-CONNECT_LAST_RX_PROTO_DBG:   .byte $00
-CONNECT_LAST_TCP_SRC_PORT_HI_DBG: .byte $00
-CONNECT_LAST_TCP_SRC_PORT_LO_DBG: .byte $00
-CONNECT_LAST_TCP_DST_PORT_HI_DBG: .byte $00
-CONNECT_LAST_TCP_DST_PORT_LO_DBG: .byte $00
-CONNECT_LAST_TCP_FLAGS_DBG:       .byte $00
-CONNECT_LAST_TCP_SRC_IP_DBG:      .byte $00, $00, $00, $00
-CONNECT_SYN_TX_DST_PORT_HI_DBG:   .byte $00
-CONNECT_SYN_TX_DST_PORT_LO_DBG:   .byte $00
-CONNECT_SYN_TX_SRC_PORT_HI_DBG:   .byte $00
-CONNECT_SYN_TX_SRC_PORT_LO_DBG:   .byte $00
-CONNECT_SYN_TX_DST_IP_DBG:        .byte $00, $00, $00, $00
-CONNECT_SYN_TX_SEQ_DBG:           .byte $00, $00, $00, $00
-CONNECT_SYN_TX_FLAGS_DBG:         .byte $00
-CONNECT_SYNACK_SEQ_DBG:           .byte $00, $00, $00, $00
-CONNECT_SYNACK_ACK_DBG:           .byte $00, $00, $00, $00
-CONNECT_SYNACK_EXPECT_DBG:        .byte $00, $00, $00, $00
-.endif
-CONNECT_LAST_RX_DC_DBG:      .byte $00
+CONNECT_LAST_RX_DEST_CLASS:  .byte $00
 
 ETH_INIT_ML_SAFE:
     php
@@ -5164,15 +4886,12 @@ RBUF_BLOCK_SAVE46:    .byte $00
 RBUF_BLOCK_SAVE47:    .byte $00
 RBUF_BLOCK_SAVE48:    .byte $00
 
-.if DEBUG
-.else
-ETH_DEBUG_ZERO:
+ETH_RESERVED_ZERO:
     lda #$00
     tax
     tay
     taz
     rts
-.endif
 
 ;=============================================================================
 ; Internal runtime helpers
@@ -5607,36 +5326,19 @@ _fin_retx_fail:
     jmp ETH_TCP_SEND_BYTE
     jmp ETH_DNS_LOOKUP_BUFFER
     jmp ETH_INIT_ML_SAFE
-.if DEBUG
-    jmp ETH_DHCP_DEBUG
-    jmp ETH_DHCP_DEBUG_TX
-.else
-    jmp ETH_DEBUG_ZERO
-    jmp ETH_DEBUG_ZERO
-.endif
+    jmp ETH_RESERVED_ZERO
+    jmp ETH_RESERVED_ZERO
     jmp ETH_DNS_START_BUFFER
-.if DEBUG
-    jmp ETH_DNS_DEBUG
-    jmp ETH_DNS_DEBUG2
-.else
-    jmp ETH_DEBUG_ZERO
-    jmp ETH_DEBUG_ZERO
-.endif
+    jmp ETH_RESERVED_ZERO
+    jmp ETH_RESERVED_ZERO
     jmp ETH_DNS_START_BUFFER_YLEN
     jmp ETH_ML_CALL_STAGED
     jmp ETH_RBUF_GET_BYTE
     jmp ETH_RBUF_GET_BLOCK
-.if DEBUG
-    jmp ETH_DNS_DEBUG3
-    jmp ETH_CONNECT_DEBUG
-    jmp ETH_CONNECT_DEBUG2
-    jmp ETH_CONNECT_DEBUG3
-.else
-    jmp ETH_DEBUG_ZERO
-    jmp ETH_DEBUG_ZERO
-    jmp ETH_DEBUG_ZERO
-    jmp ETH_DEBUG_ZERO
-.endif
+    jmp ETH_RESERVED_ZERO
+    jmp ETH_RESERVED_ZERO
+    jmp ETH_RESERVED_ZERO
+    jmp ETH_RESERVED_ZERO
 
 ;=============================================================================
 ; Send one byte over TCP
@@ -5724,7 +5426,6 @@ ETH_DNS_COPY_BUFFER:
     stx DNS_COPY_SRC_ADDR+1
     sty DNS_COPY_SRC_ADDR+2
     lda #$30
-    DEBUG_STA DNS_DEBUG_STAGE
     tza
     jmp ETH_DNS_COPY_BUFFER_LEN_A
 
@@ -5734,7 +5435,6 @@ ETH_DNS_COPY_BUFFER_YLEN_BANK1:
     lda #$01
     sta DNS_COPY_SRC_ADDR+2
     lda #$32
-    DEBUG_STA DNS_DEBUG_STAGE
     cpx #BANK1_WORKSPACE_LOW_HI
     bcc ETH_DNS_COPY_BUFFER_BANK1_RANGE_FAIL
     cpx #BANK1_COLOR_SHADOW_HI
@@ -5785,112 +5485,15 @@ DNS_COPY_DEST_ADDR:
 
 ETH_DNS_COPY_BUFFER_BANK1_RANGE_FAIL:
     lda #$33
-    DEBUG_STA DNS_DEBUG_STAGE
     lda DNS_COPY_SRC_ADDR+1
-    DEBUG_STA DNS_ARP_WAIT_COUNT
     lda DNS_COPY_SRC_ADDR+0
-    DEBUG_STA DNS_PARSE_FAILS
     sec
     rts
 
 ETH_DNS_COPY_BUFFER_FAIL:
     lda #$31
-    DEBUG_STA DNS_DEBUG_STAGE
     sec
     rts
-
-;=============================================================================
-; Return DHCP debug counters for ML callers.
-; Out: A = accepted RX frames, X = UDP/68 hits, Y = parser stage, Z = msg type.
-;=============================================================================
-.if DEBUG
-ETH_DHCP_DEBUG:
-    lda DHCP_RX_ACCEPTS
-    ldx DHCP_UDP68_HITS
-    ldy DHCP_DEBUG_STAGE
-    ldz dhcp_msg_type
-    rts
-
-;=============================================================================
-; Return DHCP transmit counters for ML callers.
-; Out: A/X = DISCOVER ok/fail, Y/Z = REQUEST ok/fail.
-;=============================================================================
-ETH_DHCP_DEBUG_TX:
-    lda DHCP_DISCOVER_TX_OK
-    ldx DHCP_DISCOVER_TX_FAIL
-    ldy DHCP_REQUEST_TX_OK
-    ldz DHCP_REQUEST_TX_FAIL
-    rts
-
-;=============================================================================
-; Return DNS debug counters for ML callers.
-; Out: A = state, X = stage, Y/Z = query TX ok/fail.
-;=============================================================================
-ETH_DNS_DEBUG:
-    lda DNS_STATE
-    ldx DNS_DEBUG_STAGE
-    ldy DNS_QUERY_TX_OK
-    ldz DNS_QUERY_TX_FAIL
-    rts
-
-;=============================================================================
-; Return additional DNS debug counters for ML callers.
-; Out: A = RX hits, X = ARP waits, Y = parse fails, Z = client port high.
-;=============================================================================
-ETH_DNS_DEBUG2:
-    lda DNS_CLIENT_PORT_HI
-    and #$1F
-    ora #$C0
-    taz
-    lda DNS_RX_HITS
-    ldx DNS_ARP_WAIT_COUNT
-    ldy DNS_PARSE_FAILS
-    rts
-
-;=============================================================================
-; Return DNS parser header counters for ML callers.
-; Out: A = QDCOUNT low, X = ANCOUNT low, Y = NSCOUNT low, Z = bounds fail.
-;=============================================================================
-ETH_DNS_DEBUG3:
-    lda DNS2_QD_LEFT
-    ldx DNS2_ANS_LEFT
-    ldy DNS2_NS_LEFT
-    ldz DNS2_BOUNDS_FAIL
-    rts
-
-;=============================================================================
-; Return connect debug state for BASIC/ML callers.
-; Out: A = event bits, X = fail reason, Y = SYN-ACKs seen, Z = bad SYN-ACK ACKs.
-;=============================================================================
-ETH_CONNECT_DEBUG:
-    lda TCP_EVENT_FLAG
-    ldx CONNECT_FAIL_REASON_DBG
-    ldy CONNECT_SYNACK_RX_DBG
-    ldz CONNECT_SYNACK_BAD_ACK_DBG
-    rts
-
-;=============================================================================
-; Return connect RX/TX counters.
-; Out: A = SYN TX ok, X = SYN TX fail, Y = raw RX, Z = TCP RX.
-;=============================================================================
-ETH_CONNECT_DEBUG2:
-    lda CONNECT_SYN_TX_OK_DBG
-    ldx CONNECT_SYN_TX_FAIL_DBG
-    ldy CONNECT_RAW_RX_DBG
-    ldz CONNECT_TCP_RX_DBG
-    rts
-
-;=============================================================================
-; Return last copied RX frame summary.
-; Out: A = dest class, X/Y = EtherType hi/lo, Z = IPv4 protocol byte.
-;=============================================================================
-ETH_CONNECT_DEBUG3:
-    lda CONNECT_LAST_RX_DC_DBG
-    ldx CONNECT_LAST_RX_TYPE_HI_DBG
-    ldy CONNECT_LAST_RX_TYPE_LO_DBG
-    ldz CONNECT_LAST_RX_PROTO_DBG
-    rts
-.endif
 
 ;=============================================================================
 ; Get one received TCP byte for ML callers without relying on carry across
@@ -5960,287 +5563,5 @@ ML_CALL_RET_A:          .byte $00
 ML_CALL_RET_X:          .byte $00
 ML_CALL_RET_Y:          .byte $00
 ML_CALL_RET_Z:          .byte $00
-
-;=============================================================================
-; BASIC connect/SYN diagnostics.
-;
-; These are intentionally outside the original BASIC jump table and the ML
-; extension table so the public BASIC-facing addresses stay fixed.
-;=============================================================================
-.cerror * > BASIC_DEBUG_TABLE_BASE, "ML call staging area overlaps BASIC debug table"
-
-* = BASIC_DEBUG_TABLE_BASE
-
-.if DEBUG
-    jmp ETH_CONNECT_TX_DEBUG1      ; $47800
-    jmp ETH_CONNECT_TX_DEBUG2      ; $47803
-    jmp ETH_CONNECT_TX_DEBUG3      ; $47806
-    jmp ETH_CONNECT_TX_DEBUG4      ; $47809
-    jmp ETH_CONNECT_TX_DEBUG5      ; $4780c
-    jmp ETH_CONNECT_TX_DEBUG6      ; $4780f
-    jmp ETH_CONNECT_SYN_DEBUG1     ; $47812
-    jmp ETH_CONNECT_SYN_DEBUG2     ; $47815
-    jmp ETH_CONNECT_SYN_DEBUG3     ; $47818
-    jmp ETH_CONNECT_RX_DEBUG1      ; $4781b
-    jmp ETH_CONNECT_RX_DEBUG2      ; $4781e
-    jmp ETH_CONNECT_RX_DEBUG3      ; $47821
-    jmp ETH_CONNECT_RX_DEBUG4      ; $47824
-    jmp ETH_TCP_TX_DEBUG1          ; $47827
-    jmp ETH_TCP_TX_DEBUG2          ; $4782a
-    jmp ETH_TCP_TX_DEBUG3          ; $4782d
-    jmp ETH_TCP_TX_DEBUG4          ; $47830
-    jmp ETH_TX_DUMP4               ; $47833
-    jmp ETH_TCP_TX_DEBUG5          ; $47836
-    jmp ETH_TCP_TX_DEBUG6          ; $47839
-    jmp ETH_CONNECT_SYNACK_DEBUG1  ; $4783c
-    jmp ETH_CONNECT_SYNACK_DEBUG2  ; $4783f
-    jmp ETH_CONNECT_SYNACK_DEBUG3  ; $47842
-.else
-    jmp ETH_DEBUG_ZERO             ; $47800
-    jmp ETH_DEBUG_ZERO             ; $47803
-    jmp ETH_DEBUG_ZERO             ; $47806
-    jmp ETH_DEBUG_ZERO             ; $47809
-    jmp ETH_DEBUG_ZERO             ; $4780c
-    jmp ETH_DEBUG_ZERO             ; $4780f
-    jmp ETH_DEBUG_ZERO             ; $47812
-    jmp ETH_DEBUG_ZERO             ; $47815
-    jmp ETH_DEBUG_ZERO             ; $47818
-    jmp ETH_DEBUG_ZERO             ; $4781b
-    jmp ETH_DEBUG_ZERO             ; $4781e
-    jmp ETH_DEBUG_ZERO             ; $47821
-    jmp ETH_DEBUG_ZERO             ; $47824
-    jmp ETH_DEBUG_ZERO             ; $47827
-    jmp ETH_DEBUG_ZERO             ; $4782a
-    jmp ETH_DEBUG_ZERO             ; $4782d
-    jmp ETH_DEBUG_ZERO             ; $47830
-    jmp ETH_DEBUG_ZERO             ; $47833
-    jmp ETH_DEBUG_ZERO             ; $47836
-    jmp ETH_DEBUG_ZERO             ; $47839
-    jmp ETH_DEBUG_ZERO             ; $4783c
-    jmp ETH_DEBUG_ZERO             ; $4783f
-    jmp ETH_DEBUG_ZERO             ; $47842
-.endif
-
-.if DEBUG
-; Out: A/X = frame length lo/hi, Y/Z = EtherType hi/lo.
-ETH_CONNECT_TX_DEBUG1:
-    lda ETH_TX_LEN_LSB
-    ldx ETH_TX_LEN_MSB
-    ldy ETH_TX_TYPE
-    ldz ETH_TX_TYPE+1
-    rts
-
-; Out: A/X = TCP dst port hi/lo, Y/Z = TCP src port hi/lo.
-ETH_CONNECT_TX_DEBUG2:
-    lda ETH_TX_FRAME_PAYLOAD+20+2
-    ldx ETH_TX_FRAME_PAYLOAD+20+3
-    ldy ETH_TX_FRAME_PAYLOAD+20+0
-    ldz ETH_TX_FRAME_PAYLOAD+20+1
-    rts
-
-; Out: A/X/Y/Z = IPv4 destination address.
-ETH_CONNECT_TX_DEBUG3:
-    lda ETH_TX_FRAME_PAYLOAD+16
-    ldx ETH_TX_FRAME_PAYLOAD+17
-    ldy ETH_TX_FRAME_PAYLOAD+18
-    ldz ETH_TX_FRAME_PAYLOAD+19
-    rts
-
-; Out: A = IP protocol, X = TCP flags, Y/Z = TCP checksum hi/lo.
-ETH_CONNECT_TX_DEBUG4:
-    lda ETH_TX_FRAME_PAYLOAD+9
-    ldx ETH_TX_FRAME_PAYLOAD+20+13
-    ldy ETH_TX_FRAME_PAYLOAD+20+16
-    ldz ETH_TX_FRAME_PAYLOAD+20+17
-    rts
-
-; Out: A/X/Y/Z = destination MAC bytes 0..3.
-ETH_CONNECT_TX_DEBUG5:
-    lda ETH_TX_FRAME_DEST_MAC+0
-    ldx ETH_TX_FRAME_DEST_MAC+1
-    ldy ETH_TX_FRAME_DEST_MAC+2
-    ldz ETH_TX_FRAME_DEST_MAC+3
-    rts
-
-; Out: A/X = destination MAC bytes 4..5, Y = same-net route, Z = ETH_STATE.
-ETH_CONNECT_TX_DEBUG6:
-    jsr ETH_CHECK_SAME_NET
-    tay
-    lda ETH_TX_FRAME_DEST_MAC+4
-    ldx ETH_TX_FRAME_DEST_MAC+5
-    ldz ETH_STATE
-    rts
-
-; Out: A/X = captured SYN TCP dst port hi/lo, Y/Z = src port hi/lo.
-ETH_CONNECT_SYN_DEBUG1:
-    lda CONNECT_SYN_TX_DST_PORT_HI_DBG
-    ldx CONNECT_SYN_TX_DST_PORT_LO_DBG
-    ldy CONNECT_SYN_TX_SRC_PORT_HI_DBG
-    ldz CONNECT_SYN_TX_SRC_PORT_LO_DBG
-    rts
-
-; Out: A/X/Y/Z = captured SYN IPv4 destination address.
-ETH_CONNECT_SYN_DEBUG2:
-    lda CONNECT_SYN_TX_DST_IP_DBG+0
-    ldx CONNECT_SYN_TX_DST_IP_DBG+1
-    ldy CONNECT_SYN_TX_DST_IP_DBG+2
-    ldz CONNECT_SYN_TX_DST_IP_DBG+3
-    rts
-
-; Out: A/X/Y/Z = captured SYN sequence number.
-ETH_CONNECT_SYN_DEBUG3:
-    lda CONNECT_SYN_TX_SEQ_DBG+0
-    ldx CONNECT_SYN_TX_SEQ_DBG+1
-    ldy CONNECT_SYN_TX_SEQ_DBG+2
-    ldz CONNECT_SYN_TX_SEQ_DBG+3
-    rts
-
-; Out: A/X/Y/Z = captured SYN-ACK sequence number.
-ETH_CONNECT_SYNACK_DEBUG1:
-    lda CONNECT_SYNACK_SEQ_DBG+0
-    ldx CONNECT_SYNACK_SEQ_DBG+1
-    ldy CONNECT_SYNACK_SEQ_DBG+2
-    ldz CONNECT_SYNACK_SEQ_DBG+3
-    rts
-
-; Out: A/X/Y/Z = captured SYN-ACK ACK number.
-ETH_CONNECT_SYNACK_DEBUG2:
-    lda CONNECT_SYNACK_ACK_DBG+0
-    ldx CONNECT_SYNACK_ACK_DBG+1
-    ldy CONNECT_SYNACK_ACK_DBG+2
-    ldz CONNECT_SYNACK_ACK_DBG+3
-    rts
-
-; Out: A/X/Y/Z = ACK number expected for our SYN.
-ETH_CONNECT_SYNACK_DEBUG3:
-    lda CONNECT_SYNACK_EXPECT_DBG+0
-    ldx CONNECT_SYNACK_EXPECT_DBG+1
-    ldy CONNECT_SYNACK_EXPECT_DBG+2
-    ldz CONNECT_SYNACK_EXPECT_DBG+3
-    rts
-
-ETH_DEBUG_ZERO:
-    lda #$00
-    tax
-    tay
-    taz
-    rts
-
-; Out: A = copied RX frames, X = TCP dispatches, Y = TCP handler entries,
-; Z = current TCP state.
-ETH_CONNECT_RX_DEBUG1:
-    lda CONNECT_COPY_RX_DBG
-    ldx CONNECT_TCP_DISPATCH_DBG
-    ldy CONNECT_TCP_RX_DBG
-    ldz TCP_STATE
-    rts
-
-; Out: A/X = last RX TCP src port hi/lo, Y/Z = dst port hi/lo.
-ETH_CONNECT_RX_DEBUG2:
-    lda CONNECT_LAST_TCP_SRC_PORT_HI_DBG
-    ldx CONNECT_LAST_TCP_SRC_PORT_LO_DBG
-    ldy CONNECT_LAST_TCP_DST_PORT_HI_DBG
-    ldz CONNECT_LAST_TCP_DST_PORT_LO_DBG
-    rts
-
-; Out: A/X/Y/Z = last RX IPv4 source address.
-ETH_CONNECT_RX_DEBUG3:
-    lda CONNECT_LAST_TCP_SRC_IP_DBG+0
-    ldx CONNECT_LAST_TCP_SRC_IP_DBG+1
-    ldy CONNECT_LAST_TCP_SRC_IP_DBG+2
-    ldz CONNECT_LAST_TCP_SRC_IP_DBG+3
-    rts
-
-; Out: A = last RX TCP flags, X/Y/Z reserved.
-ETH_CONNECT_RX_DEBUG4:
-    lda CONNECT_LAST_TCP_FLAGS_DBG
-    ldx #$00
-    ldy #$00
-    ldz #$00
-    rts
-
-; Out: A = timeout count, X = timeout length, Y = timeout retries left,
-; Z = queued bytes still waiting when sampled.
-ETH_TCP_TX_DEBUG1:
-    lda TCP_TX_TIMEOUT_DBG
-    ldx TCP_TX_TIMEOUT_LEN_DBG
-    ldy TCP_TX_TIMEOUT_RETRY_DBG
-    ldz TXQ_COUNT
-    rts
-
-; Out: A/X/Y/Z = expected ACK captured when TX timed out.
-ETH_TCP_TX_DEBUG2:
-    lda TCP_TX_TIMEOUT_EXPECT_DBG+0
-    ldx TCP_TX_TIMEOUT_EXPECT_DBG+1
-    ldy TCP_TX_TIMEOUT_EXPECT_DBG+2
-    ldz TCP_TX_TIMEOUT_EXPECT_DBG+3
-    rts
-
-; Out: A/X/Y/Z = last ACK seen while TX was pending.
-ETH_TCP_TX_DEBUG3:
-    lda TCP_TX_TIMEOUT_ACK_DBG+0
-    ldx TCP_TX_TIMEOUT_ACK_DBG+1
-    ldy TCP_TX_TIMEOUT_ACK_DBG+2
-    ldz TCP_TX_TIMEOUT_ACK_DBG+3
-    rts
-
-; Out: A = ACKs seen, X = ACKs matched, Y = TX sends ok, Z = reserved.
-ETH_TCP_TX_DEBUG4:
-    lda TCP_TX_ACK_SEEN_DBG
-    ldx TCP_TX_ACK_MATCH_DBG
-    ldy TCP_TX_SEND_OK_DBG
-    ldz #$00
-    rts
-
-; Out: A/X/Y = RX raw/TCP-dispatch/TCP-handler deltas since data TX,
-; Z = last RX TCP flags.
-ETH_TCP_TX_DEBUG5:
-    lda CONNECT_RAW_RX_DBG
-    sec
-    sbc TCP_TX_BASE_RAW_DBG
-    sta TX_DUMP_A
-    lda CONNECT_TCP_DISPATCH_DBG
-    sec
-    sbc TCP_TX_BASE_DISPATCH_DBG
-    tax
-    lda CONNECT_TCP_RX_DBG
-    sec
-    sbc TCP_TX_BASE_HANDLER_DBG
-    tay
-    ldz CONNECT_LAST_TCP_FLAGS_DBG
-    lda TX_DUMP_A
-    rts
-
-; Out: A = retransmits ok, X = retransmits failed, Y = TX fail count,
-; Z = TX pending flag.
-ETH_TCP_TX_DEBUG6:
-    lda TCP_TX_RETX_OK_DBG
-    ldx TCP_TX_RETX_FAIL_DBG
-    ldy TCP_TX_SEND_FAIL_DBG
-    ldz TX_UNACK_PENDING
-    rts
-
-; Return four bytes from the last built TX frame.
-; In: A = byte offset from ETH_TX_FRAME_HEADER.
-; Out: A/X/Y/Z = bytes offset+0..offset+3.
-ETH_TX_DUMP4:
-    tax
-    lda ETH_TX_FRAME_HEADER+0,x
-    sta TX_DUMP_A
-    lda ETH_TX_FRAME_HEADER+1,x
-    sta TX_DUMP_X
-    lda ETH_TX_FRAME_HEADER+2,x
-    sta TX_DUMP_Y
-    lda ETH_TX_FRAME_HEADER+3,x
-    taz
-    ldy TX_DUMP_Y
-    ldx TX_DUMP_X
-    lda TX_DUMP_A
-    rts
-
-TX_DUMP_A: .byte $00
-TX_DUMP_X: .byte $00
-TX_DUMP_Y: .byte $00
-.endif
 
 .cerror * > $8000, "fixed tables exceed mapped bank-4 window"

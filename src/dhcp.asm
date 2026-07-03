@@ -81,17 +81,6 @@ opt_router:                 .byte 0,0,0,0
 opt_dns:                    .byte 0,0,0,0
 dhcp_msg_type:              .byte 0
 
-.if DEBUG
-DHCP_RX_ACCEPTS: .byte 0
-DHCP_UDP68_HITS: .byte 0
-DHCP_ACK_SEEN: .byte 0
-DHCP_NAK_SEEN: .byte 0
-DHCP_DEBUG_STAGE: .byte 0
-DHCP_DISCOVER_TX_OK: .byte 0
-DHCP_DISCOVER_TX_FAIL: .byte 0
-DHCP_REQUEST_TX_OK: .byte 0
-DHCP_REQUEST_TX_FAIL: .byte 0
-.endif
 
 ;=============================================================================
 ; Start DHCP (non-blocking). Safe to call any time; it will restart if needed
@@ -101,15 +90,6 @@ ETH_DHCP_START:
     ; clear from previous run
     lda #$00
     sta dhcp_msg_type
-    DEBUG_STA DHCP_RX_ACCEPTS
-    DEBUG_STA DHCP_UDP68_HITS
-    DEBUG_STA DHCP_ACK_SEEN
-    DEBUG_STA DHCP_NAK_SEEN
-    DEBUG_STA DHCP_DEBUG_STAGE
-    DEBUG_STA DHCP_DISCOVER_TX_OK
-    DEBUG_STA DHCP_DISCOVER_TX_FAIL
-    DEBUG_STA DHCP_REQUEST_TX_OK
-    DEBUG_STA DHCP_REQUEST_TX_FAIL
 DHCP_RESTART_DISCOVERY:
     ldy #$00
 _loop:
@@ -340,7 +320,7 @@ DHCP_RETRY_SOON:
 ;=============================================================================
 DHCP_SEND_DISCOVER:
     ; BOOTP fixed section in ETH_TX_FRAME_PAYLOAD after IP+UDP headers.
-    ; We’ll layout as: [Ether(14)] [IP(20)] [UDP(8)] [BOOTP(236)] [cookie(4)] [options]
+    ; We->ll layout as: [Ether(14)] [IP(20)] [UDP(8)] [BOOTP(236)] [cookie(4)] [options]
     jsr DHCP_BUILD_BOOTP_COMMON
     ; op = 1 (request)
     lda #BOOTP_OP_BOOTREQUEST
@@ -433,12 +413,10 @@ _bcast_fill:
 
     jsr ETH_PACKET_SEND
     bcs _discover_tx_fail
-    DEBUG_INC DHCP_DISCOVER_TX_OK
     clc
     rts
 
 _discover_tx_fail:
-    DEBUG_INC DHCP_DISCOVER_TX_FAIL
     sec
     rts
 
@@ -567,12 +545,10 @@ _bcast_fill:
 
     jsr ETH_PACKET_SEND
     bcs _request_tx_fail
-    DEBUG_INC DHCP_REQUEST_TX_OK
     clc
     rts
 
 _request_tx_fail:
-    DEBUG_INC DHCP_REQUEST_TX_FAIL
     sec
     rts
 
@@ -617,7 +593,7 @@ _clear:
     bne -
     rts
 
-; Option write helpers — options start at offset 240, X tracks running length
+; Option write helpers - options start at offset 240, X tracks running length
 opt_put_code:
     sta ETH_TX_FRAME_PAYLOAD+20+8+240,x
     inx
@@ -648,7 +624,7 @@ DHCP_BUILD_IPV4_UDP_BROADCAST:
     ; DSCP/ECN
     lda #$00
     sta ETH_TX_FRAME_PAYLOAD+1
-    ; Total length (filled after UDP length known) – init now:
+    ; Total length (filled after UDP length known) - init now:
     lda #$00
     sta ETH_TX_FRAME_PAYLOAD+2
     lda #$00
@@ -745,7 +721,6 @@ UDP_WRITE_LENGTH_AND_CHECKSUM:
 ;=============================================================================
 DHCP_ON_UDP:
     lda #$01
-    DEBUG_STA DHCP_DEBUG_STAGE
 
     ldy DHCP_IP_IHL_BYTES        ; Y = IP header length in bytes
 
@@ -782,14 +757,12 @@ _dhcp_claimed_len_ok:
 _dhcp_udp_len_ok:
     ; Verify BOOTP op=2 (reply)
     lda #$02
-    DEBUG_STA DHCP_DEBUG_STAGE
     lda ETH_RX_FRAME_PAYLOAD+8+0,y
     cmp #BOOTP_OP_BOOTREPLY
     bne _out
 
     ; Check XID matches ours
     lda #$03
-    DEBUG_STA DHCP_DEBUG_STAGE
     lda ETH_RX_FRAME_PAYLOAD+8+$04,y
     cmp DHCP_XID+0
     bne _out
@@ -803,9 +776,8 @@ _dhcp_udp_len_ok:
     cmp DHCP_XID+3
     bne _out
 
-    ; yiaddr → candidate IP (for OFFER/ACK)
+    ; yiaddr -> candidate IP (for OFFER/ACK)
     lda #$04
-    DEBUG_STA DHCP_DEBUG_STAGE
     lda ETH_RX_FRAME_PAYLOAD+8+$10,y
     sta DHCP_OFFER_IP+0
     lda ETH_RX_FRAME_PAYLOAD+8+$11,y
@@ -817,7 +789,6 @@ _dhcp_udp_len_ok:
 
     ; Must have magic cookie
     lda #$05
-    DEBUG_STA DHCP_DEBUG_STAGE
     lda ETH_RX_FRAME_PAYLOAD+8+236,y
     cmp #DHCP_MAGIC_0
     bne _out
@@ -833,12 +804,10 @@ _dhcp_udp_len_ok:
 
     ; Parse options TLV
     lda #$06
-    DEBUG_STA DHCP_DEBUG_STAGE
     jsr DHCP_PARSE_OPTIONS
 
     ; Branch by message type
     lda #$07
-    DEBUG_STA DHCP_DEBUG_STAGE
     lda dhcp_msg_type
     cmp #DHCPOFFER
     beq _maybe_offer
@@ -868,7 +837,6 @@ _maybe_nak:
 
 _got_offer:
     lda #$08
-    DEBUG_STA DHCP_DEBUG_STAGE
 
     ; record server id if present; then send REQUEST
     lda #DHCP_STATE_OFFER_SEEN
@@ -912,14 +880,11 @@ _offer_request_tx_busy:
     rts
 
 _got_ack:
-    DEBUG_INC DHCP_ACK_SEEN
     lda #$09
-    DEBUG_STA DHCP_DEBUG_STAGE
 
     jsr _dhcp_ack_sanity
     bcc _ack_sane
     lda #$0b
-    DEBUG_STA DHCP_DEBUG_STAGE
     rts
 
 _ack_sane:
@@ -963,9 +928,7 @@ _dhcp_ack_sanity:
     jmp DHCP_ACK_SANITY_IMPL
 
 _got_nak:
-    DEBUG_INC DHCP_NAK_SEEN
     lda #$0a
-    DEBUG_STA DHCP_DEBUG_STAGE
 
     ; A NAK repudiates the current lease.  Drop the lease and restart DHCP
     ; immediately instead of leaving callers on a stale address.
@@ -1343,8 +1306,3 @@ DHCP_OPTS_RD_A:
 OPTRD:
     lda $FFFF,y
     rts
-
-
-
-
-
