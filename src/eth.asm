@@ -90,6 +90,7 @@ RING_BUFFER_BANK = $05
 RING_BUFFER_BANK_HI = $00
 RING_BUFFER_BASE = $0000
 RING_BUFFER_PAGE_MASK = $0f          ; 16 pages x 256 bytes = 4 KB
+TCP_OOO_BUFFER_BASE = $1000          ; one saved out-of-order TCP segment in bank 5
 RBUF_PTR_LO = $fb
 RBUF_PTR_HI = $fc
 RBUF_PTR_BANK = $fd
@@ -190,6 +191,10 @@ ADV_WINDOW_LAST_HI:     .byte 0
 
 SEG_SEQ:                .byte 0,0,0,0
 SEG_ACK:                .byte 0,0,0,0
+TCP_OOO_VALID:          .byte 0
+TCP_OOO_FLAGS:          .byte 0
+TCP_OOO_SEQ:            .byte 0,0,0,0
+TCP_OOO_LEN:            .byte 0,0
 RX_META0:               .byte $00
 RX_META1:               .byte $00
 ETH_RCV_BURST_LEFT:     .byte $00
@@ -539,6 +544,7 @@ ETH_TCP_CONNECT_START:
     jsr CLEAR_TCP_PAYLOAD
     jsr TCP_TX_RESET
     jsr CLEAR_REMOTE_ISN
+    jsr TCP_OOO_CLEAR
 
     jsr TCP_SEED_LOCAL_ISN
 
@@ -954,6 +960,7 @@ ETH_TCP_LISTEN_START:
     lda #1
     sta TCP_LISTEN_ENABLED      ; go LISTEN
     jsr TCP_TX_RESET
+    jsr TCP_OOO_CLEAR
 
     ; clean RX/TX rings (optional but safest for “fresh” accept)
     ;jsr RBUF_RESET_RX
@@ -1325,15 +1332,8 @@ _copy_payload_and_ack:
     beq _seg_in_order        ; SEG.SEQ == RCV.NXT -> in-order
     ; SEG.SEQ > RCV.NXT → out-of-order future → dup-ACK current RCV.NXT
 _seg_in_future:
-    lda #$00
-    sta TCP_RX_DATA_PAYLOAD_SIZE
-    sta TCP_RX_DATA_PAYLOAD_SIZE+1
-    lda #$00
-    sta REMOTE_ISN_BUMP
-    jsr CALC_REMOTE_ISN            ; add 0 (keep RCV.NXT)
-    lda #TCP_FLAG_ACK
-    jsr ETH_BUILD_TCPIP_PACKET
-    jsr DEFER_CURRENT_TX
+    jsr TCP_OOO_SAVE_CURRENT
+    jsr TCP_DEFER_DUP_ACK
     plp
     rts
 
@@ -1575,6 +1575,11 @@ _ack_what_we_took:
 
 _ack_no_fin_bump:
     jsr CALC_REMOTE_ISN            ; RCV.NXT += consumed
+    lda REMOTE_ISN_BUMP
+    pha
+    jsr TCP_OOO_TRY_FLUSH
+    pla
+    sta REMOTE_ISN_BUMP
 
     ; Build a pure ACK (no data)
     lda #$00
@@ -1992,6 +1997,314 @@ TCP_DEFER_DUP_ACK:
     jsr DEFER_CURRENT_TX
 
 _tcp_defer_dup_ack_done:
+    rts
+
+; ================================================================================
+; One-slot out-of-order TCP receive buffer.
+; Saves one future segment and replays it once RCV.NXT catches up.
+; ================================================================================
+TCP_OOO_CLEAR:
+    lda #$00
+    sta TCP_OOO_VALID
+    rts
+
+TCP_OOO_SAVE_CURRENT:
+    lda TCP_OOO_VALID
+    bne TCP_OOO_SAVE_DONE
+
+    lda TCP_RX_DATA_PAYLOAD_SIZE
+    ora TCP_RX_DATA_PAYLOAD_SIZE+1
+    beq TCP_OOO_SAVE_DONE
+
+    ; Keep this slot bounded to the advertised receive cap.
+    lda TCP_RX_DATA_PAYLOAD_SIZE+1
+    cmp #TCP_RECV_WINDOW_CAP_HI
+    bcc TCP_OOO_SAVE_LEN_OK
+    bne TCP_OOO_SAVE_DONE
+    lda TCP_RX_DATA_PAYLOAD_SIZE
+    bne TCP_OOO_SAVE_DONE
+
+TCP_OOO_SAVE_LEN_OK:
+    ldx #$00
+TCP_OOO_SAVE_SEQ:
+    lda SEG_SEQ,x
+    sta TCP_OOO_SEQ,x
+    inx
+    cpx #$04
+    bne TCP_OOO_SAVE_SEQ
+
+    lda TCP_RX_DATA_PAYLOAD_SIZE
+    sta TCP_OOO_LEN
+    sta RX_COPY_REM_LO
+    lda TCP_RX_DATA_PAYLOAD_SIZE+1
+    sta TCP_OOO_LEN+1
+    sta RX_COPY_REM_HI
+    lda ETH_RX_TCP_FLAGS
+    and #TCP_FLAG_FIN
+    sta TCP_OOO_FLAGS
+
+    jsr RBUF_SAVE_PTR_ZP
+
+    lda #<ETH_RX_FRAME_PAYLOAD
+    clc
+    adc TCP_DATA_OFFSET
+    sta TCP_OOO_SAVE_READ+1
+    lda #>ETH_RX_FRAME_PAYLOAD
+    adc #$00
+    sta TCP_OOO_SAVE_READ+2
+
+    lda #<TCP_OOO_BUFFER_BASE
+    sta RBUF_PTR_LO
+    lda #>TCP_OOO_BUFFER_BASE
+    sta RBUF_PTR_HI
+    lda #RING_BUFFER_BANK
+    sta RBUF_PTR_BANK
+    lda #RING_BUFFER_BANK_HI
+    sta RBUF_PTR_TOP
+
+    lda #$00
+    sta HHI
+    ldy #$00
+    ldz #$00
+
+TCP_OOO_SAVE_LOOP:
+    lda RX_COPY_REM_LO
+    ora RX_COPY_REM_HI
+    beq TCP_OOO_SAVE_COPIED
+
+TCP_OOO_SAVE_READ:
+    .byte $B9, $00, $00            ; LDA abs,Y (patched to current TCP payload)
+    sta [RBUF_PTR_LO],z
+
+    iny
+    bne TCP_OOO_SAVE_SRC_OK
+    inc TCP_OOO_SAVE_READ+2
+TCP_OOO_SAVE_SRC_OK:
+    tza
+    clc
+    adc #$01
+    taz
+    bne TCP_OOO_SAVE_DST_OK
+    inc HHI
+    lda #>TCP_OOO_BUFFER_BASE
+    clc
+    adc HHI
+    sta RBUF_PTR_HI
+TCP_OOO_SAVE_DST_OK:
+    sec
+    lda RX_COPY_REM_LO
+    sbc #$01
+    sta RX_COPY_REM_LO
+    lda RX_COPY_REM_HI
+    sbc #$00
+    sta RX_COPY_REM_HI
+    jmp TCP_OOO_SAVE_LOOP
+
+TCP_OOO_SAVE_COPIED:
+    jsr RBUF_RESTORE_PTR_ZP
+    lda #$01
+    sta TCP_OOO_VALID
+
+TCP_OOO_SAVE_DONE:
+    rts
+
+TCP_OOO_TRY_FLUSH:
+    lda TCP_OOO_VALID
+    bne TCP_OOO_FLUSH_CHECK_SEQ
+    lda #$00
+    rts
+
+TCP_OOO_FLUSH_CHECK_SEQ:
+    ldx #$00
+TCP_OOO_FLUSH_SEQ_LOOP:
+    lda TCP_OOO_SEQ,x
+    cmp REMOTE_ISN,x
+    bcc TCP_OOO_FLUSH_STALE
+    bne TCP_OOO_FLUSH_NO
+    inx
+    cpx #$04
+    bne TCP_OOO_FLUSH_SEQ_LOOP
+
+    php
+    sei
+    jsr RBUF_SAVE_PTR_ZP
+    jsr READ_TAIL_ATOMIC
+
+    sec
+    lda TMP_TAIL_LO
+    sbc RBUF_HEAD_LO
+    sta FREE_LO
+    lda TMP_TAIL_HI
+    sbc RBUF_HEAD_HI
+    and #RING_BUFFER_PAGE_MASK
+    sta FREE_HI
+
+    sec
+    lda FREE_LO
+    sbc #$01
+    sta FREE_LO
+    lda FREE_HI
+    sbc #$00
+    and #RING_BUFFER_PAGE_MASK
+    sta FREE_HI
+
+    lda FREE_HI
+    cmp TCP_OOO_LEN+1
+    bcc TCP_OOO_FLUSH_NO_SPACE
+    bne TCP_OOO_FLUSH_HAVE_SPACE
+    lda FREE_LO
+    cmp TCP_OOO_LEN
+    bcc TCP_OOO_FLUSH_NO_SPACE
+
+TCP_OOO_FLUSH_HAVE_SPACE:
+    lda TCP_OOO_LEN
+    sta RX_COPY_REM_LO
+    lda TCP_OOO_LEN+1
+    sta RX_COPY_REM_HI
+
+    lda #$00
+    sta SKIP_LO
+    sta SKIP_HI
+    lda RBUF_HEAD_LO
+    sta HLO
+    lda RBUF_HEAD_HI
+    sta HHI
+
+TCP_OOO_FLUSH_LOOP:
+    lda RX_COPY_REM_LO
+    ora RX_COPY_REM_HI
+    beq TCP_OOO_FLUSH_COPIED
+
+    jsr TCP_OOO_SET_SRC_PTR
+    ldz SKIP_LO
+    lda [RBUF_PTR_LO],z
+    pha
+
+    jsr TCP_OOO_SET_DST_PTR
+    ldz HLO
+    pla
+    sta [RBUF_PTR_LO],z
+
+    inc SKIP_LO
+    bne TCP_OOO_FLUSH_SRC_OK
+    inc SKIP_HI
+TCP_OOO_FLUSH_SRC_OK:
+    inc HLO
+    bne TCP_OOO_FLUSH_DST_OK
+    inc HHI
+    lda HHI
+    and #RING_BUFFER_PAGE_MASK
+    sta HHI
+TCP_OOO_FLUSH_DST_OK:
+    sec
+    lda RX_COPY_REM_LO
+    sbc #$01
+    sta RX_COPY_REM_LO
+    lda RX_COPY_REM_HI
+    sbc #$00
+    sta RX_COPY_REM_HI
+    jmp TCP_OOO_FLUSH_LOOP
+
+TCP_OOO_FLUSH_COPIED:
+    lda HLO
+    sta RBUF_HEAD_LO
+    lda HHI
+    sta RBUF_HEAD_HI
+    jsr RBUF_RESTORE_PTR_ZP
+
+    lda TCP_OOO_LEN
+    sta TCP_RX_DATA_PAYLOAD_SIZE
+    lda TCP_OOO_LEN+1
+    sta TCP_RX_DATA_PAYLOAD_SIZE+1
+    lda #$00
+    sta REMOTE_ISN_BUMP
+    lda TCP_OOO_FLAGS
+    and #TCP_FLAG_FIN
+    beq TCP_OOO_FLUSH_NO_FIN_BUMP
+    lda #$01
+    sta REMOTE_ISN_BUMP
+TCP_OOO_FLUSH_NO_FIN_BUMP:
+    jsr CALC_REMOTE_ISN
+    lda #$00
+    sta REMOTE_ISN_BUMP
+    sta TCP_RX_DATA_PAYLOAD_SIZE
+    sta TCP_RX_DATA_PAYLOAD_SIZE+1
+    sta TCP_DATA_PAYLOAD_SIZE
+    sta TCP_DATA_PAYLOAD_SIZE+1
+    sta TCP_OOO_VALID
+
+    lda TCP_OOO_FLAGS
+    and #TCP_FLAG_FIN
+    beq TCP_OOO_FLUSH_SUCCESS
+    jsr TCP_OOO_APPLY_PEER_FIN_STATE
+
+TCP_OOO_FLUSH_SUCCESS:
+    plp
+    lda #$01
+    rts
+
+TCP_OOO_FLUSH_NO_SPACE:
+    jsr RBUF_RESTORE_PTR_ZP
+    plp
+    bra TCP_OOO_FLUSH_NO
+
+TCP_OOO_FLUSH_STALE:
+    jsr TCP_OOO_CLEAR
+
+TCP_OOO_FLUSH_NO:
+    lda #$00
+    rts
+
+TCP_OOO_SET_SRC_PTR:
+    lda #<TCP_OOO_BUFFER_BASE
+    sta RBUF_PTR_LO
+    lda #>TCP_OOO_BUFFER_BASE
+    clc
+    adc SKIP_HI
+    sta RBUF_PTR_HI
+    lda #RING_BUFFER_BANK
+    sta RBUF_PTR_BANK
+    lda #RING_BUFFER_BANK_HI
+    sta RBUF_PTR_TOP
+    rts
+
+TCP_OOO_SET_DST_PTR:
+    lda #<RING_BUFFER_BASE
+    sta RBUF_PTR_LO
+    lda #>RING_BUFFER_BASE
+    clc
+    adc HHI
+    sta RBUF_PTR_HI
+    lda #RING_BUFFER_BANK
+    sta RBUF_PTR_BANK
+    lda #RING_BUFFER_BANK_HI
+    sta RBUF_PTR_TOP
+    rts
+
+TCP_OOO_APPLY_PEER_FIN_STATE:
+    lda TCP_STATE
+    cmp #TCP_STATE_FIN_WAIT_1
+    beq TCP_OOO_PEER_FIN_ACTIVE_CLOSE
+    cmp #TCP_STATE_FIN_WAIT_2
+    beq TCP_OOO_PEER_FIN_ACTIVE_CLOSE
+
+    lda #TCP_STATE_CLOSE_WAIT
+    sta TCP_STATE
+    lda TCP_EVENT_FLAG
+    ora #EV_PEER_FIN
+    sta TCP_EVENT_FLAG
+    rts
+
+TCP_OOO_PEER_FIN_ACTIVE_CLOSE:
+    jsr TCP_TIME_WAIT_RESET
+    lda #$00
+    sta CONNECT_RETRY_TICKS
+    sta CONNECT_RETRY_LEFT
+    lda #TCP_STATE_TIME_WAIT
+    sta TCP_STATE
+    lda TCP_EVENT_FLAG
+    ora #EV_LOCAL_CLOSE
+    sta TCP_EVENT_FLAG
     rts
 
 ; ================================================================================
@@ -3234,6 +3547,7 @@ TCP_HARD_RESET:
     lda #$00
     sta TCP_DATA_PAYLOAD_SIZE
     sta TCP_DATA_PAYLOAD_SIZE+1
+    jsr TCP_OOO_CLEAR
 
     ; notify BASIC: set a sticky event flag it can poll
     ; bit0 = RST seen
@@ -3291,6 +3605,13 @@ _after_tcp_ticks:
     jsr ARP_RETRY_TICK
     jsr DNS_TICK
     jsr DHCP_STATUS_TICK
+    jsr TCP_OOO_TRY_FLUSH
+    beq _no_ooo_flush_ack
+    lda #TCP_FLAG_ACK
+    jsr ETH_BUILD_TCPIP_PACKET
+    bcs _no_ooo_flush_ack
+    jsr DEFER_CURRENT_TX
+_no_ooo_flush_ack:
     jsr ETH_MAYBE_WINUPDATE
     jsr ETH_PROCESS_DEFERRED
 
@@ -4319,6 +4640,7 @@ ETH_CLEAR_DRIVER_STATE:
     jsr TCP_TX_RESET
     jsr CLEAR_LOCAL_ISN
     jsr CLEAR_REMOTE_ISN
+    jsr TCP_OOO_CLEAR
     jsr CLEAR_TCP_PAYLOAD
     rts
 
