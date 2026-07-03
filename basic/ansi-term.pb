@@ -1,0 +1,5 @@
+13th Floor BBS, 13th.hoyvision.com,6400,P,,
+1st Wrong Number BBS, cib.dyndns.org,6404,P,,
+0xDECAFBAD BBS,bbs.decafbad.com,6523,A,,
+8-bit Archive, 8-bitarchive.com,2223,A,,
+Star Wars, towel.blinkenlights.nl,23,A,,

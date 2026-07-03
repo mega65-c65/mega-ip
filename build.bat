@@ -22,6 +22,7 @@ del /q basic\ansi-term.prg 2>nul
 .\64tass.exe -D DEBUG=0 .\src\eth.asm --nostart -L target\eth.lst -o target\eth.bin
 .\64tass.exe --cbm-prg .\basic\ansi-term.asm -L target\ansi-term.lst -o target\ansi-term.prg
 .\64tass.exe --nostart .\basic\cp437_font.asm -o target\cp437.bin
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$t=Get-Content -Raw 'basic\ansi-term.pb'; $t=$t -replace \"`r`n\",\"`n\" -replace \"`r\",\"`n\"; $lines=$t -split \"`n\" | Where-Object { $_.Length -gt 0 }; [IO.File]::WriteAllText('target\ansi-term.pb', [string]::Join([char]13,$lines)+[char]13, [Text.Encoding]::ASCII)"
 
 .\c1541.exe -format megaip,wr d81 target\megaip.d81
 
@@ -35,5 +36,6 @@ del /q basic\ansi-term.prg 2>nul
 .\c1541.exe target\megaip.d81 -write target\ansi-term.prg ansi-term
 .\c1541.exe target\megaip.d81 -write target\eth.bin eth.bin
 .\c1541.exe target\megaip.d81 -write target\cp437.bin cp437.bin
+.\c1541.exe target\megaip.d81 -write target\ansi-term.pb ansi-term.pb,s
 .\c1541.exe target\megaip.d81 -write basic\index.html index.html,s
 .\c1541.exe target\megaip.d81 -write basic\about.html about.html,s

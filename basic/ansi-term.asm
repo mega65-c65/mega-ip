@@ -13,6 +13,15 @@
 K_CHROUT            = $ffd2
 K_GETIN             = $ffe4
 K_JSRFAR            = $ff6e
+K_READST            = $ffb7
+K_SETLFS            = $ffba
+K_SETNAM            = $ffbd
+K_OPEN              = $ffc0
+K_CLOSE             = $ffc3
+K_CHKIN             = $ffc6
+K_CHKOUT            = $ffc9
+K_CLRCHN            = $ffcc
+K_CHRIN             = $ffcf
 
 ; MEGA65 / VIC
 BORDER_COLOR        = $d020
@@ -150,6 +159,18 @@ ESC                 = $1b
 CLR                 = $93
 DEL                 = $14
 CTRL_W              = $17
+PET_HOME            = $13
+PET_DOWN            = $11
+PET_MIXED           = $0e
+PET_WHITE           = $05
+PET_RED             = $1c
+PET_CYAN            = $9f
+PET_GREEN           = $1e
+PET_BLUE            = $1f
+PET_YELLOW          = $9e
+PET_HLINE           = $c0
+PET_RVS_ON          = $12
+PET_RVS_OFF         = $92
 
 CONN_CONNECTED      = %00000001
 CONN_FAILED         = %00000010
@@ -163,6 +184,23 @@ DHCP_TIMEOUT_FRAMES = 3600
 DNS_TIMEOUT_FRAMES = 3600
 CONNECT_TIMEOUT_FRAMES = 1800
 RX_BLOCK_MAX        = 128
+MENU_STATUS_ROW     = 8
+PHONE_MAX           = 32
+PHONE_PAGE_SIZE     = 8
+PHONE_ENTRY_SIZE    = 112
+PHONE_NAME_OFF      = 0
+PHONE_NAME_MAX      = 31
+PHONE_HOST_OFF      = 32
+PHONE_HOST_MAX      = 39
+PHONE_PORT_OFF      = 72
+PHONE_PORT_MAX      = 5
+PHONE_TYPE_OFF      = 80
+PHONE_TYPE_MAX      = 1
+PHONE_USER_OFF      = 84
+PHONE_USER_MAX      = 20
+PHONE_LFN           = 2
+PHONE_DEVICE        = 8
+PHONE_SA            = 2
 
 ;-----------------------------------------------------------------------------
 ; BASIC launcher:
@@ -197,11 +235,7 @@ START:
     sta BACKGROUND_COLOR
     jsr CURSOR_SPRITE_DISABLE
 
-    lda #CLR
-    jsr K_CHROUT
-    lda #<MSG_TITLE
-    ldx #>MSG_TITLE
-    jsr PRINT_Z
+    jsr DRAW_MAIN_HEADER
 
     lda #<MSG_RESET
     ldx #>MSG_RESET
@@ -286,10 +320,13 @@ NETWORK_READY:
     lda #<MIP_FORCE_CLOSE
     ldx #>MIP_FORCE_CLOSE
     jsr FAR_CALL_NOARGS
+    jsr CLEAR_NETWORK_STATUS_AREA
+NETWORK_READY_DRAW:
     lda #<MSG_NETWORK_READY
     ldx #>MSG_NETWORK_READY
     jsr PRINT_Z
     jsr PRINT_NETWORK_SETTINGS
+    bra REMOTE_SETUP
 
 TERM_MODE_MENU:
     lda #<MSG_TERM_MODE
@@ -312,7 +349,7 @@ TERM_ASCII:
     jsr USE_DEFAULT_FONT
     lda #0
     jsr SET_XLATE_A
-    bra REMOTE_SETUP
+    rts
 
 TERM_PETSCII:
     lda #0
@@ -320,12 +357,17 @@ TERM_PETSCII:
     jsr USE_DEFAULT_FONT
     lda #0
     jsr SET_XLATE_A
+    rts
 
 REMOTE_SETUP:
     lda #<MSG_CONNECT_BY
     ldx #>MSG_CONNECT_BY
     jsr PRINT_Z
     jsr GET_KEY
+    cmp #'P'
+    beq REMOTE_PHONEBOOK
+    cmp #'p'
+    beq REMOTE_PHONEBOOK
     cmp #'I'
     beq REMOTE_IP_SETUP
     cmp #'i'
@@ -336,25 +378,47 @@ REMOTE_SETUP:
     beq REMOTE_HOST_SETUP
     bra REMOTE_SETUP
 
+REMOTE_PHONEBOOK:
+    jmp PHONEBOOK_MENU
+
 REMOTE_IP_SETUP:
+REMOTE_IP_PROMPT:
     lda #<MSG_REMOTE_IP
     ldx #>MSG_REMOTE_IP
     jsr READ_IP_AND_SET_REMOTE
-    bcs REMOTE_IP_SETUP
-    bra PORT_SETUP
+    bcc PORT_SETUP
+    lda LINE_LEN
+    beq REMOTE_CANCEL_TO_READY
+    bra REMOTE_IP_PROMPT
+
+REMOTE_CANCEL_TO_READY:
+    jsr DRAW_MAIN_HEADER
+    bra NETWORK_READY_DRAW
 
 REMOTE_HOST_SETUP:
     lda #<MSG_REMOTE_HOST
     ldx #>MSG_REMOTE_HOST
     jsr PRINT_Z
     jsr READ_LINE
+    jsr RESOLVE_LINEBUF_HOST
+    bcc PORT_SETUP
+    bra REMOTE_SETUP
+
+RESOLVE_LINEBUF_HOST:
     lda LINE_LEN
-    bne _host_has_text
+    bne _resolve_has_text
     lda #<MSG_BAD_HOST
     ldx #>MSG_BAD_HOST
     jsr PRINT_Z
-    bra REMOTE_SETUP
-_host_has_text:
+    sec
+    rts
+_resolve_has_text:
+    jsr PARSE_IP
+    bcs _resolve_as_host
+    jsr SET_REMOTE_FROM_IPBUF
+    clc
+    rts
+_resolve_as_host:
     lda #<MSG_RESOLVING
     ldx #>MSG_RESOLVING
     jsr PRINT_Z
@@ -369,7 +433,8 @@ _host_has_text:
     lda #<MSG_LOOKUP_FAIL
     ldx #>MSG_LOOKUP_FAIL
     jsr PRINT_Z
-    bra REMOTE_SETUP
+    sec
+    rts
 
 DNS_WAIT_START_OK:
     jsr RESET_DNS_TIMEOUT
@@ -393,7 +458,8 @@ DNS_FAILED:
     lda #<MSG_LOOKUP_FAIL
     ldx #>MSG_LOOKUP_FAIL
     jsr PRINT_Z
-    bra REMOTE_SETUP
+    sec
+    rts
 
 DNS_DONE:
     lda #<MIP_GET_DNS_RESULT
@@ -406,20 +472,31 @@ DNS_DONE:
     lda #CR
     jsr K_CHROUT
     jsr SET_REMOTE_FROM_IPBUF
+    clc
+    rts
 
 PORT_SETUP:
     lda #<MSG_REMOTE_PORT
     ldx #>MSG_REMOTE_PORT
     jsr PRINT_Z
     jsr READ_LINE
-    jsr PARSE_PORT
-    bcc PORT_OK
+    jsr SET_PORT_FROM_LINEBUF
+    bcc PORT_SETUP_MANUAL_CONNECT
     lda #<MSG_BAD_PORT
     ldx #>MSG_BAD_PORT
     jsr PRINT_Z
     bra PORT_SETUP
 
-PORT_OK:
+PORT_SETUP_MANUAL_CONNECT:
+    jsr TERM_MODE_MENU
+    bra CONNECT
+
+SET_PORT_FROM_LINEBUF:
+    jsr PARSE_PORT
+    bcc _set_port_ok
+    sec
+    rts
+_set_port_ok:
     lda #<MIP_SET_REMOTE_PORT
     sta STAGE_TARGET_LO_VAR
     lda #>MIP_SET_REMOTE_PORT
@@ -432,7 +509,10 @@ PORT_OK:
     sta STAGE_ARG_Y_VAR
     sta STAGE_ARG_Z_VAR
     jsr STAGED_CALL
+    clc
+    rts
 
+CONNECT:
     lda #<MIP_SET_LOCAL_PORT
     sta STAGE_TARGET_LO_VAR
     lda #>MIP_SET_LOCAL_PORT
@@ -447,7 +527,6 @@ PORT_OK:
     sta STAGE_ARG_Z_VAR
     jsr STAGED_CALL
 
-CONNECT:
     lda #<MSG_CONNECTING
     ldx #>MSG_CONNECTING
     jsr PRINT_Z
@@ -481,8 +560,9 @@ CONNECT_FAILED:
     lda #<MSG_CONNECT_FAIL
     ldx #>MSG_CONNECT_FAIL
     jsr PRINT_Z
-    jsr PRINT_CONNECT_DEBUG
-    bra REMOTE_SETUP
+    jsr GET_KEY
+    jsr DRAW_MAIN_HEADER
+    bra NETWORK_READY_DRAW
 
 CONNECTED:
     lda TERM_MODE
@@ -498,6 +578,9 @@ CONNECTED_PETSCII:
     jsr PRINT_Z
 
 TERMINAL_LOOP:
+    bra CHECK_RX
+
+CHECK_KEYBOARD:
     jsr K_GETIN
     beq CHECK_RX
     cmp #CTRL_W
@@ -552,20 +635,30 @@ CHECK_STATUS:
     jsr TERMINAL_POLL_STATUS
     lda TERMINAL_EVENT
     cmp #0
-    beq TERMINAL_LOOP
+    bne TERMINAL_HANDLE_EVENT
+    ; STATUS_POLL can pull fresh echoed input from the NIC into the RX ring.
+    ; Drain it now so a server echo is displayed before the next typed key.
+    jsr RECV_BLOCK
+    lda RX_BLOCK_COUNT
+    beq CHECK_KEYBOARD
+    lda #0
+    sta RX_BLOCK_INDEX
+    bra PROCESS_RX_BLOCK
+
+TERMINAL_HANDLE_EVENT:
     lda #0
     sta TERMINAL_EVENT
-    jsr PREPARE_MENU_DISPLAY
+    jsr DRAW_MAIN_HEADER
     lda #<MSG_TERMINATED
     ldx #>MSG_TERMINATED
     jsr PRINT_Z
     lda #<MIP_FORCE_CLOSE
     ldx #>MIP_FORCE_CLOSE
     jsr FAR_CALL_NOARGS
-    bra NETWORK_READY
+    bra NETWORK_READY_DRAW
 
 USER_DISCONNECT:
-    jsr PREPARE_MENU_DISPLAY
+    jsr DRAW_MAIN_HEADER
     lda #<MSG_DISCONNECTING
     ldx #>MSG_DISCONNECTING
     jsr PRINT_Z
@@ -618,6 +711,1077 @@ RECV_BLOCK:
     sta STAGE_ARG_Z_VAR
     jsr STAGED_CALL
     sta RX_BLOCK_COUNT
+    rts
+
+;-----------------------------------------------------------------------------
+; Phonebook
+;-----------------------------------------------------------------------------
+PHONEBOOK_MENU:
+    jsr PHONEBOOK_LOAD
+    lda #0
+    sta PHONE_PAGE
+
+PHONEBOOK_REDRAW:
+    lda #0
+    sta PHONE_PICK_MODE
+    jsr PHONEBOOK_DRAW
+    jsr PHONEBOOK_GET_KEY
+    cmp #'Q'
+    beq PHONEBOOK_QUIT
+    cmp #'q'
+    beq PHONEBOOK_QUIT
+    cmp #'A'
+    beq PHONEBOOK_ADD
+    cmp #'a'
+    beq PHONEBOOK_ADD
+    cmp #'E'
+    beq PHONEBOOK_EDIT
+    cmp #'e'
+    beq PHONEBOOK_EDIT
+    cmp #'D'
+    beq PHONEBOOK_DELETE
+    cmp #'d'
+    beq PHONEBOOK_DELETE
+    cmp #'R'
+    beq PHONEBOOK_MENU
+    cmp #'r'
+    beq PHONEBOOK_MENU
+    cmp #'N'
+    beq PHONEBOOK_NEXT_PAGE
+    cmp #'n'
+    beq PHONEBOOK_NEXT_PAGE
+    cmp #'>'
+    beq PHONEBOOK_NEXT_PAGE
+    cmp #'.'
+    beq PHONEBOOK_NEXT_PAGE
+    cmp #$be
+    beq PHONEBOOK_NEXT_PAGE
+    cmp #'B'
+    beq PHONEBOOK_PREV_PAGE
+    cmp #'b'
+    beq PHONEBOOK_PREV_PAGE
+    cmp #'<'
+    beq PHONEBOOK_PREV_PAGE
+    cmp #','
+    beq PHONEBOOK_PREV_PAGE
+    cmp #$bc
+    beq PHONEBOOK_PREV_PAGE
+    cmp #'1'
+    bcc PHONEBOOK_REDRAW
+    cmp #'1'+PHONE_PAGE_SIZE
+    bcs PHONEBOOK_REDRAW
+    sec
+    sbc #'1'
+    sta TEMP_A
+    jsr PHONEBOOK_PAGE_START
+    clc
+    adc TEMP_A
+    cmp PHONE_COUNT
+    bcs PHONEBOOK_REDRAW
+    sta PHONE_INDEX
+    jmp PHONEBOOK_DIAL
+
+PHONEBOOK_NEXT_PAGE:
+    jsr PHONEBOOK_TOTAL_PAGES
+    sta TEMP_A
+    lda PHONE_PAGE
+    clc
+    adc #1
+    cmp TEMP_A
+    bcs PHONEBOOK_REDRAW
+    sta PHONE_PAGE
+    jmp PHONEBOOK_REDRAW
+
+PHONEBOOK_PREV_PAGE:
+    lda PHONE_PAGE
+    beq _phonebook_prev_stay
+    dec PHONE_PAGE
+_phonebook_prev_stay:
+    jmp PHONEBOOK_REDRAW
+
+PHONEBOOK_QUIT:
+    jsr DRAW_MAIN_HEADER
+    jmp NETWORK_READY_DRAW
+
+PHONEBOOK_DRAW:
+    jsr PHONEBOOK_CLAMP_PAGE
+    lda #CLR
+    jsr K_CHROUT
+    lda #<MSG_PHONE_TITLE
+    ldx #>MSG_PHONE_TITLE
+    jsr PRINT_Z
+    jsr PHONEBOOK_PRINT_PAGE_INFO
+    lda PHONE_COUNT
+    bne _phonebook_draw_entries
+    lda #<MSG_PHONE_EMPTY
+    ldx #>MSG_PHONE_EMPTY
+    jsr PRINT_Z
+    bra _phonebook_draw_cmd
+
+_phonebook_draw_entries:
+    lda #0
+    sta PHONE_LINE_INDEX
+    jsr PHONEBOOK_PAGE_START
+    sta PHONE_WORK_INDEX
+_phonebook_draw_loop:
+    lda PHONE_LINE_INDEX
+    cmp #PHONE_PAGE_SIZE
+    beq _phonebook_draw_cmd
+    lda PHONE_WORK_INDEX
+    cmp PHONE_COUNT
+    bcs _phonebook_draw_cmd
+    sta PHONE_INDEX
+    jsr PHONEBOOK_PRINT_ENTRY
+    inc PHONE_LINE_INDEX
+    inc PHONE_WORK_INDEX
+    bra _phonebook_draw_loop
+
+_phonebook_draw_cmd:
+    lda PHONE_PICK_MODE
+    beq _phonebook_draw_menu_cmd
+    lda #<MSG_PHONE_PICK
+    ldx #>MSG_PHONE_PICK
+    bra _phonebook_draw_cmd_print
+_phonebook_draw_menu_cmd:
+    lda #<MSG_PHONE_COMMAND
+    ldx #>MSG_PHONE_COMMAND
+_phonebook_draw_cmd_print:
+    jsr PRINT_Z
+    rts
+
+PHONEBOOK_PRINT_ENTRY:
+    lda #PET_CYAN
+    jsr K_CHROUT
+    lda #' '
+    jsr K_CHROUT
+    lda #' '
+    jsr K_CHROUT
+    lda PHONE_LINE_INDEX
+    clc
+    adc #'1'
+    jsr K_CHROUT
+    lda #'.'
+    jsr K_CHROUT
+    lda #' '
+    jsr K_CHROUT
+    lda #PET_YELLOW
+    jsr K_CHROUT
+    jsr PHONE_SET_NAME_FIELD
+    jsr PHONEBOOK_PRINT_FIELD
+    lda #PET_WHITE
+    jsr K_CHROUT
+    lda #' '
+    jsr K_CHROUT
+    lda #'['
+    jsr K_CHROUT
+    jsr PHONE_SET_TYPE_FIELD
+    jsr PHONEBOOK_PRINT_FIELD
+    lda #']'
+    jsr K_CHROUT
+    lda #CR
+    jsr K_CHROUT
+    lda #<MSG_PHONE_HOST_LINE
+    ldx #>MSG_PHONE_HOST_LINE
+    jsr PRINT_Z
+    jsr PHONE_SET_HOST_FIELD
+    jsr PHONEBOOK_PRINT_FIELD
+    lda #':'
+    jsr K_CHROUT
+    jsr PHONE_SET_PORT_FIELD
+    jsr PHONEBOOK_PRINT_FIELD
+    lda #CR
+    jsr K_CHROUT
+    rts
+
+PHONEBOOK_PRINT_PAGE_INFO:
+    lda #<MSG_PHONE_PAGE
+    ldx #>MSG_PHONE_PAGE
+    jsr PRINT_Z
+    lda PHONE_PAGE
+    clc
+    adc #1
+    jsr PRINT_BYTE_DEC
+    lda #<MSG_PHONE_OF
+    ldx #>MSG_PHONE_OF
+    jsr PRINT_Z
+    jsr PHONEBOOK_TOTAL_PAGES
+    jsr PRINT_BYTE_DEC
+    lda #CR
+    jsr K_CHROUT
+    lda #CR
+    jmp K_CHROUT
+
+PHONEBOOK_TOTAL_PAGES:
+    lda PHONE_COUNT
+    bne _phonebook_total_has_entries
+    lda #1
+    rts
+_phonebook_total_has_entries:
+    sec
+    sbc #1
+    lsr
+    lsr
+    lsr
+    clc
+    adc #1
+    rts
+
+PHONEBOOK_PAGE_START:
+    lda PHONE_PAGE
+    asl
+    asl
+    asl
+    rts
+
+PHONEBOOK_CLAMP_PAGE:
+    jsr PHONEBOOK_TOTAL_PAGES
+    sec
+    sbc #1
+    cmp PHONE_PAGE
+    bcs _phonebook_clamp_done
+    sta PHONE_PAGE
+_phonebook_clamp_done:
+    rts
+
+PHONEBOOK_SET_PAGE_FOR_INDEX:
+    lda PHONE_INDEX
+    lsr
+    lsr
+    lsr
+    sta PHONE_PAGE
+    rts
+
+PHONEBOOK_ADD:
+    lda PHONE_COUNT
+    cmp #PHONE_MAX
+    bcc _phonebook_add_room
+    lda #<MSG_PHONE_FULL
+    ldx #>MSG_PHONE_FULL
+    jsr PHONEBOOK_NOTICE
+    jmp PHONEBOOK_REDRAW
+
+_phonebook_add_room:
+    sta PHONE_INDEX
+    jsr PHONE_CLEAR_ENTRY
+    lda #<MSG_PHONE_ADD_TITLE
+    ldx #>MSG_PHONE_ADD_TITLE
+    jsr PHONEBOOK_FORM_HEADER
+    jsr PHONEBOOK_READ_REQUIRED_NAME
+    bcs PHONEBOOK_REDRAW
+    jsr PHONEBOOK_READ_REQUIRED_HOST
+    bcs PHONEBOOK_REDRAW
+    jsr PHONEBOOK_READ_REQUIRED_PORT
+    bcs PHONEBOOK_REDRAW
+    jsr PHONEBOOK_READ_REQUIRED_TYPE
+    bcs PHONEBOOK_REDRAW
+    jsr PHONEBOOK_READ_USER
+    inc PHONE_COUNT
+    jsr PHONEBOOK_SET_PAGE_FOR_INDEX
+    jsr PHONEBOOK_SAVE_AND_NOTICE
+    jmp PHONEBOOK_REDRAW
+
+PHONEBOOK_EDIT:
+    jsr PHONEBOOK_PICK_ENTRY
+    bcs PHONEBOOK_REDRAW
+    lda #<MSG_PHONE_EDIT_TITLE
+    ldx #>MSG_PHONE_EDIT_TITLE
+    jsr PHONEBOOK_FORM_HEADER
+    lda #<MSG_PHONE_BLANK_KEEP
+    ldx #>MSG_PHONE_BLANK_KEEP
+    jsr PRINT_Z
+
+    jsr PHONE_SET_NAME_FIELD
+    lda #<MSG_PHONE_NAME
+    ldx #>MSG_PHONE_NAME
+    jsr PHONEBOOK_EDIT_FIELD
+
+    jsr PHONE_SET_HOST_FIELD
+    lda #<MSG_PHONE_HOST
+    ldx #>MSG_PHONE_HOST
+    jsr PHONEBOOK_EDIT_FIELD
+
+_phonebook_edit_port:
+    jsr PHONE_SET_PORT_FIELD
+    lda #<MSG_PHONE_PORT
+    ldx #>MSG_PHONE_PORT
+    jsr PRINT_Z
+    lda #'['
+    jsr K_CHROUT
+    jsr PHONEBOOK_PRINT_FIELD
+    lda #']'
+    jsr K_CHROUT
+    lda #' '
+    jsr K_CHROUT
+    jsr READ_LINE
+    lda LINE_LEN
+    beq _phonebook_edit_user
+    jsr PARSE_PORT
+    bcs _phonebook_edit_port_bad
+    jsr PHONE_COPY_LINE_TO_FIELD
+    bra _phonebook_edit_user
+_phonebook_edit_port_bad:
+    lda #<MSG_BAD_PORT
+    ldx #>MSG_BAD_PORT
+    jsr PRINT_Z
+    bra _phonebook_edit_port
+
+_phonebook_edit_user:
+    jsr PHONEBOOK_EDIT_TYPE
+    jsr PHONE_SET_USER_FIELD
+    lda #<MSG_PHONE_USER
+    ldx #>MSG_PHONE_USER
+    jsr PHONEBOOK_EDIT_FIELD
+    jsr PHONEBOOK_SAVE_AND_NOTICE
+    jmp PHONEBOOK_REDRAW
+
+PHONEBOOK_DELETE:
+    jsr PHONEBOOK_PICK_ENTRY
+    bcs PHONEBOOK_REDRAW
+    lda #<MSG_PHONE_DELETE_CONFIRM
+    ldx #>MSG_PHONE_DELETE_CONFIRM
+    jsr PRINT_Z
+    jsr PHONEBOOK_GET_KEY
+    cmp #'Y'
+    beq _phonebook_delete_yes
+    cmp #'y'
+    beq _phonebook_delete_yes
+    jmp PHONEBOOK_REDRAW
+
+_phonebook_delete_yes:
+    lda #CR
+    jsr K_CHROUT
+    jsr PHONEBOOK_DELETE_CURRENT
+    jsr PHONEBOOK_SAVE_AND_NOTICE
+    jmp PHONEBOOK_REDRAW
+
+PHONEBOOK_DIAL:
+    jsr PHONEBOOK_APPLY_TYPE
+    jsr PHONE_SET_HOST_FIELD
+    jsr PHONE_COPY_FIELD_TO_LINE
+    lda #<MSG_PHONE_DIAL
+    ldx #>MSG_PHONE_DIAL
+    jsr PRINT_Z
+    jsr PRINT_LINEBUF
+    lda #CR
+    jsr K_CHROUT
+    jsr RESOLVE_LINEBUF_HOST
+    bcc _phonebook_dial_port
+    jsr PHONEBOOK_WAIT_KEY
+    jmp PHONEBOOK_REDRAW
+
+_phonebook_dial_port:
+    jsr PHONE_SET_PORT_FIELD
+    jsr PHONE_COPY_FIELD_TO_LINE
+    jsr SET_PORT_FROM_LINEBUF
+    bcc _phonebook_dial_connect
+    lda #<MSG_BAD_PORT
+    ldx #>MSG_BAD_PORT
+    jsr PRINT_Z
+    jsr PHONEBOOK_WAIT_KEY
+    jmp PHONEBOOK_REDRAW
+
+_phonebook_dial_connect:
+    jmp CONNECT
+
+PHONEBOOK_FORM_HEADER:
+    pha
+    txa
+    pha
+    lda #CLR
+    jsr K_CHROUT
+    pla
+    tax
+    pla
+    jsr PRINT_Z
+    rts
+
+PHONEBOOK_READ_REQUIRED_NAME:
+    jsr PHONE_SET_NAME_FIELD
+_phonebook_read_name_loop:
+    lda #<MSG_PHONE_NAME
+    ldx #>MSG_PHONE_NAME
+    jsr PRINT_Z
+    jsr READ_LINE
+    lda LINE_LEN
+    bne _phonebook_read_name_ok
+    lda #<MSG_PHONE_BAD_NAME
+    ldx #>MSG_PHONE_BAD_NAME
+    jsr PRINT_Z
+    bra _phonebook_read_name_loop
+_phonebook_read_name_ok:
+    jsr PHONE_COPY_LINE_TO_FIELD
+    clc
+    rts
+
+PHONEBOOK_READ_REQUIRED_HOST:
+    jsr PHONE_SET_HOST_FIELD
+_phonebook_read_host_loop:
+    lda #<MSG_PHONE_HOST
+    ldx #>MSG_PHONE_HOST
+    jsr PRINT_Z
+    jsr READ_LINE
+    lda LINE_LEN
+    bne _phonebook_read_host_ok
+    lda #<MSG_BAD_HOST
+    ldx #>MSG_BAD_HOST
+    jsr PRINT_Z
+    bra _phonebook_read_host_loop
+_phonebook_read_host_ok:
+    jsr PHONE_COPY_LINE_TO_FIELD
+    clc
+    rts
+
+PHONEBOOK_READ_REQUIRED_PORT:
+    jsr PHONE_SET_PORT_FIELD
+_phonebook_read_port_loop:
+    lda #<MSG_PHONE_PORT
+    ldx #>MSG_PHONE_PORT
+    jsr PRINT_Z
+    jsr READ_LINE
+    jsr PARSE_PORT
+    bcc _phonebook_read_port_ok
+    lda #<MSG_BAD_PORT
+    ldx #>MSG_BAD_PORT
+    jsr PRINT_Z
+    bra _phonebook_read_port_loop
+_phonebook_read_port_ok:
+    jsr PHONE_COPY_LINE_TO_FIELD
+    clc
+    rts
+
+PHONEBOOK_READ_REQUIRED_TYPE:
+    jsr PHONE_SET_TYPE_FIELD
+_phonebook_read_type_loop:
+    lda #<MSG_PHONE_TYPE
+    ldx #>MSG_PHONE_TYPE
+    jsr PRINT_Z
+    jsr READ_LINE
+    jsr PHONEBOOK_VALIDATE_TYPE_LINE
+    bcc _phonebook_read_type_ok
+    lda #<MSG_PHONE_BAD_TYPE
+    ldx #>MSG_PHONE_BAD_TYPE
+    jsr PRINT_Z
+    bra _phonebook_read_type_loop
+_phonebook_read_type_ok:
+    jsr PHONE_COPY_LINE_TO_FIELD
+    clc
+    rts
+
+PHONEBOOK_READ_USER:
+    jsr PHONE_SET_USER_FIELD
+    lda #<MSG_PHONE_USER
+    ldx #>MSG_PHONE_USER
+    jsr PRINT_Z
+    jsr READ_LINE
+    jsr PHONE_COPY_LINE_TO_FIELD
+    rts
+
+PHONEBOOK_EDIT_FIELD:
+    jsr PRINT_Z
+    lda #'['
+    jsr K_CHROUT
+    jsr PHONEBOOK_PRINT_FIELD
+    lda #']'
+    jsr K_CHROUT
+    lda #' '
+    jsr K_CHROUT
+    jsr READ_LINE
+    lda LINE_LEN
+    beq _phonebook_edit_keep
+    jsr PHONE_COPY_LINE_TO_FIELD
+_phonebook_edit_keep:
+    rts
+
+PHONEBOOK_EDIT_TYPE:
+    jsr PHONE_SET_TYPE_FIELD
+_phonebook_edit_type_loop:
+    lda #<MSG_PHONE_TYPE
+    ldx #>MSG_PHONE_TYPE
+    jsr PRINT_Z
+    lda #'['
+    jsr K_CHROUT
+    jsr PHONEBOOK_PRINT_FIELD
+    lda #']'
+    jsr K_CHROUT
+    lda #' '
+    jsr K_CHROUT
+    jsr READ_LINE
+    lda LINE_LEN
+    beq _phonebook_edit_type_keep
+    jsr PHONEBOOK_VALIDATE_TYPE_LINE
+    bcc _phonebook_edit_type_store
+    lda #<MSG_PHONE_BAD_TYPE
+    ldx #>MSG_PHONE_BAD_TYPE
+    jsr PRINT_Z
+    bra _phonebook_edit_type_loop
+_phonebook_edit_type_store:
+    jsr PHONE_COPY_LINE_TO_FIELD
+_phonebook_edit_type_keep:
+    rts
+
+PHONEBOOK_PICK_ENTRY:
+    lda PHONE_COUNT
+    bne _phonebook_pick_has
+    lda #<MSG_PHONE_EMPTY
+    ldx #>MSG_PHONE_EMPTY
+    jsr PHONEBOOK_NOTICE
+    sec
+    rts
+_phonebook_pick_has:
+    lda #1
+    sta PHONE_PICK_MODE
+    jsr PHONEBOOK_DRAW
+    lda #0
+    sta PHONE_PICK_MODE
+    jsr PHONEBOOK_GET_KEY
+    cmp #CR
+    beq _phonebook_pick_cancel
+    pha
+    jsr K_CHROUT
+    lda #CR
+    jsr K_CHROUT
+    pla
+    cmp #'1'
+    bcc _phonebook_pick_bad
+    cmp #'1'+PHONE_PAGE_SIZE
+    bcs _phonebook_pick_bad
+    sec
+    sbc #'1'
+    sta TEMP_A
+    jsr PHONEBOOK_PAGE_START
+    clc
+    adc TEMP_A
+    cmp PHONE_COUNT
+    bcs _phonebook_pick_bad
+    sta PHONE_INDEX
+    clc
+    rts
+_phonebook_pick_cancel:
+    sec
+    rts
+_phonebook_pick_bad:
+    lda #<MSG_PHONE_BAD_ENTRY
+    ldx #>MSG_PHONE_BAD_ENTRY
+    jsr PHONEBOOK_NOTICE
+    sec
+    rts
+
+PHONEBOOK_NOTICE:
+    jsr PRINT_Z
+    jmp PHONEBOOK_WAIT_KEY
+
+PHONEBOOK_SAVE_AND_NOTICE:
+    jsr PHONEBOOK_SAVE
+    bcs _phonebook_save_fail
+    lda #<MSG_PHONE_SAVED
+    ldx #>MSG_PHONE_SAVED
+    jsr PHONEBOOK_NOTICE
+    rts
+_phonebook_save_fail:
+    lda #<MSG_PHONE_SAVE_FAIL
+    ldx #>MSG_PHONE_SAVE_FAIL
+    jsr PHONEBOOK_NOTICE
+    rts
+
+PHONEBOOK_WAIT_KEY:
+    lda #<MSG_PRESS_KEY
+    ldx #>MSG_PRESS_KEY
+    jsr PRINT_Z
+PHONEBOOK_GET_KEY:
+    jsr K_GETIN
+    beq PHONEBOOK_GET_KEY
+    rts
+
+PHONEBOOK_LOAD:
+    lda #0
+    sta PHONE_COUNT
+    sta PHONE_EOF_PENDING
+    jsr PHONEBOOK_OPEN_READ
+    bcc _phonebook_load_loop
+    rts
+
+_phonebook_load_loop:
+    jsr PHONEBOOK_READ_LINE
+    bcs _phonebook_load_close
+    lda LINE_LEN
+    beq _phonebook_load_loop
+    lda PHONE_COUNT
+    cmp #PHONE_MAX
+    bcs _phonebook_load_close
+    sta PHONE_INDEX
+    jsr PHONEBOOK_PARSE_LINE_ENTRY
+    bcs _phonebook_load_loop
+    inc PHONE_COUNT
+    bra _phonebook_load_loop
+
+_phonebook_load_close:
+    jmp PHONEBOOK_CLOSE
+
+PHONEBOOK_SAVE:
+    jsr PHONEBOOK_OPEN_WRITE
+    bcc _phonebook_save_loop_start
+    sec
+    rts
+
+_phonebook_save_loop_start:
+    lda #0
+    sta PHONE_LINE_INDEX
+_phonebook_save_loop:
+    lda PHONE_LINE_INDEX
+    cmp PHONE_COUNT
+    beq _phonebook_save_close_ok
+    sta PHONE_INDEX
+    jsr PHONE_SET_NAME_FIELD
+    jsr PHONEBOOK_WRITE_FIELD
+    jsr PHONEBOOK_WRITE_COMMA
+    jsr PHONE_SET_HOST_FIELD
+    jsr PHONEBOOK_WRITE_FIELD
+    jsr PHONEBOOK_WRITE_COMMA
+    jsr PHONE_SET_PORT_FIELD
+    jsr PHONEBOOK_WRITE_FIELD
+    jsr PHONEBOOK_WRITE_COMMA
+    jsr PHONE_SET_TYPE_FIELD
+    jsr PHONEBOOK_WRITE_FIELD
+    jsr PHONEBOOK_WRITE_COMMA
+    jsr PHONE_SET_USER_FIELD
+    jsr PHONEBOOK_WRITE_FIELD
+    jsr PHONEBOOK_WRITE_COMMA
+    lda #CR
+    jsr K_CHROUT
+    inc PHONE_LINE_INDEX
+    bra _phonebook_save_loop
+
+_phonebook_save_close_ok:
+    jsr PHONEBOOK_CLOSE
+    clc
+    rts
+
+PHONEBOOK_OPEN_READ:
+    lda #PHONE_READ_NAME_END-PHONE_READ_NAME
+    ldx #<PHONE_READ_NAME
+    ldy #>PHONE_READ_NAME
+    jsr K_SETNAM
+    lda #PHONE_LFN
+    ldx #PHONE_DEVICE
+    ldy #PHONE_SA
+    jsr K_SETLFS
+    jsr K_OPEN
+    jsr K_READST
+    bne _phonebook_open_read_fail
+    ldx #PHONE_LFN
+    jsr K_CHKIN
+    jsr K_READST
+    bne _phonebook_open_read_fail
+    clc
+    rts
+_phonebook_open_read_fail:
+    jsr PHONEBOOK_CLOSE
+    sec
+    rts
+
+PHONEBOOK_OPEN_WRITE:
+    lda #PHONE_WRITE_NAME_END-PHONE_WRITE_NAME
+    ldx #<PHONE_WRITE_NAME
+    ldy #>PHONE_WRITE_NAME
+    jsr K_SETNAM
+    lda #PHONE_LFN
+    ldx #PHONE_DEVICE
+    ldy #PHONE_SA
+    jsr K_SETLFS
+    jsr K_OPEN
+    ldx #PHONE_LFN
+    jsr K_CHKOUT
+    clc
+    rts
+
+PHONEBOOK_CLOSE:
+    jsr K_CLRCHN
+    lda #PHONE_LFN
+    jsr K_CLOSE
+    rts
+
+PHONEBOOK_READ_LINE:
+    lda PHONE_EOF_PENDING
+    beq _phonebook_read_line_start
+    sec
+    rts
+_phonebook_read_line_start:
+    lda #0
+    sta LINE_LEN
+_phonebook_read_line_loop:
+    jsr K_CHRIN
+    sta TEMP_A
+    jsr K_READST
+    sta TEMP_HI
+    beq _phonebook_read_line_check_char
+    lda #1
+    sta PHONE_EOF_PENDING
+_phonebook_read_line_check_char:
+    lda TEMP_A
+    cmp #LF
+    beq _phonebook_read_line_done
+    cmp #CR
+    beq _phonebook_read_line_done
+    ldx LINE_LEN
+    cpx #79
+    bcs _phonebook_read_line_status
+    sta LINEBUF,x
+    inc LINE_LEN
+_phonebook_read_line_status:
+    lda TEMP_HI
+    beq _phonebook_read_line_loop
+    lda LINE_LEN
+    beq _phonebook_read_line_eof
+_phonebook_read_line_done:
+    ldx LINE_LEN
+    lda #0
+    sta LINEBUF,x
+    clc
+    rts
+_phonebook_read_line_eof:
+    sec
+    rts
+
+PHONEBOOK_PARSE_LINE_ENTRY:
+    jsr PHONE_CLEAR_ENTRY
+    lda #0
+    sta PHONE_LINE_INDEX
+    jsr PHONE_SET_NAME_FIELD
+    jsr PHONEBOOK_PARSE_FIELD
+    jsr PHONE_SET_HOST_FIELD
+    jsr PHONEBOOK_PARSE_FIELD
+    jsr PHONE_SET_PORT_FIELD
+    jsr PHONEBOOK_PARSE_FIELD
+    jsr PHONE_SET_TYPE_FIELD
+    jsr PHONEBOOK_PARSE_FIELD
+    jsr PHONE_SET_USER_FIELD
+    jsr PHONEBOOK_PARSE_FIELD
+    jsr PHONE_SET_NAME_FIELD
+    jsr PHONEBOOK_FIELD_EMPTY
+    bcs _phonebook_parse_fail
+    jsr PHONE_SET_HOST_FIELD
+    jsr PHONEBOOK_FIELD_EMPTY
+    bcs _phonebook_parse_fail
+    jsr PHONE_SET_PORT_FIELD
+    jsr PHONEBOOK_FIELD_EMPTY
+    bcs _phonebook_parse_fail
+    jsr PHONEBOOK_PARSE_PORT_FIELD
+    bcs _phonebook_parse_fail
+    jsr PHONEBOOK_NORMALIZE_TYPE_FIELD
+    bcs _phonebook_parse_fail
+    clc
+    rts
+_phonebook_parse_fail:
+    sec
+    rts
+
+PHONEBOOK_PARSE_FIELD:
+    jsr PHONE_FIELD_PTR
+    ldy #0
+    ldx PHONE_LINE_INDEX
+_phonebook_parse_field_trim:
+    lda LINEBUF,x
+    cmp #' '
+    bne _phonebook_parse_field_loop
+    inx
+    bra _phonebook_parse_field_trim
+_phonebook_parse_field_loop:
+    lda LINEBUF,x
+    beq _phonebook_parse_field_done
+    cmp #','
+    beq _phonebook_parse_field_delim
+    cmp #'|'
+    beq _phonebook_parse_field_delim
+    cpy PHONE_FIELD_MAX_VAR
+    bcs _phonebook_parse_field_skip
+    sta (PTR_LO),y
+    iny
+_phonebook_parse_field_skip:
+    inx
+    bra _phonebook_parse_field_loop
+_phonebook_parse_field_delim:
+    inx
+_phonebook_parse_field_done:
+    stx PHONE_LINE_INDEX
+    lda #0
+    sta (PTR_LO),y
+    rts
+
+PHONEBOOK_PARSE_PORT_FIELD:
+    jsr PHONE_SET_PORT_FIELD
+    jsr PHONE_COPY_FIELD_TO_LINE
+    jmp PARSE_PORT
+
+PHONEBOOK_WRITE_COMMA:
+    lda #','
+    jmp K_CHROUT
+
+PHONEBOOK_VALIDATE_TYPE_LINE:
+    lda LINE_LEN
+    beq _phonebook_type_bad
+    lda LINEBUF
+    cmp #'A'
+    beq _phonebook_type_a
+    cmp #'a'
+    beq _phonebook_type_a
+    cmp #'P'
+    beq _phonebook_type_p
+    cmp #'p'
+    beq _phonebook_type_p
+_phonebook_type_bad:
+    sec
+    rts
+_phonebook_type_a:
+    lda #'A'
+    bra _phonebook_type_store_line
+_phonebook_type_p:
+    lda #'P'
+_phonebook_type_store_line:
+    sta LINEBUF
+    lda #1
+    sta LINE_LEN
+    lda #0
+    sta LINEBUF+1
+    clc
+    rts
+
+PHONEBOOK_NORMALIZE_TYPE_FIELD:
+    jsr PHONE_SET_TYPE_FIELD
+    jsr PHONE_COPY_FIELD_TO_LINE
+    jsr PHONEBOOK_VALIDATE_TYPE_LINE
+    bcs _phonebook_normalize_type_fail
+    jsr PHONE_COPY_LINE_TO_FIELD
+    clc
+    rts
+_phonebook_normalize_type_fail:
+    sec
+    rts
+
+PHONEBOOK_APPLY_TYPE:
+    jsr PHONE_SET_TYPE_FIELD
+    jsr PHONE_FIELD_PTR
+    ldy #0
+    lda (PTR_LO),y
+    cmp #'P'
+    beq _phonebook_apply_petscii
+    cmp #'p'
+    beq _phonebook_apply_petscii
+    lda #1
+    sta TERM_MODE
+    jsr USE_DEFAULT_FONT
+    lda #0
+    jmp SET_XLATE_A
+_phonebook_apply_petscii:
+    lda #0
+    sta TERM_MODE
+    jsr USE_DEFAULT_FONT
+    lda #0
+    jmp SET_XLATE_A
+
+PHONEBOOK_WRITE_FIELD:
+    jsr PHONE_FIELD_PTR
+    ldy #0
+_phonebook_write_field_loop:
+    lda (PTR_LO),y
+    beq _phonebook_write_field_done
+    jsr K_CHROUT
+    iny
+    bra _phonebook_write_field_loop
+_phonebook_write_field_done:
+    rts
+
+PHONEBOOK_PRINT_FIELD:
+    jsr PHONE_FIELD_PTR
+    ldy #0
+_phonebook_print_field_loop:
+    lda (PTR_LO),y
+    beq _phonebook_print_field_done
+    jsr ASCII_TO_PETSCII_TEXT
+    jsr K_CHROUT
+    iny
+    bra _phonebook_print_field_loop
+_phonebook_print_field_done:
+    rts
+
+PHONEBOOK_PRINT_FIELD_LIMIT:
+    sta TEMP_HI
+    jsr PHONE_FIELD_PTR
+    ldy #0
+_phonebook_print_field_limit_loop:
+    cpy TEMP_HI
+    bcs _phonebook_print_field_limit_done
+    lda (PTR_LO),y
+    beq _phonebook_print_field_limit_done
+    jsr ASCII_TO_PETSCII_TEXT
+    jsr K_CHROUT
+    iny
+    bra _phonebook_print_field_limit_loop
+_phonebook_print_field_limit_done:
+    rts
+
+PHONEBOOK_FIELD_EMPTY:
+    jsr PHONE_FIELD_PTR
+    ldy #0
+    lda (PTR_LO),y
+    beq _phonebook_field_empty_yes
+    clc
+    rts
+_phonebook_field_empty_yes:
+    sec
+    rts
+
+PHONE_COPY_LINE_TO_FIELD:
+    jsr PHONE_FIELD_PTR
+    ldy #0
+_phone_copy_line_loop:
+    cpy PHONE_FIELD_MAX_VAR
+    bcs _phone_copy_line_done
+    lda LINEBUF,y
+    beq _phone_copy_line_done
+    sta (PTR_LO),y
+    iny
+    bra _phone_copy_line_loop
+_phone_copy_line_done:
+    lda #0
+    sta (PTR_LO),y
+    rts
+
+PHONE_COPY_FIELD_TO_LINE:
+    jsr PHONE_FIELD_PTR
+    ldy #0
+_phone_copy_field_loop:
+    cpy PHONE_FIELD_MAX_VAR
+    bcs _phone_copy_field_done
+    lda (PTR_LO),y
+    beq _phone_copy_field_done
+    sta LINEBUF,y
+    iny
+    bra _phone_copy_field_loop
+_phone_copy_field_done:
+    sty LINE_LEN
+    lda #0
+    sta LINEBUF,y
+    rts
+
+PHONEBOOK_DELETE_CURRENT:
+    lda PHONE_INDEX
+    sta PHONE_WORK_INDEX
+_phonebook_delete_loop:
+    lda PHONE_WORK_INDEX
+    clc
+    adc #1
+    cmp PHONE_COUNT
+    bcs _phonebook_delete_clear_last
+    sta PHONE_INDEX
+    jsr PHONE_ENTRY_PTR
+    lda PTR_LO
+    sta PHONE_COPY_SRC_ABS+1
+    lda PTR_HI
+    sta PHONE_COPY_SRC_ABS+2
+    lda PHONE_WORK_INDEX
+    sta PHONE_INDEX
+    jsr PHONE_ENTRY_PTR
+    lda PTR_LO
+    sta PHONE_COPY_DST_ABS+1
+    lda PTR_HI
+    sta PHONE_COPY_DST_ABS+2
+    jsr PHONE_COPY_ENTRY_ABS
+    inc PHONE_WORK_INDEX
+    bra _phonebook_delete_loop
+
+_phonebook_delete_clear_last:
+    dec PHONE_COUNT
+    lda PHONE_COUNT
+    sta PHONE_INDEX
+    jmp PHONE_CLEAR_ENTRY
+
+PHONE_COPY_ENTRY_ABS:
+    ldy #0
+PHONE_COPY_ENTRY_LOOP:
+PHONE_COPY_SRC_ABS:
+    lda $ffff,y
+PHONE_COPY_DST_ABS:
+    sta $ffff,y
+    iny
+    cpy #PHONE_ENTRY_SIZE
+    bne PHONE_COPY_ENTRY_LOOP
+    rts
+
+PHONE_CLEAR_ENTRY:
+    jsr PHONE_ENTRY_PTR
+    ldy #0
+    lda #0
+_phone_clear_entry_loop:
+    sta (PTR_LO),y
+    iny
+    cpy #PHONE_ENTRY_SIZE
+    bne _phone_clear_entry_loop
+    rts
+
+PHONE_ENTRY_PTR:
+    lda #<PHONEBOOK
+    sta PTR_LO
+    lda #>PHONEBOOK
+    sta PTR_HI
+    ldx PHONE_INDEX
+    beq _phone_entry_ptr_done
+_phone_entry_ptr_loop:
+    clc
+    lda PTR_LO
+    adc #PHONE_ENTRY_SIZE
+    sta PTR_LO
+    bcc _phone_entry_ptr_no_carry
+    inc PTR_HI
+_phone_entry_ptr_no_carry:
+    dex
+    bne _phone_entry_ptr_loop
+_phone_entry_ptr_done:
+    rts
+
+PHONE_FIELD_PTR:
+    jsr PHONE_ENTRY_PTR
+    clc
+    lda PTR_LO
+    adc PHONE_FIELD_OFFSET_VAR
+    sta PTR_LO
+    bcc _phone_field_ptr_done
+    inc PTR_HI
+_phone_field_ptr_done:
+    rts
+
+PHONE_SET_NAME_FIELD:
+    lda #PHONE_NAME_OFF
+    sta PHONE_FIELD_OFFSET_VAR
+    lda #PHONE_NAME_MAX
+    sta PHONE_FIELD_MAX_VAR
+    rts
+
+PHONE_SET_HOST_FIELD:
+    lda #PHONE_HOST_OFF
+    sta PHONE_FIELD_OFFSET_VAR
+    lda #PHONE_HOST_MAX
+    sta PHONE_FIELD_MAX_VAR
+    rts
+
+PHONE_SET_PORT_FIELD:
+    lda #PHONE_PORT_OFF
+    sta PHONE_FIELD_OFFSET_VAR
+    lda #PHONE_PORT_MAX
+    sta PHONE_FIELD_MAX_VAR
+    rts
+
+PHONE_SET_TYPE_FIELD:
+    lda #PHONE_TYPE_OFF
+    sta PHONE_FIELD_OFFSET_VAR
+    lda #PHONE_TYPE_MAX
+    sta PHONE_FIELD_MAX_VAR
+    rts
+
+PHONE_SET_USER_FIELD:
+    lda #PHONE_USER_OFF
+    sta PHONE_FIELD_OFFSET_VAR
+    lda #PHONE_USER_MAX
+    sta PHONE_FIELD_MAX_VAR
     rts
 
 ;-----------------------------------------------------------------------------
@@ -1235,6 +2399,13 @@ PREPARE_MENU_DISPLAY:
 _prepare_done:
     rts
 
+DRAW_MAIN_HEADER:
+    jsr CURSOR_SPRITE_DISABLE
+    jsr USE_DEFAULT_FONT
+    lda #<MSG_TITLE
+    ldx #>MSG_TITLE
+    jmp PRINT_Z
+
 ASCII_START_SCREEN:
     lda #CLR
     jsr K_CHROUT
@@ -1245,9 +2416,13 @@ ASCII_START_SCREEN:
     sta ASCII_ROW
     sta ASCII_COL
     sta ANSI_STATE
-    sta ASCII_LAST_CR
     sta ASCII_SAVED_ROW
     sta ASCII_SAVED_COL
+    sta ANSI_SAVED_BRIGHT
+    sta ANSI_SAVED_INVERSE
+    sta ANSI_SAVED_G0_GRAPHICS
+    sta ANSI_SAVED_G1_GRAPHICS
+    sta ANSI_SAVED_USE_G1
     sta ANSI_ORIGIN_MODE
     sta ANSI_G0_GRAPHICS
     sta ANSI_G1_GRAPHICS
@@ -1255,6 +2430,10 @@ ASCII_START_SCREEN:
     sta ANSI_INTERMEDIATE
     lda #1
     sta ASCII_WRAP_MODE
+    lda #ASCII_DEFAULT_COLOR
+    sta ASCII_SAVED_FG_COLOR
+    lda #COLOR_BLACK
+    sta ASCII_SAVED_BG_COLOR
     lda #0
     sta ASCII_SCROLL_TOP
     lda #SCREEN_ROWS-1
@@ -1344,7 +2523,7 @@ ANSI_ESC_STATE:
     cmp #'8'
     beq ANSI_RESTORE_CURSOR
     cmp #'D'
-    beq ASCII_NEWLINE
+    beq ASCII_INDEX
     cmp #'E'
     beq ASCII_NEXT_LINE
     cmp #'M'
@@ -1366,6 +2545,10 @@ ANSI_INIT_CSI:
     sta ANSI_PARAM1
     sta ANSI_PARAM2
     sta ANSI_PARAM3
+    sta ANSI_PARAM4
+    sta ANSI_PARAM5
+    sta ANSI_PARAM6
+    sta ANSI_PARAM7
     sta ANSI_PARAM_CUR
     sta ANSI_PARAM_INDEX
     sta ANSI_SAW_DIGIT
@@ -1519,15 +2702,7 @@ ANSI_OSC_ESC_STATE:
     lda ANSI_CHAR
     cmp #$5c
     beq ANSI_OSC_DONE
-    cmp #'['
-    beq ANSI_INIT_CSI
-    cmp #']'
-    beq ANSI_INIT_OSC
-    cmp #ESC
-    beq ANSI_OSC_ESC
-    lda #4
-    sta ANSI_STATE
-    rts
+    jmp ANSI_ESC_STATE
 
 ANSI_OSC_DONE:
     lda #0
@@ -1603,6 +2778,14 @@ ANSI_STORE_PARAM:
     beq _ansi_store2
     cpx #3
     beq _ansi_store3
+    cpx #4
+    beq _ansi_store4
+    cpx #5
+    beq _ansi_store5
+    cpx #6
+    beq _ansi_store6
+    cpx #7
+    beq _ansi_store7
     bra _ansi_store_next
 _ansi_store0:
     lda ANSI_PARAM_CUR
@@ -1619,6 +2802,22 @@ _ansi_store2:
 _ansi_store3:
     lda ANSI_PARAM_CUR
     sta ANSI_PARAM3
+    bra _ansi_store_next
+_ansi_store4:
+    lda ANSI_PARAM_CUR
+    sta ANSI_PARAM4
+    bra _ansi_store_next
+_ansi_store5:
+    lda ANSI_PARAM_CUR
+    sta ANSI_PARAM5
+    bra _ansi_store_next
+_ansi_store6:
+    lda ANSI_PARAM_CUR
+    sta ANSI_PARAM6
+    bra _ansi_store_next
+_ansi_store7:
+    lda ANSI_PARAM_CUR
+    sta ANSI_PARAM7
 _ansi_store_next:
     inc ANSI_PARAM_INDEX
     lda #0
@@ -1662,7 +2861,9 @@ _ansi_up_loop:
     lda TEMP_A
     beq ANSI_MOVE_DONE
     lda ASCII_ROW
+    cmp ASCII_SCROLL_TOP
     beq _ansi_up_dec
+    bcc _ansi_up_dec
     dec ASCII_ROW
 _ansi_up_dec:
     dec TEMP_A
@@ -1674,7 +2875,7 @@ _ansi_down_loop:
     lda TEMP_A
     beq ANSI_MOVE_DONE
     lda ASCII_ROW
-    cmp #SCREEN_ROWS-1
+    cmp ASCII_SCROLL_BOTTOM
     bcs _ansi_down_dec
     inc ASCII_ROW
 _ansi_down_dec:
@@ -1730,7 +2931,7 @@ _ansi_cnl_loop:
     lda TEMP_A
     beq _ansi_cnl_done
     lda ASCII_ROW
-    cmp #SCREEN_ROWS-1
+    cmp ASCII_SCROLL_BOTTOM
     bcs _ansi_cnl_dec
     inc ASCII_ROW
 _ansi_cnl_dec:
@@ -1747,7 +2948,9 @@ _ansi_cpl_loop:
     lda TEMP_A
     beq _ansi_cpl_done
     lda ASCII_ROW
+    cmp ASCII_SCROLL_TOP
     beq _ansi_cpl_dec
+    bcc _ansi_cpl_dec
     dec ASCII_ROW
 _ansi_cpl_dec:
     dec TEMP_A
@@ -2138,6 +3341,26 @@ ANSI_SGR:
     bcc _ansi_sgr_done
     lda ANSI_PARAM3
     jsr ANSI_APPLY_SGR
+    lda ANSI_PARAM_INDEX
+    cmp #5
+    bcc _ansi_sgr_done
+    lda ANSI_PARAM4
+    jsr ANSI_APPLY_SGR
+    lda ANSI_PARAM_INDEX
+    cmp #6
+    bcc _ansi_sgr_done
+    lda ANSI_PARAM5
+    jsr ANSI_APPLY_SGR
+    lda ANSI_PARAM_INDEX
+    cmp #7
+    bcc _ansi_sgr_done
+    lda ANSI_PARAM6
+    jsr ANSI_APPLY_SGR
+    lda ANSI_PARAM_INDEX
+    cmp #8
+    bcc _ansi_sgr_done
+    lda ANSI_PARAM7
+    jsr ANSI_APPLY_SGR
 _ansi_sgr_done:
     rts
 
@@ -2147,7 +3370,20 @@ _ansi_sgr_ext0:
     bcc _ansi_sgr_done
     lda ANSI_PARAM1
     cmp #5
+    beq _ansi_sgr_ext0_256_fg
+    cmp #2
     bne _ansi_sgr_done
+    lda ANSI_PARAM_INDEX
+    cmp #5
+    bcc _ansi_sgr_done
+    lda ANSI_PARAM2
+    sta ANSI_RGB_R
+    lda ANSI_PARAM3
+    sta ANSI_RGB_G
+    lda ANSI_PARAM4
+    sta ANSI_RGB_B
+    jmp ANSI_MAP_RGB_FG
+_ansi_sgr_ext0_256_fg:
     lda ANSI_PARAM2
     jmp ANSI_MAP_256_FG
 
@@ -2157,7 +3393,20 @@ _ansi_sgr_ext0_bg:
     bcc _ansi_sgr_done
     lda ANSI_PARAM1
     cmp #5
+    beq _ansi_sgr_ext0_256_bg
+    cmp #2
     bne _ansi_sgr_done
+    lda ANSI_PARAM_INDEX
+    cmp #5
+    bcc _ansi_sgr_done
+    lda ANSI_PARAM2
+    sta ANSI_RGB_R
+    lda ANSI_PARAM3
+    sta ANSI_RGB_G
+    lda ANSI_PARAM4
+    sta ANSI_RGB_B
+    jmp ANSI_MAP_RGB_BG
+_ansi_sgr_ext0_256_bg:
     lda ANSI_PARAM2
     jmp ANSI_MAP_256_BG
 
@@ -2167,7 +3416,20 @@ _ansi_sgr_ext1:
     bcc _ansi_sgr_done
     lda ANSI_PARAM2
     cmp #5
+    beq _ansi_sgr_ext1_256_fg
+    cmp #2
     bne _ansi_sgr_done
+    lda ANSI_PARAM_INDEX
+    cmp #6
+    bcc _ansi_sgr_done
+    lda ANSI_PARAM3
+    sta ANSI_RGB_R
+    lda ANSI_PARAM4
+    sta ANSI_RGB_G
+    lda ANSI_PARAM5
+    sta ANSI_RGB_B
+    jmp ANSI_MAP_RGB_FG
+_ansi_sgr_ext1_256_fg:
     lda ANSI_PARAM3
     jmp ANSI_MAP_256_FG
 
@@ -2177,7 +3439,20 @@ _ansi_sgr_ext1_bg:
     bcc _ansi_sgr_done
     lda ANSI_PARAM2
     cmp #5
+    beq _ansi_sgr_ext1_256_bg
+    cmp #2
     bne _ansi_sgr_done
+    lda ANSI_PARAM_INDEX
+    cmp #6
+    bcc _ansi_sgr_done
+    lda ANSI_PARAM3
+    sta ANSI_RGB_R
+    lda ANSI_PARAM4
+    sta ANSI_RGB_G
+    lda ANSI_PARAM5
+    sta ANSI_RGB_B
+    jmp ANSI_MAP_RGB_BG
+_ansi_sgr_ext1_256_bg:
     lda ANSI_PARAM3
     jmp ANSI_MAP_256_BG
 
@@ -2225,12 +3500,14 @@ ANSI_APPLY_SGR:
 _ansi_bright_on:
     lda #1
     sta ANSI_BRIGHT
-    rts
+    jsr ANSI_BRIGHTEN_CURRENT_FG
+    jmp ANSI_UPDATE_COLOR
 
 _ansi_bright_off:
     lda #0
     sta ANSI_BRIGHT
-    rts
+    jsr ANSI_NORMALIZE_CURRENT_FG
+    jmp ANSI_UPDATE_COLOR
 
 _ansi_inverse_on:
     lda #1
@@ -2293,6 +3570,36 @@ _ansi_bg_bright:
 _ansi_sgr_ignore:
     rts
 
+ANSI_BRIGHTEN_CURRENT_FG:
+    ldx #0
+_ansi_brighten_loop:
+    lda ASCII_FG_COLOR
+    cmp ANSI_COLOR_NORMAL,x
+    beq _ansi_brighten_match
+    inx
+    cpx #8
+    bcc _ansi_brighten_loop
+    rts
+_ansi_brighten_match:
+    lda ANSI_COLOR_BRIGHT,x
+    sta ASCII_FG_COLOR
+    rts
+
+ANSI_NORMALIZE_CURRENT_FG:
+    ldx #0
+_ansi_normalize_loop:
+    lda ASCII_FG_COLOR
+    cmp ANSI_COLOR_BRIGHT,x
+    beq _ansi_normalize_match
+    inx
+    cpx #8
+    bcc _ansi_normalize_loop
+    rts
+_ansi_normalize_match:
+    lda ANSI_COLOR_NORMAL,x
+    sta ASCII_FG_COLOR
+    rts
+
 ANSI_RESET_ATTR:
     lda #ASCII_DEFAULT_COLOR
     sta ASCII_FG_COLOR
@@ -2333,64 +3640,7 @@ ANSI_COLOR_TO_BG_NIBBLE:
     rts
 
 ANSI_MAP_256_FG:
-    cmp #16
-    bcc ANSI_MAP_16_FG
-    cmp #196
-    beq _ansi_256_red
-    cmp #46
-    beq _ansi_256_green
-    cmp #21
-    beq _ansi_256_blue
-    cmp #226
-    beq _ansi_256_yellow
-    cmp #201
-    beq _ansi_256_magenta
-    cmp #51
-    beq _ansi_256_cyan
-    cmp #231
-    beq _ansi_256_white
-    cmp #232
-    bcc _ansi_256_ignore
-    cmp #244
-    bcc _ansi_256_darkgrey
-    cmp #252
-    bcc _ansi_256_grey
-_ansi_256_white:
-    lda #COLOR_WHITE
-    sta ASCII_FG_COLOR
-    jmp ANSI_UPDATE_COLOR
-_ansi_256_ignore:
-    rts
-_ansi_256_red:
-    lda #COLOR_LIGHT_RED
-    sta ASCII_FG_COLOR
-    jmp ANSI_UPDATE_COLOR
-_ansi_256_green:
-    lda #COLOR_LIGHT_GREEN
-    sta ASCII_FG_COLOR
-    jmp ANSI_UPDATE_COLOR
-_ansi_256_blue:
-    lda #COLOR_LIGHT_BLUE
-    sta ASCII_FG_COLOR
-    jmp ANSI_UPDATE_COLOR
-_ansi_256_yellow:
-    lda #COLOR_YELLOW
-    sta ASCII_FG_COLOR
-    jmp ANSI_UPDATE_COLOR
-_ansi_256_magenta:
-    lda #COLOR_PURPLE
-    sta ASCII_FG_COLOR
-    jmp ANSI_UPDATE_COLOR
-_ansi_256_cyan:
-    lda #COLOR_CYAN
-    sta ASCII_FG_COLOR
-    jmp ANSI_UPDATE_COLOR
-_ansi_256_darkgrey:
-    lda #COLOR_DARK_GREY
-    sta ASCII_FG_COLOR
-    jmp ANSI_UPDATE_COLOR
-_ansi_256_grey:
-    lda #COLOR_GREY
+    jsr ANSI_256_TO_COLOR
     sta ASCII_FG_COLOR
     jmp ANSI_UPDATE_COLOR
 
@@ -2410,64 +3660,7 @@ _ansi_map_16_normal:
     jmp ANSI_UPDATE_COLOR
 
 ANSI_MAP_256_BG:
-    cmp #16
-    bcc ANSI_MAP_16_BG
-    cmp #196
-    beq _ansi_256_bg_red
-    cmp #46
-    beq _ansi_256_bg_green
-    cmp #21
-    beq _ansi_256_bg_blue
-    cmp #226
-    beq _ansi_256_bg_yellow
-    cmp #201
-    beq _ansi_256_bg_magenta
-    cmp #51
-    beq _ansi_256_bg_cyan
-    cmp #231
-    beq _ansi_256_bg_white
-    cmp #232
-    bcc _ansi_256_bg_ignore
-    cmp #244
-    bcc _ansi_256_bg_darkgrey
-    cmp #252
-    bcc _ansi_256_bg_grey
-_ansi_256_bg_white:
-    lda #COLOR_WHITE
-    sta ASCII_BG_COLOR
-    jmp ANSI_UPDATE_COLOR
-_ansi_256_bg_ignore:
-    rts
-_ansi_256_bg_red:
-    lda #COLOR_LIGHT_RED
-    sta ASCII_BG_COLOR
-    jmp ANSI_UPDATE_COLOR
-_ansi_256_bg_green:
-    lda #COLOR_LIGHT_GREEN
-    sta ASCII_BG_COLOR
-    jmp ANSI_UPDATE_COLOR
-_ansi_256_bg_blue:
-    lda #COLOR_LIGHT_BLUE
-    sta ASCII_BG_COLOR
-    jmp ANSI_UPDATE_COLOR
-_ansi_256_bg_yellow:
-    lda #COLOR_YELLOW
-    sta ASCII_BG_COLOR
-    jmp ANSI_UPDATE_COLOR
-_ansi_256_bg_magenta:
-    lda #COLOR_PURPLE
-    sta ASCII_BG_COLOR
-    jmp ANSI_UPDATE_COLOR
-_ansi_256_bg_cyan:
-    lda #COLOR_CYAN
-    sta ASCII_BG_COLOR
-    jmp ANSI_UPDATE_COLOR
-_ansi_256_bg_darkgrey:
-    lda #COLOR_DARK_GREY
-    sta ASCII_BG_COLOR
-    jmp ANSI_UPDATE_COLOR
-_ansi_256_bg_grey:
-    lda #COLOR_GREY
+    jsr ANSI_256_TO_COLOR
     sta ASCII_BG_COLOR
     jmp ANSI_UPDATE_COLOR
 
@@ -2486,27 +3679,194 @@ _ansi_map_16_bg_normal:
     sta ASCII_BG_COLOR
     jmp ANSI_UPDATE_COLOR
 
+ANSI_MAP_RGB_FG:
+    jsr ANSI_RGB_TO_COLOR
+    sta ASCII_FG_COLOR
+    jmp ANSI_UPDATE_COLOR
+
+ANSI_MAP_RGB_BG:
+    jsr ANSI_RGB_TO_COLOR
+    sta ASCII_BG_COLOR
+    jmp ANSI_UPDATE_COLOR
+
+ANSI_256_TO_COLOR:
+    sta ANSI_COLOR_INDEX
+    cmp #16
+    bcc _ansi_256_low16
+    cmp #232
+    bcs _ansi_256_gray
+
+    sec
+    sbc #16
+    sta ANSI_COLOR_WORK
+    lda #0
+    sta ANSI_RGB_R
+_ansi_256_r_loop:
+    lda ANSI_COLOR_WORK
+    cmp #36
+    bcc _ansi_256_r_done
+    sec
+    sbc #36
+    sta ANSI_COLOR_WORK
+    inc ANSI_RGB_R
+    bra _ansi_256_r_loop
+_ansi_256_r_done:
+    lda #0
+    sta ANSI_RGB_G
+_ansi_256_g_loop:
+    lda ANSI_COLOR_WORK
+    cmp #6
+    bcc _ansi_256_g_done
+    sec
+    sbc #6
+    sta ANSI_COLOR_WORK
+    inc ANSI_RGB_G
+    bra _ansi_256_g_loop
+_ansi_256_g_done:
+    lda ANSI_COLOR_WORK
+    sta ANSI_RGB_B
+
+    lda #0
+    sta ANSI_COLOR_BITS
+    lda ANSI_RGB_R
+    cmp #3
+    bcc _ansi_256_no_r
+    lda ANSI_COLOR_BITS
+    ora #1
+    sta ANSI_COLOR_BITS
+_ansi_256_no_r:
+    lda ANSI_RGB_G
+    cmp #3
+    bcc _ansi_256_no_g
+    lda ANSI_COLOR_BITS
+    ora #2
+    sta ANSI_COLOR_BITS
+_ansi_256_no_g:
+    lda ANSI_RGB_B
+    cmp #3
+    bcc _ansi_256_no_b
+    lda ANSI_COLOR_BITS
+    ora #4
+    sta ANSI_COLOR_BITS
+_ansi_256_no_b:
+    lda ANSI_COLOR_BITS
+    bne _ansi_256_have_bits
+    lda ANSI_RGB_R
+    cmp #2
+    bcs _ansi_256_dim_gray
+    lda ANSI_RGB_G
+    cmp #2
+    bcs _ansi_256_dim_gray
+    lda ANSI_RGB_B
+    cmp #2
+    bcs _ansi_256_dim_gray
+_ansi_256_have_bits:
+    ldx ANSI_COLOR_BITS
+    lda ANSI_RGB_R
+    cmp #5
+    bcs _ansi_256_bright
+    lda ANSI_RGB_G
+    cmp #5
+    bcs _ansi_256_bright
+    lda ANSI_RGB_B
+    cmp #5
+    bcs _ansi_256_bright
+    lda ANSI_COLOR_NORMAL,x
+    rts
+_ansi_256_bright:
+    lda ANSI_COLOR_BRIGHT,x
+    rts
+_ansi_256_dim_gray:
+    lda #COLOR_DARK_GREY
+    rts
+
+_ansi_256_low16:
+    tax
+    cpx #8
+    bcc _ansi_256_low_normal
+    txa
+    sec
+    sbc #8
+    tax
+    lda ANSI_COLOR_BRIGHT,x
+    rts
+_ansi_256_low_normal:
+    lda ANSI_COLOR_NORMAL,x
+    rts
+
+_ansi_256_gray:
+    cmp #244
+    bcc _ansi_256_return_darkgrey
+    cmp #252
+    bcc _ansi_256_return_grey
+    lda #COLOR_WHITE
+    rts
+_ansi_256_return_darkgrey:
+    lda #COLOR_DARK_GREY
+    rts
+_ansi_256_return_grey:
+    lda #COLOR_GREY
+    rts
+
+ANSI_RGB_TO_COLOR:
+    lda #0
+    sta ANSI_COLOR_BITS
+    lda ANSI_RGB_R
+    cmp #128
+    bcc _ansi_rgb_no_r
+    lda ANSI_COLOR_BITS
+    ora #1
+    sta ANSI_COLOR_BITS
+_ansi_rgb_no_r:
+    lda ANSI_RGB_G
+    cmp #128
+    bcc _ansi_rgb_no_g
+    lda ANSI_COLOR_BITS
+    ora #2
+    sta ANSI_COLOR_BITS
+_ansi_rgb_no_g:
+    lda ANSI_RGB_B
+    cmp #128
+    bcc _ansi_rgb_no_b
+    lda ANSI_COLOR_BITS
+    ora #4
+    sta ANSI_COLOR_BITS
+_ansi_rgb_no_b:
+    lda ANSI_COLOR_BITS
+    bne _ansi_rgb_have_bits
+    lda ANSI_RGB_R
+    cmp #64
+    bcs _ansi_rgb_dim_gray
+    lda ANSI_RGB_G
+    cmp #64
+    bcs _ansi_rgb_dim_gray
+    lda ANSI_RGB_B
+    cmp #64
+    bcs _ansi_rgb_dim_gray
+_ansi_rgb_have_bits:
+    ldx ANSI_COLOR_BITS
+    lda ANSI_RGB_R
+    cmp #192
+    bcs _ansi_rgb_bright
+    lda ANSI_RGB_G
+    cmp #192
+    bcs _ansi_rgb_bright
+    lda ANSI_RGB_B
+    cmp #192
+    bcs _ansi_rgb_bright
+    lda ANSI_COLOR_NORMAL,x
+    rts
+_ansi_rgb_bright:
+    lda ANSI_COLOR_BRIGHT,x
+    rts
+_ansi_rgb_dim_gray:
+    lda #COLOR_DARK_GREY
+    rts
+
 ANSI_DSR:
     rts
 
 ANSI_DEVICE_ATTRIBUTES:
-    lda ANSI_PARAM0
-    bne _ansi_da_done
-    lda #ESC
-    jsr SEND_BYTE_A
-    lda #'['
-    jsr SEND_BYTE_A
-    lda #'?'
-    jsr SEND_BYTE_A
-    lda #'1'
-    jsr SEND_BYTE_A
-    lda #';'
-    jsr SEND_BYTE_A
-    lda #'0'
-    jsr SEND_BYTE_A
-    lda #'c'
-    jmp SEND_BYTE_A
-_ansi_da_done:
     rts
 
 ANSI_MODE_SET:
@@ -2607,8 +3967,15 @@ _ansi_region_reset:
 
 _ansi_region_home:
     lda #0
-    sta ASCII_ROW
     sta ASCII_COL
+    lda ANSI_ORIGIN_MODE
+    beq _ansi_region_home_screen
+    lda ASCII_SCROLL_TOP
+    bra _ansi_region_home_store
+_ansi_region_home_screen:
+    lda #0
+_ansi_region_home_store:
+    sta ASCII_ROW
     jmp ASCII_RECALC_PTR
 
 ANSI_FULL_RESET:
@@ -2647,6 +4014,20 @@ ANSI_SAVE_CURSOR:
     sta ASCII_SAVED_ROW
     lda ASCII_COL
     sta ASCII_SAVED_COL
+    lda ASCII_FG_COLOR
+    sta ASCII_SAVED_FG_COLOR
+    lda ASCII_BG_COLOR
+    sta ASCII_SAVED_BG_COLOR
+    lda ANSI_BRIGHT
+    sta ANSI_SAVED_BRIGHT
+    lda ANSI_INVERSE
+    sta ANSI_SAVED_INVERSE
+    lda ANSI_G0_GRAPHICS
+    sta ANSI_SAVED_G0_GRAPHICS
+    lda ANSI_G1_GRAPHICS
+    sta ANSI_SAVED_G1_GRAPHICS
+    lda ANSI_USE_G1
+    sta ANSI_SAVED_USE_G1
     rts
 
 ANSI_RESTORE_CURSOR:
@@ -2654,6 +4035,21 @@ ANSI_RESTORE_CURSOR:
     sta ASCII_ROW
     lda ASCII_SAVED_COL
     sta ASCII_COL
+    lda ASCII_SAVED_FG_COLOR
+    sta ASCII_FG_COLOR
+    lda ASCII_SAVED_BG_COLOR
+    sta ASCII_BG_COLOR
+    lda ANSI_SAVED_BRIGHT
+    sta ANSI_BRIGHT
+    lda ANSI_SAVED_INVERSE
+    sta ANSI_INVERSE
+    lda ANSI_SAVED_G0_GRAPHICS
+    sta ANSI_G0_GRAPHICS
+    lda ANSI_SAVED_G1_GRAPHICS
+    sta ANSI_G1_GRAPHICS
+    lda ANSI_SAVED_USE_G1
+    sta ANSI_USE_G1
+    jsr ANSI_UPDATE_COLOR
     jmp ASCII_RECALC_PTR
 
 ASCII_PUT_BYTE:
@@ -2663,10 +4059,6 @@ ASCII_PUT_BYTE:
     beq ASCII_LF
     cmp #$09
     beq ASCII_TAB
-    pha
-    lda #0
-    sta ASCII_LAST_CR
-    pla
     cmp #$08
     beq ASCII_BACKSPACE
     cmp #$7f
@@ -2679,24 +4071,14 @@ _ascii_put_done:
     rts
 
 ASCII_CR:
-    lda #1
-    sta ASCII_LAST_CR
-    jmp ASCII_NEWLINE
+    lda #0
+    sta ASCII_COL
+    jmp ASCII_RECALC_PTR
 
 ASCII_LF:
-    lda ASCII_LAST_CR
-    beq _ascii_lf_newline
-    lda #0
-    sta ASCII_LAST_CR
-    rts
-_ascii_lf_newline:
-    lda #0
-    sta ASCII_LAST_CR
     jmp ASCII_NEWLINE
 
 ASCII_TAB:
-    lda #0
-    sta ASCII_LAST_CR
     lda ASCII_COL
     and #$f8
     clc
@@ -2714,6 +4096,19 @@ ASCII_NEXT_LINE:
     lda #0
     sta ASCII_COL
     jmp ASCII_NEWLINE
+
+ASCII_INDEX:
+    lda ASCII_ROW
+    cmp ASCII_SCROLL_BOTTOM
+    beq _ascii_index_scroll
+    cmp #SCREEN_ROWS-1
+    bcs _ascii_index_done
+    inc ASCII_ROW
+_ascii_index_done:
+    jmp ASCII_RECALC_PTR
+_ascii_index_scroll:
+    jsr ASCII_SCROLL_REGION_UP
+    jmp ASCII_RECALC_PTR
 
 ASCII_REVERSE_INDEX:
     lda ASCII_ROW
@@ -3092,6 +4487,39 @@ _ascii_cte_row_loop:
 _ascii_cte_done:
     jmp ASCII_RECALC_PTR
 
+CLEAR_NETWORK_STATUS_AREA:
+    lda ASCII_COLOR
+    pha
+    lda #COLOR_WHITE
+    sta ASCII_COLOR
+    lda #MENU_STATUS_ROW
+    sta TEMP_A
+_clear_network_row_loop:
+    lda TEMP_A
+    cmp #SCREEN_ROWS
+    bcs _clear_network_rows_done
+    sta ASCII_DST_ROW
+    jsr ASCII_CLEAR_DST_ROW
+    inc TEMP_A
+    bra _clear_network_row_loop
+_clear_network_rows_done:
+    pla
+    sta ASCII_COLOR
+    lda #PET_HOME
+    jsr K_CHROUT
+    lda #MENU_STATUS_ROW
+    sta TEMP_A
+_clear_network_cursor_loop:
+    lda TEMP_A
+    beq _clear_network_cursor_done
+    lda #PET_DOWN
+    jsr K_CHROUT
+    dec TEMP_A
+    bra _clear_network_cursor_loop
+_clear_network_cursor_done:
+    lda #PET_WHITE
+    jmp K_CHROUT
+
 ASCII_CLEAR_TO_START_SCREEN:
     lda ASCII_ROW
     sta ASCII_ERASE_ROW
@@ -3334,12 +4762,29 @@ PRINT_Z:
 _print_loop:
     lda (PTR_LO),y
     beq _print_done
+    jsr ASCII_TO_PETSCII_TEXT
     jsr K_CHROUT
     iny
     bne _print_loop
     inc PTR_HI
     bra _print_loop
 _print_done:
+    rts
+
+ASCII_TO_PETSCII_TEXT:
+    cmp #'A'
+    bcc _ascii_text_check_lower
+    cmp #'Z'+1
+    bcs _ascii_text_check_lower
+    ora #$80
+    rts
+_ascii_text_check_lower:
+    cmp #'a'
+    bcc _ascii_text_done
+    cmp #'z'+1
+    bcs _ascii_text_done
+    and #$df
+_ascii_text_done:
     rts
 
 PRINT_LINEBUF:
@@ -3967,6 +5412,10 @@ ANSI_PARAM0:            .byte 0
 ANSI_PARAM1:            .byte 0
 ANSI_PARAM2:            .byte 0
 ANSI_PARAM3:            .byte 0
+ANSI_PARAM4:            .byte 0
+ANSI_PARAM5:            .byte 0
+ANSI_PARAM6:            .byte 0
+ANSI_PARAM7:            .byte 0
 ANSI_PARAM_CUR:         .byte 0
 ANSI_PARAM_INDEX:       .byte 0
 ANSI_SAW_DIGIT:         .byte 0
@@ -3980,12 +5429,24 @@ ANSI_G0_GRAPHICS:       .byte 0
 ANSI_G1_GRAPHICS:       .byte 0
 ANSI_USE_G1:            .byte 0
 ANSI_CURSOR_APP_MODE:   .byte 0
+ANSI_RGB_R:             .byte 0
+ANSI_RGB_G:             .byte 0
+ANSI_RGB_B:             .byte 0
+ANSI_COLOR_BITS:        .byte 0
+ANSI_COLOR_INDEX:       .byte 0
+ANSI_COLOR_WORK:        .byte 0
 ASCII_WRAP_MODE:        .byte 1
 ASCII_SCROLL_TOP:       .byte 0
 ASCII_SCROLL_BOTTOM:    .byte SCREEN_ROWS-1
 ASCII_SAVED_ROW:        .byte 0
 ASCII_SAVED_COL:        .byte 0
-ASCII_LAST_CR:          .byte 0
+ASCII_SAVED_FG_COLOR:   .byte ASCII_DEFAULT_COLOR
+ASCII_SAVED_BG_COLOR:   .byte COLOR_BLACK
+ANSI_SAVED_BRIGHT:      .byte 0
+ANSI_SAVED_INVERSE:     .byte 0
+ANSI_SAVED_G0_GRAPHICS: .byte 0
+ANSI_SAVED_G1_GRAPHICS: .byte 0
+ANSI_SAVED_USE_G1:      .byte 0
 ASCII_ERASE_ROW:        .byte 0
 ASCII_WORK_START:       .byte 0
 ASCII_WORK_COUNT:       .byte 0
@@ -4011,6 +5472,16 @@ STAGE_ARG_A_VAR:        .byte 0
 STAGE_ARG_X_VAR:        .byte 0
 STAGE_ARG_Y_VAR:        .byte 0
 STAGE_ARG_Z_VAR:        .byte 0
+PHONE_COUNT:            .byte 0
+PHONE_PAGE:             .byte 0
+PHONE_EOF_PENDING:      .byte 0
+PHONE_INDEX:            .byte 0
+PHONE_WORK_INDEX:       .byte 0
+PHONE_LINE_INDEX:       .byte 0
+PHONE_PICK_MODE:        .byte 0
+PHONE_FIELD_OFFSET_VAR: .byte 0
+PHONE_FIELD_MAX_VAR:    .byte 0
+PHONEBOOK:              .fill PHONE_MAX*PHONE_ENTRY_SIZE, 0
 
 SCREEN_ROW_LO:
     .byte $00,$50,$a0,$f0,$40,$90,$e0,$30,$80,$d0
@@ -4062,15 +5533,33 @@ RX_BLOCK_BUF:
     .fill RX_BLOCK_MAX, 0
 
 MSG_TITLE:
-    .byte CLR, CR
-    .text "ANSI-TERM 0.1 - MEGA-IP ASSEMBLY TERMINAL"
+    .byte CLR, PET_MIXED, CR
+    .byte PET_CYAN
+    .byte $20
+    .fill 78, PET_HLINE
+    .byte CR
+    .byte PET_YELLOW
+    .text "   Mega-IP ANSI-Term 1.0"
+    .byte CR
+    .byte PET_WHITE
+    .text "   45GS02 Assembly Terminal for ANSI, ASCII, and PETSCII Systems"
+    .byte CR
+    .byte PET_CYAN
+    .byte $20
+    .fill 78, PET_HLINE
+    .byte CR
+    .byte PET_GREEN
+    .text "   Ctrl-W disconnects        Cursor keys send ANSI sequences"
+    .byte CR
+    .byte PET_WHITE
+    .text "   Built on the Mega-IP TCP/IP stack for the MEGA65"
     .byte CR, CR, 0
 MSG_RESET:
-    .text "RESETTING ETHERNET..."
+    .text "Resetting Ethernet..."
     .byte CR, 0
 MSG_CONFIG:
     .byte CR
-    .text "[D]HCP OR [M]ANUAL NETWORK SETUP? "
+    .text "[D]HCP or [M]anual network setup? "
     .byte 0
 MSG_DHCP_START:
     .byte CR
@@ -4108,7 +5597,6 @@ MSG_DNS:
     .text "PRIMARY DNS    : "
     .byte 0
 MSG_NETWORK_READY:
-    .byte CR
     .text "NETWORK READY."
     .byte CR, 0
 MSG_TERM_MODE:
@@ -4117,7 +5605,7 @@ MSG_TERM_MODE:
     .byte 0
 MSG_CONNECT_BY:
     .byte CR
-    .text "CONNECT BY [I]P ADDRESS OR [H]OST NAME? "
+    .text "CONNECT BY [I]P ADDRESS, [H]OST NAME, OR [P]HONEBOOK? "
     .byte 0
 MSG_REMOTE_IP:
     .text "REMOTE IP      : "
@@ -4159,6 +5647,120 @@ MSG_BAD_IP:
 MSG_BAD_PORT:
     .text "BAD PORT."
     .byte CR, 0
+MSG_PHONE_TITLE:
+    .byte CLR, PET_MIXED, PET_CYAN
+    .byte $20
+    .fill 78, PET_HLINE
+    .byte CR
+    .byte PET_YELLOW
+    .text "   ANSI-Term Phonebook"
+    .byte CR
+    .byte PET_CYAN
+    .byte $20
+    .fill 78, PET_HLINE
+    .byte CR, CR
+    .byte PET_WHITE, 0
+MSG_PHONE_EMPTY:
+    .text "   No phonebook entries yet."
+    .byte CR, 0
+MSG_PHONE_PAGE:
+    .text "   Page "
+    .byte 0
+MSG_PHONE_OF:
+    .text " of "
+    .byte 0
+MSG_PHONE_HOST_LINE:
+    .text "      Host: "
+    .byte 0
+MSG_PHONE_USER_LINE:
+    .text "      User ID: "
+    .byte 0
+MSG_PHONE_COMMAND:
+    .byte CR, PET_GREEN
+    .text "   #=Dial  < >=Page  A=Add  E=Edit  D=Del  R=Reload  Q=Quit: "
+    .byte PET_WHITE, 0
+MSG_PHONE_ADD_TITLE:
+    .byte PET_CYAN
+    .byte $20
+    .fill 78, PET_HLINE
+    .byte CR
+    .byte PET_YELLOW
+    .text "   Add Phonebook Entry"
+    .byte CR
+    .byte PET_CYAN
+    .byte $20
+    .fill 78, PET_HLINE
+    .byte CR, CR
+    .byte PET_WHITE, 0
+MSG_PHONE_EDIT_TITLE:
+    .byte PET_CYAN
+    .byte $20
+    .fill 78, PET_HLINE
+    .byte CR
+    .byte PET_YELLOW
+    .text "   Edit Phonebook Entry"
+    .byte CR
+    .byte PET_CYAN
+    .byte $20
+    .fill 78, PET_HLINE
+    .byte CR, CR
+    .byte PET_WHITE, 0
+MSG_PHONE_NAME:
+    .text "NAME    : "
+    .byte 0
+MSG_PHONE_HOST:
+    .text "HOST/IP : "
+    .byte 0
+MSG_PHONE_PORT:
+    .text "PORT    : "
+    .byte 0
+MSG_PHONE_TYPE:
+    .text "TYPE [A/P]: "
+    .byte 0
+MSG_PHONE_USER:
+    .text "USER ID : "
+    .byte 0
+MSG_PHONE_BLANK_KEEP:
+    .text "LEAVE A FIELD BLANK TO KEEP ITS CURRENT VALUE."
+    .byte CR, CR, 0
+MSG_PHONE_FULL:
+    .text "PHONEBOOK IS FULL."
+    .byte CR, 0
+MSG_PHONE_BAD_NAME:
+    .text "BAD NAME."
+    .byte CR, 0
+MSG_PHONE_BAD_TYPE:
+    .text "TYPE MUST BE A OR P."
+    .byte CR, 0
+MSG_PHONE_PICK:
+    .byte CR, PET_GREEN
+    .text "ENTRY NUMBER: "
+    .byte PET_WHITE, 0
+MSG_PHONE_BAD_ENTRY:
+    .text "BAD ENTRY."
+    .byte CR, 0
+MSG_PHONE_DELETE_CONFIRM:
+    .text "DELETE THIS ENTRY [Y/N]? "
+    .byte 0
+MSG_PHONE_SAVED:
+    .text "PHONEBOOK SAVED."
+    .byte CR, 0
+MSG_PHONE_SAVE_FAIL:
+    .text "PHONEBOOK SAVE FAILED."
+    .byte CR, 0
+MSG_PHONE_DIAL:
+    .byte CR
+    .text "DIALING "
+    .byte 0
+MSG_PRESS_KEY:
+    .text "PRESS ANY KEY."
+    .byte CR, 0
+PHONE_READ_NAME:
+    .text "ANSI-TERM.PB,S,R"
+PHONE_READ_NAME_END:
+PHONE_WRITE_NAME:
+    .text "@0:ANSI-TERM.PB,S,W"
+PHONE_WRITE_NAME_END:
 MSG_CONNECTING:
     .byte CR
     .text "CONNECTING TO "
@@ -4167,7 +5769,7 @@ MSG_DOTS_CR:
     .text "..."
     .byte CR, 0
 MSG_CONNECT_FAIL:
-    .text "CONNECT FAILED."
+    .text "CONNECT FAILED - PRESS ANY KEY."
     .byte CR, 0
 MSG_REMOTE_STORED:
     .text "REMOTE STORED="
