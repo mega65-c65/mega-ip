@@ -76,8 +76,6 @@ The library automatically uses the A$ variable for sending strings:
 
 ```SYS $42021```
 
-TODO: document statuses, DNS lookup, and Listener mode
-
 ## Public jump table
 
 These calls are made after loading `eth.bin` at `P($42000)`. The address shown
@@ -93,6 +91,7 @@ is the BASIC `SYS` address.
 | `$4200f` | Set remote port | `SYS addr,hi,lo` |
 | `$42012` | Set subnet mask | `SYS addr,a,b,c,d` |
 | `$42015` | Set character translation | `0` C/G, `1` ASCII |
+| `$42018` | Send prepared TCP payload | Low-level send entry point; most BASIC programs should use `$4201b` |
 | `$4201b` | Send BASIC `A$` | BASIC string send path |
 | `$4201e` | Receive one byte | `RREG A`; carry set means empty for ML callers |
 | `$42021` | TCP disconnect | Graceful close when established |
