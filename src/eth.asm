@@ -3869,6 +3869,10 @@ ETH_RCV:
     rts
 
 _latch_frame:
+    ; Rotate FIRST. The buffer the CPU sees is the last frame, already handled; the
+    ; rotate is what makes the waiting frame visible (MEGA65 book, U-4). Reading before
+    ; rotating left every frame hidden until the next one arrived.
+    jsr ETH_RX_ROTATE
 
     ; --- Early filter using NIC's 2 status bytes (before any DMA) ---
     ; Buffer layout per MEGA65 doc (per received frame):
@@ -3910,7 +3914,6 @@ _latch_frame:
     ora _len_lsb
     bne _len_nonzero
 
-    jsr ETH_RX_ROTATE
     rts
 
 _len_nonzero:
@@ -3921,7 +3924,6 @@ _chk_bad_crc:
     and #%10000000
     beq _chk_multicast
 
-    jsr ETH_RX_ROTATE
     rts
 
 _chk_multicast:
@@ -3938,7 +3940,6 @@ _chk_multicast:
     and #%00010000
     beq _chk_dest_ok
 
-    jsr ETH_RX_ROTATE
     rts
 
 _chk_dest_ok:
@@ -3961,7 +3962,6 @@ _accept_packet:
     sta _len_msb
     bcs _after_fcs                ; C=1 => no borrow
     ; underflow (len < 4) -> drop
-    jsr ETH_RX_ROTATE
     rts
 
 _after_fcs:
@@ -3972,7 +3972,6 @@ _after_fcs:
     cmp #$0E
     bcs _ge14_ok
     ; < 14 -> drop
-    jsr ETH_RX_ROTATE
     rts
 
 _ge14_ok:
@@ -3985,7 +3984,6 @@ _ge14_ok:
     cmp #$4E                      ; == 0x06 -> check low byte
     bcc _do_copy                 ; <= 0x064D -> safe
 _drop_oversize:
-    jsr ETH_RX_ROTATE
     rts
 
 _do_copy:
@@ -4018,7 +4016,6 @@ _len_msb:
 
     plp
 
-    jsr ETH_RX_ROTATE
 
     ; verify dest mac or broadcast from the copied Ethernet header
     jsr ETH_IS_PACKET_FOR_US
