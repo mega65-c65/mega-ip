@@ -63,6 +63,41 @@ class Basics(unittest.TestCase):
         self.assertEqual(data[0].tcp['ack'], p.seq)
 
 
+class SequenceWrap(unittest.TestCase):
+    """Sequence numbers wrap at 2^32 in both directions."""
+
+    def test_receive_across_wrap(self):
+        s = Stack.ready()
+        p = Peer(s)
+        p.seq = 0xFFFFFFF0 - 1                      # RCV.NXT = $FFFFFFF0
+        p.connect_stack()
+        p.send(PSH | ACK, b'a' * 20)                # crosses 2^32
+        p.send(PSH | ACK, b'b' * 20)
+        s.poll()
+        self.assertEqual(s.read_received(), b'a' * 20 + b'b' * 20)
+        acks = [f for f in s.sent() if f.tcp]
+        self.assertEqual(acks[-1].tcp['ack'], p.seq & 0xFFFFFFFF)
+
+    def test_send_across_wrap(self):
+        s = Stack.ready()
+        p = Peer(s)
+        p.connect_stack()
+        s.poke('LOCAL_ISN', (0xFFFFFFFE).to_bytes(4, 'big'))   # SND.NXT
+        s.send_data(b'wxyz')
+        s.poll()
+        data = [f for f in s.sent() if f.tcp and f.tcp['payload']]
+        self.assertEqual(data[0].tcp['seq'], 0xFFFFFFFE)
+        p.ack = 0x00000002                           # ACK past the wrap
+        p.send(ACK)
+        s.poll()
+        self.assertEqual(s.call('ETH_TCP_TX_IDLE').a, 1)
+        self.assertEqual(s.peek('LOCAL_ISN', 4), b'\x00\x00\x00\x02')
+        s.send_data(b'next')
+        s.poll()
+        data = [f for f in s.sent() if f.tcp and f.tcp['payload']]
+        self.assertEqual(data[0].tcp['seq'], 2)
+
+
 class CloseUsesSavedPeerMac(unittest.TestCase):
     """b96ef37: closing states use the saved peer MAC, not the ARP cache."""
 
