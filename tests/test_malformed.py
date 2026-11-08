@@ -28,9 +28,10 @@ FUZZ_SEED = int(os.environ.get('MEGAIP_FUZZ_SEED', '1'))
 POLL_LIMIT = 400_000          # instructions; a normal poll uses < 20,000
 
 # Flat memory the stack may write: zero page and stack, its own bank 4
-# image, the bank 5 receive ring and OOO slot.  The ethernet buffers are
-# I/O, not memory pages.
-ALLOWED_WRITES = [(0x00000, 0x001FF), (0x42000, 0x47FFF), (0x50000, 0x515FF)]
+# image, the bank 5 receive ring and OOO slot, and the buffer the harness
+# passes to ETH_RBUF_GET_BLOCK.  The ethernet buffers are I/O, not memory.
+ALLOWED_WRITES = [(0x00000, 0x001FF), (0x42000, 0x47FFF), (0x50000, 0x515FF),
+                  (Stack.BLOCK_BUFFER, Stack.BLOCK_BUFFER + 0xFF)]
 
 
 def outside_allowed(m):

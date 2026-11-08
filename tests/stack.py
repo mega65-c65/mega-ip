@@ -93,11 +93,11 @@ class Stack:
             a = self.call('ETH_STATUS_POLL').a
         return a
 
-    def run_frames(self, frames, polls_per_frame=4, until=None, on_frame=None):
+    def run_frames(self, frames, polls_per_frame=2, until=None, on_frame=None):
         """Let `frames` video frames pass, polling `polls_per_frame` times per
         frame as a program on the MEGA65 would.  The frame-paced timers notice
         a new frame when the raster has gone back since the last poll, so they
-        need several polls per frame.
+        need at least two polls per frame.
 
         `on_frame(sent)` gets the frames transmitted at each poll; `until()`
         stops early when it returns true.  Returns (events seen OR'd together,
@@ -136,14 +136,28 @@ class Stack:
             _READY = cls().init()
         return copy.deepcopy(_READY)
 
-    def read_received(self):
-        """Drain the RX ring through RBUF_GET (C=0: byte in A, C=1: empty)."""
+    BLOCK_BUFFER = 0x20000          # bank 2, unused by the stack
+
+    def read_received(self, method='block'):
+        """Drain the RX ring and return the bytes.
+
+        'block' uses ETH_RBUF_GET_BLOCK (ML table, up to 255 bytes a call),
+        which is fast; 'byte' uses RBUF_GET, the BASIC byte reader ($4201e:
+        C=0 byte in A, C=1 empty)."""
         out = bytearray()
+        if method == 'byte':
+            while True:
+                c = self.call('RBUF_GET')
+                if c.p & 1:
+                    return bytes(out)
+                out.append(c.a)
         while True:
-            c = self.call('RBUF_GET')
-            if c.p & 1:
+            dest = self.BLOCK_BUFFER
+            n = self.call('ETH_RBUF_GET_BLOCK', dest & 0xFF, (dest >> 8) & 0xFF,
+                          dest >> 16, 255).a
+            out += self.m.dump_flat(dest, n)
+            if n < 255:
                 return bytes(out)
-            out.append(c.a)
 
     def set_astr(self, text):
         """Make BASIC's A$ hold `text` (descriptor at $FD60, data in bank 1)."""
@@ -235,3 +249,38 @@ class Peer:
                 s.sent()            # drop the handshake ACK
                 return
         raise AssertionError('connect did not reach ESTABLISHED (state %s)' % s.state)
+
+
+# ---- DNS -------------------------------------------------------------------
+DNS_STATE_IDLE, DNS_STATE_WAIT, DNS_STATE_DONE, DNS_STATE_FAIL = 0, 1, 2, 3
+
+
+def start_lookup(s, host='example.com'):
+    """Start a DNS lookup of `host` against a resolver on the LAN, answering
+    its ARP; returns (resolver Peer, the stack's query frame)."""
+    dns = Peer(s, ip=(192, 168, 1, 53), mac=bytes([2, 0, 0, 0, 0, 0x53]))
+    s.call('ETH_SET_PRIMARY_DNS', *dns.ip)
+    s.set_host(host)
+    s.call('DNS_RESOLVE_START')
+    found = []
+
+    def watch(sent):
+        for f in sent:
+            if f.arp and f.arp['op'] == 1 and tuple(f.arp['tpa']) == dns.ip:
+                s.deliver(dns.arp_reply_to(f))
+            elif f.udp and f.udp['dport'] == 53 and not found:
+                found.append(f)
+
+    s.run_frames(500, on_frame=watch, until=lambda: bool(found))
+    if not found:
+        raise AssertionError('no DNS query sent')
+    return dns, found[0]
+
+
+def dns_state(s):
+    return s.call('ETH_GET_DNS_STATE').a
+
+
+def dns_result(s):
+    r = s.call('ETH_GET_DNS_RESULT_IP')
+    return (r.a, r.x, r.y, r.z)

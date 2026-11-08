@@ -13,34 +13,8 @@ points at the defect and not at the harness.
 import unittest
 
 import net
-from stack import ACK, FIN, PSH, SYN, Peer, Stack
-
-DNS_STATE_WAIT, DNS_STATE_DONE = 1, 2
-
-
-def start_lookup(s, host='example.com'):
-    """Start a DNS lookup and answer the resolver's ARP; return (resolver, query)."""
-    dns = Peer(s, ip=(192, 168, 1, 53), mac=b'\x02\x00\x00\x00\x00\x53')
-    s.call('ETH_SET_PRIMARY_DNS', *dns.ip)
-    s.set_host(host)
-    s.call('DNS_RESOLVE_START')
-    found = []
-
-    def watch(sent):
-        for f in sent:
-            if f.arp and f.arp['op'] == 1 and tuple(f.arp['tpa']) == dns.ip:
-                s.deliver(dns.arp_reply_to(f))
-            elif f.udp and f.udp['dport'] == 53 and not found:
-                found.append(f)
-
-    s.run_frames(500, on_frame=watch, until=lambda: bool(found))
-    if not found:
-        raise AssertionError('no DNS query sent')
-    return dns, found[0]
-
-
-def dns_state(s):
-    return s.call('ETH_GET_DNS_STATE').a
+from stack import (ACK, DNS_STATE_DONE, DNS_STATE_WAIT, FIN, PSH, SYN, Peer, Stack,
+                   dns_state, start_lookup)
 
 
 class OutOfOrderSlot(unittest.TestCase):

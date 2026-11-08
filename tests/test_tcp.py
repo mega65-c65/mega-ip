@@ -37,7 +37,20 @@ class Basics(unittest.TestCase):
         self.assertEqual(acks[-1].tcp['ack'], p.seq)
         self.assertTrue(acks[-1].tcp['checksum_ok'])
         self.assertTrue(acks[-1].ip['header_ok'])
-        self.assertEqual(s.read_received(), b'hello')
+        self.assertEqual(s.read_received(method='byte'), b'hello')     # RBUF_GET
+
+    def test_block_and_byte_readers_agree(self):
+        s = Stack.ready()
+        p = Peer(s)
+        p.connect_stack()
+        data = bytes(range(256)) * 2
+        p.send(PSH | ACK, data[:200])
+        p.send(PSH | ACK, data[200:400])
+        s.poll()
+        self.assertEqual(s.read_received(method='block'), data[:400])
+        p.send(PSH | ACK, data[400:512])
+        s.poll()
+        self.assertEqual(s.read_received(method='byte'), data[400:512])
 
     def test_send_data(self):
         s = Stack.ready()
@@ -254,20 +267,45 @@ class TransmitPath(unittest.TestCase):
         self.assertEqual(c.p & 1, 0)
         self.assertEqual(s.eth.take_sent(), [frame])
 
-    def test_defer_does_not_overwrite_pending_frame(self):
-        s = Stack.ready()
-        pending = bytes([0x33]) * 60
-        s.poke('ACK_REPLY_PACKET', pending)
-        s.poke('ACK_REPLY_LEN_L', 60)
+    def pend(self, s, frame):
+        s.poke('ACK_REPLY_PACKET', frame)
+        s.poke('ACK_REPLY_LEN_L', len(frame))
         s.poke('ACK_REPLY_LEN_H', 0)
         s.poke('ACK_REPLY_PENDING', 1)
+
+    def test_defer_sends_pending_frame_first(self):
+        """b114607 + order fix: a full slot is sent before the new frame is
+        queued, so frames leave in the order they were built."""
+        s = Stack.ready()
+        pending = bytes([0x33]) * 60
+        self.pend(s, pending)
         new = self.fill_tx_frame(s, 0x44)
         s.call('DEFER_CURRENT_TX')
-        self.assertEqual(s.eth.take_sent(), [new])            # sent directly
-        self.assertEqual(s.peek('ACK_REPLY_PACKET', 60), pending)
+        self.assertEqual(s.eth.take_sent(), [pending])        # older one first
+        self.assertEqual(s.peek('ACK_REPLY_PACKET', 60), new)
         self.assertEqual(s.peek('ACK_REPLY_PENDING'), 1)
+        self.assertEqual(s.peek('ETH_TX_FRAME_DEST_MAC', 60), new)   # untouched
         s.call('ETH_PROCESS_DEFERRED')
-        self.assertEqual(s.eth.take_sent(), [pending])        # then the old one
+        self.assertEqual(s.eth.take_sent(), [new])
+
+    def test_short_pending_frame_is_padded_from_the_slot(self):
+        s = Stack.ready()
+        self.pend(s, bytes([0x66]) * 42)                       # e.g. an ARP request
+        new = self.fill_tx_frame(s, 0x77)
+        s.call('DEFER_CURRENT_TX')
+        self.assertEqual(s.eth.take_sent(), [bytes([0x66]) * 42 + bytes(18)])
+        self.assertEqual(s.peek('ETH_TX_FRAME_DEST_MAC', 60), new)
+        self.assertEqual(s.peek('ETH_TX_LEN_LSB'), 60)
+
+    def test_defer_with_busy_transmitter_replaces_slot(self):
+        s = Stack.ready()
+        self.pend(s, bytes([0x33]) * 60)
+        new = self.fill_tx_frame(s, 0x44)
+        s.eth.tx_busy = True
+        s.call('DEFER_CURRENT_TX')
+        self.assertEqual(s.eth.sent, [])
+        self.assertEqual(s.peek('ACK_REPLY_PACKET', 60), new)
+        self.assertEqual(s.peek('ACK_REPLY_PENDING'), 1)
 
     def test_defer_into_empty_slot(self):
         s = Stack.ready()

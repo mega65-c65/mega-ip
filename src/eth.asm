@@ -164,6 +164,7 @@ TIME_WAIT_LAST_RASTER_HI: .byte $00
 CHARACTER_MODE:         .byte $00                   ; $00 = C= gfx (no translation), $01 = ASCII->PETSCII
 
 TCP_CLOSE_PENDING:      .byte 0                     ; 1 = app asked to close; FIN waits for TX to drain
+ETH_TX_SRC:             .word ETH_TX_FRAME_HEADER   ; buffer ETH_PACKET_SEND transmits from
 ACK_REPLY_PENDING:      .byte 0
 ACK_REPLY_LEN_L:        .byte 0
 ACK_REPLY_LEN_H:        .byte 0
@@ -2451,12 +2452,12 @@ _tcp_rst_restore_loop:
 ; ================================================================================
 DEFER_CURRENT_TX:
     ; The single slot may already hold an unsent frame (a FIN, RST, ACK or
-    ; ARP request).  Send this frame directly instead of overwriting it, and
-    ; replace the slot only if the transmitter is busy.
+    ; ARP request).  Send that older frame first, so frames leave in order,
+    ; then queue this one.  If the transmitter is busy, this frame replaces
+    ; the old one.
     lda ACK_REPLY_PENDING
     beq _defer
-    jsr ETH_PACKET_SEND
-    bcc _done
+    jsr ETH_SEND_DEFERRED_SLOT
 
 _defer:
     lda ETH_TX_LEN_LSB
@@ -2484,6 +2485,57 @@ _copy:
     sta ACK_REPLY_PENDING
 _done
     rts
+
+;=============================================================================
+; Transmit the deferred slot (ACK_REPLY_PACKET) straight from the slot,
+; leaving the frame being built in ETH_TX_FRAME untouched.  The slot is
+; zero-padded to the 60-byte minimum and sent as 60 bytes, so ETH_PACKET_SEND
+; never pads (which would write into ETH_TX_FRAME).
+; Out: C=0 sent (slot now free), C=1 transmitter busy (slot unchanged).
+;=============================================================================
+ETH_SEND_DEFERRED_SLOT:
+    ldx ACK_REPLY_LEN_L
+_pad:
+    cpx #60
+    bcs _padded
+    lda #$00
+    sta ACK_REPLY_PACKET,x
+    inx
+    bra _pad
+_padded:
+    lda ETH_TX_LEN_LSB
+    sta _save_len
+    lda ETH_TX_LEN_MSB
+    sta _save_len+1
+    lda #60
+    sta ETH_TX_LEN_LSB
+    lda #$00
+    sta ETH_TX_LEN_MSB
+    lda #<ACK_REPLY_PACKET
+    sta ETH_TX_SRC
+    lda #>ACK_REPLY_PACKET
+    sta ETH_TX_SRC+1
+
+    jsr ETH_PACKET_SEND
+    php
+
+    lda #<ETH_TX_FRAME_HEADER
+    sta ETH_TX_SRC
+    lda #>ETH_TX_FRAME_HEADER
+    sta ETH_TX_SRC+1
+    lda _save_len
+    sta ETH_TX_LEN_LSB
+    lda _save_len+1
+    sta ETH_TX_LEN_MSB
+
+    plp
+    bcs _slot_busy
+    lda #$00
+    sta ACK_REPLY_PENDING
+_slot_busy:
+    rts
+
+_save_len: .word 0
 
 ;=============================================================================
 ; TIME_WAIT_TICK
@@ -2637,9 +2689,9 @@ _tx_len_ready:
     sta MEGA65_ETH_TXSIZE_MSB
     sta _len_msb
 
-    lda #<ETH_TX_FRAME_HEADER
+    lda ETH_TX_SRC
     sta _ETH_BUF_SRC
-    lda #>ETH_TX_FRAME_HEADER
+    lda ETH_TX_SRC+1
     sta _ETH_BUF_SRC+1
 
 php
