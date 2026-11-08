@@ -257,7 +257,7 @@ DHCP_FRAME_TICK:
 
     lda ARP_CUR_RASTER_LO
     cmp DHCP_LAST_RASTER_LO
-    bcc _dhcp_frame_elapsed
+    bne _dhcp_frame_elapsed
 
 _dhcp_no_frame:
     lda ARP_CUR_RASTER_LO

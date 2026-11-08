@@ -2593,7 +2593,7 @@ TIME_WAIT_FRAME_TICK:
 
     lda ARP_CUR_RASTER_LO
     cmp TIME_WAIT_LAST_RASTER_LO
-    bcc _tw_frame_elapsed
+    bne _tw_frame_elapsed
 
 _tw_no_frame:
     lda ARP_CUR_RASTER_LO
@@ -4637,7 +4637,7 @@ CONNECT_FRAME_WRAP_TICK:
 
     lda ARP_CUR_RASTER_LO
     cmp CONNECT_LAST_RASTER_LO
-    bcc _connect_frame_elapsed
+    bne _connect_frame_elapsed
 
 _connect_no_frame:
     lda ARP_CUR_RASTER_LO

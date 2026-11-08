@@ -673,7 +673,7 @@ DNS_FRAME_TICK:
 
     lda ARP_CUR_RASTER_LO
     cmp DNS_LAST_RASTER_LO
-    bcc _dns_frame_elapsed
+    bne _dns_frame_elapsed
 
 _dns_no_frame:
     lda ARP_CUR_RASTER_LO

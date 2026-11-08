@@ -163,7 +163,7 @@ TCP_TX_FRAME_WRAP_TICK:
 
     lda ARP_CUR_RASTER_LO
     cmp TCP_TX_LAST_RASTER_LO
-    bcc _frame_elapsed
+    bne _frame_elapsed
 
 _no_frame:
     lda ARP_CUR_RASTER_LO

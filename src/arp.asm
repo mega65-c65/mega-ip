@@ -544,11 +544,16 @@ _done:
 ; - If timeout expires and retries remain, resend ARP and reload the timer.
 ; - If out of retries, stop and (if connecting) latch a failure bit.
 
+; Timer sample for the frame-paced timers (TX retransmit, TIME_WAIT, connect,
+; DNS, DHCP).  Despite the name it returns the hardware video frame counter
+; ($D7FA) in ARP_CUR_RASTER_LO (HI = 0); each timer's frame detector counts a
+; frame when the sample differs from the last one.  It used to sample the
+; raster line and count a frame when the line had gone back, which never
+; happens for a program that polls once per frame at a fixed raster line.
 ARP_READ_RASTER:
-    lda MEGA65_VICII_RSTR_CMP
+    lda MEGA65_FRAMECOUNT
     sta ARP_CUR_RASTER_LO
-    lda MEGA65_VICII_CTRL1
-    and #$80
+    lda #$00
     sta ARP_CUR_RASTER_HI
     rts
 
