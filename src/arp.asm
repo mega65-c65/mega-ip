@@ -309,6 +309,22 @@ _build_reply:
 ; This is when my machine does a WHO HAS IP 192.168.1.100?
 ARP_UPDATE_CACHE:
 
+    ; Accept only Ethernet/IPv4 ARP (HTYPE 1, PTYPE $0800, HLEN 6, PLEN 4),
+    ; as ARP_REPLY does: other lengths put the sender fields at different
+    ; offsets and would cache garbage.
+    ldx #5
+-   lda ETH_RX_FRAME_PAYLOAD,x
+    cmp _arp_ipv4_header,x
+    bne _bad_header
+    dex
+    bpl -
+    bra _header_ok
+_bad_header:
+    rts
+_arp_ipv4_header:
+    .byte $00, $01, $08, $00, $06, $04
+_header_ok:
+
     ; only drop WAITING if SPA == ARP_REQUEST_IP (reply to our who-has)
     ldx #$04
 -   dex
