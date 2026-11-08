@@ -201,16 +201,19 @@ class DnsReplyDestination(unittest.TestCase):
         c = s.call('ETH_GET_DNS_RESULT_IP')
         self.assertEqual((c.a, c.x, c.y, c.z), (93, 184, 216, 34))
 
-    @unittest.expectedFailure
     def test_reply_to_another_ip_is_ignored(self):
-        """ipv4.asm/dns.asm never check the IPv4 destination of a UDP reply,
-        so a frame to our MAC but another IP is accepted as the answer."""
+        """A DNS answer sent to our MAC but another IPv4 address is ignored
+        (DNS_UDP_IN used to check only the source)."""
         s = Stack.ready()
         dns, query = start_lookup(s)
         s.deliver(net.dns_reply(query, (6, 6, 6, 6), dns.mac, dns.ip, s.mac,
                                 dst_ip=(192, 168, 1, 99)))
         s.poll()
         self.assertEqual(dns_state(s), DNS_STATE_WAIT)
+        # the real answer still resolves afterwards
+        s.deliver(net.dns_reply(query, (93, 184, 216, 34), dns.mac, dns.ip, s.mac))
+        s.poll()
+        self.assertEqual(dns_state(s), DNS_STATE_DONE)
 
 
 class EmptyAstrLookup(unittest.TestCase):

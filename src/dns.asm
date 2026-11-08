@@ -749,6 +749,16 @@ DNS2_SRC_CHECK:
     dex
     bpl DNS2_SRC_CHECK
 
+    ; ...and the destination must be us: a frame sent to our MAC but another
+    ; IPv4 address is not our answer.
+    ldx #3
+DNS2_DST_CHECK:
+    lda ETH_RX_FRAME_PAYLOAD+16,x
+    cmp LOCAL_IP,x
+    bne DNS2_NOT_DNS
+    dex
+    bpl DNS2_DST_CHECK
+
     lda #$12
     lda #$00
     sta DNS2_BOUNDS_FAIL
