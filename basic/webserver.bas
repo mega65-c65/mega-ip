@@ -90,8 +90,8 @@
  1110 open 2,8,2,f$+",s,r"
  1120 a$=""
  1130 for i=1 to 235
- 1140 get#2,b$:if st<>0 then 1180
- 1150 a$=a$+b$
+ 1140 get#2,b$:sv=st:if b$="" and (sv and 191)=0 then b$=chr$(0)
+ 1150 a$=a$+b$:if sv<>0 then 1180
  1160 next i
  1170 gosub 1000:goto 1120
  1180 if len(a$)>0 then gosub 1000
@@ -302,8 +302,9 @@
  5070 gosub 1030:sys $42021:gosub 1030:sleep1:sys $4205d:goto 730
  5150 close 2:open 2,8,2,fl$+","+ft$+",r"
  5160 a$="":for i=1 to 235
- 5170 get#2,b$:if st<>0 then 5190
- 5180 a$=a$+b$:next i:gosub 1000:goto 5160
+ 5170 get#2,b$:sv=st:if b$="" and (sv and 191)=0 then b$=chr$(0)
+ 5180 a$=a$+b$:if sv<>0 then 5190
+ 5185 next i:gosub 1000:goto 5160
  5190 if len(a$)>0 then gosub 1000
  5195 close 2:return
  5200 rem == delete file ====================================================
