@@ -303,6 +303,15 @@ class EthernetModel(unittest.TestCase):
         self.assertFalse(e.receive(bytes(60)))
         self.assertEqual(e.dropped, 1)
 
+    def test_on_transmit_callback_sees_each_frame(self):
+        m = Machine()
+        seen = []
+        m.eth.on_transmit = seen.append
+        m.io_write(0xD6E2, 60)
+        m.io_write(0xD6E3, 0)
+        m.io_write(0xD6E4, 1)
+        self.assertEqual(seen, [bytes(60)])
+
     def test_transmit_captures_frame(self):
         m = Machine()
         for i in range(60):

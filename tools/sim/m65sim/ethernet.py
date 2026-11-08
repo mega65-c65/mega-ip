@@ -37,6 +37,9 @@ class Ethernet:
         self.rx_visible = bytearray(self.BUFFER_SIZE)
         self.tx_buffer = bytearray(self.BUFFER_SIZE)
         self.sent = []                  # transmitted frames (bytes), oldest first
+        # Optional callback(frame) run as each frame is transmitted, so a test
+        # can answer (e.g. ARP or DNS) while blocking code is still running.
+        self.on_transmit = None
         self.dropped = 0
         self.rotations = 0
         self.empty_rotations = 0
@@ -101,7 +104,10 @@ class Ethernet:
             self.tx_size = (self.tx_size & 0xFF) | ((v & 0x0F) << 8)
         elif off == 4:
             if v == 0x01:
-                self.sent.append(bytes(self.tx_buffer[:self.tx_size]))
+                frame = bytes(self.tx_buffer[:self.tx_size])
+                self.sent.append(frame)
+                if self.on_transmit:
+                    self.on_transmit(frame)
         elif off == 5:
             self.ctrl3 = v
         elif 9 <= off <= 14:
