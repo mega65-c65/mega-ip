@@ -115,6 +115,7 @@ MIP_GET_SUBNET      = $2054
 MIP_GET_DNS         = $2057
 MIP_GET_REMOTE_IP   = $205a
 MIP_FORCE_CLOSE     = $205d
+MIP_TX_IDLE         = $2066
 
 ; Mega-IP ML extension table.
 MIP_ML_SEND_BYTE    = $7600
@@ -166,6 +167,7 @@ DNS_STATE_FAIL      = $03
 DHCP_TIMEOUT_FRAMES = 3600
 DNS_TIMEOUT_FRAMES = 3600
 CONNECT_TIMEOUT_FRAMES = 1800
+DISCONNECT_DRAIN_FRAMES = 120           ; ~2 s for queued data and the FIN
 RX_BLOCK_MAX        = 128
 MENU_STATUS_ROW     = 8
 PHONE_MAX           = 32
@@ -648,10 +650,34 @@ USER_DISCONNECT:
     lda #<MIP_DISCONNECT
     ldx #>MIP_DISCONNECT
     jsr FAR_CALL_NOARGS
+
+    ; The library sends the FIN only once queued and unacknowledged data
+    ; have gone out, from its status poll.  Keep polling until TX is idle
+    ; (bounded) so the FIN is sent before the force close discards it.
+    lda #DISCONNECT_DRAIN_FRAMES
+    sta DISCONNECT_DRAIN_LEFT
+_disc_drain:
+    lda #<MIP_STATUS_POLL
+    ldx #>MIP_STATUS_POLL
+    jsr FAR_CALL_NOARGS
+    lda #<MIP_TX_IDLE
+    ldx #>MIP_TX_IDLE
+    jsr FAR_CALL_NOARGS
+    cmp #1
+    beq _disc_idle
+    jsr WAIT_FRAME
+    dec DISCONNECT_DRAIN_LEFT
+    bne _disc_drain
+_disc_idle:
+    ; one more poll: sends the FIN if the last attempt found TX busy
+    lda #<MIP_STATUS_POLL
+    ldx #>MIP_STATUS_POLL
+    jsr FAR_CALL_NOARGS
+
     lda #<MIP_FORCE_CLOSE
     ldx #>MIP_FORCE_CLOSE
     jsr FAR_CALL_NOARGS
-    bra NETWORK_READY
+    jmp NETWORK_READY
 
 TERMINAL_RESET_PUMP_STATE:
     lda #0
@@ -5088,6 +5114,7 @@ ASCII_WRAP_MODE:        .byte 1
 ASCII_SCROLL_TOP:       .byte 0
 ASCII_SCROLL_BOTTOM:    .byte SCREEN_ROWS-1
 ANSI_REGION_START:      .byte 0             ; first row for ANSI_REGION_SHIFT_DOWN
+DISCONNECT_DRAIN_LEFT:  .byte 0             ; frames left to wait for TX idle on Ctrl-W
 ASCII_SAVED_ROW:        .byte 0
 ASCII_SAVED_COL:        .byte 0
 ASCII_SAVED_FG_COLOR:   .byte ASCII_DEFAULT_COLOR
