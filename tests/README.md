@@ -12,7 +12,7 @@ Each run assembles `src/eth.asm` into a temp folder. Tests call routines by labe
 |---|---|
 | `test_tcp.py` | ARP replies, connect, sending and receiving data, closing in every state, listen, ARP cache aging, the TX path and deferred slot, `ETH_WAIT_100MS` |
 | `test_dhcp.py` | DISCOVER, OFFER, REQUEST and ACK, late offers from a second server, ACKs from the wrong server |
-| `test_known_bugs.py` | Defects found in review that aren't fixed yet, each with a control test |
+| `test_known_bugs.py` | Defects found in review (all fixed now), each with a control test; new known bugs go here |
 | `test_malformed.py` | Bad frames that must be dropped silently, and seeded fuzzing of the receive path |
 | `test_api.py` | The documented `$420xx` jump table in README, `api.asm` and the binary, and the fixed memory layout |
 | `stack.py` | Harness: `Stack` (load, call, peek/poke, poll, sent frames, BASIC `A$`) and `Peer` (answers ARP, drives a TCP connection either way) |

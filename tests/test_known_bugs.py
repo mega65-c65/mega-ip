@@ -1,11 +1,13 @@
-"""Tests for defects found in code review that are not fixed yet.
+"""Defects found in code review, each with a control test.
 
-Each defect test is marked @unittest.expectedFailure with the reason, so the
-suite (and build.bat) stays green while the bug is known.  When a fix lands
-the test passes, unittest reports an "unexpected success" and the run fails:
-remove the marker then.  Each defect has a control test showing the same
-path works in the ordinary case, so a failure here points at the defect and
-not at the harness.
+All of these were confirmed here first as expected failures and are now
+fixed, so the tests guard against regressions.  To record a newly found
+bug, add a test marked @unittest.expectedFailure with the reason: the
+suite (and build.bat) stays green while it is known, and when a fix lands
+the test reports an unexpected success and the run fails, prompting removal
+of the marker in the same commit as the fix.  Each defect has a control
+test showing the same path works in the ordinary case, so a failure here
+points at the defect and not at the harness.
 """
 
 import unittest
@@ -222,14 +224,22 @@ class EmptyAstrLookup(unittest.TestCase):
         s.set_astr('example.com')
         self.assertEqual(s.call('ETH_DNS_START_ASTR').a, 1)
 
-    @unittest.expectedFailure
     def test_empty_astr_does_not_reuse_previous_host(self):
-        """COPY_ASTR_TO_DNS_HOST returns early on an empty A$ and leaves the
-        previous name in host_str, so the lookup silently starts for it."""
+        """An empty A$ doesn't start a lookup (COPY_ASTR_TO_DNS_HOST used to
+        leave the previous name in host_str)."""
         s = Stack.ready()
         s.set_host('previous.example')
         s.set_astr('')
         self.assertEqual(s.call('ETH_DNS_START_ASTR').a, 0)
+        self.assertEqual(s.sent(), [])
+
+    def test_blocking_lookup_with_empty_astr_fails_at_once(self):
+        s = Stack.ready()
+        s.set_host('previous.example')
+        s.set_astr('')
+        c = s.call('ETH_DNS_LOOKUP', max_instructions=50_000)
+        self.assertEqual(c.a, 0)
+        self.assertEqual(s.sent(), [])
 
 
 if __name__ == '__main__':

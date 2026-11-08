@@ -3764,6 +3764,8 @@ ETH_DNS_LOOKUP:
 
     ; A$ should contain the host name to lookup
     jsr COPY_ASTR_TO_DNS_HOST
+    lda host_str
+    beq DNS_LOOKUP_FAIL         ; empty A$: nothing to look up
 
 DNS_LOOKUP_HOSTSTR:
 
@@ -3826,8 +3828,8 @@ COPY_ASTR_TO_DNS_HOST:
     ; get size of A$ if defined
     FAR_PEEK $00, $FD60
 
-    ; if zero length, exit
-    beq _exit
+    ; empty A$: clear host_str so callers don't reuse the previous name
+    beq _empty
 
     cmp #DNS_HOST_BUFFER_SIZE
     bcc _dns_len_ok
@@ -3881,8 +3883,10 @@ _dest_addr:
     lda #$00
     ldy _var_len
     sta host_str, y
+    rts
 
-_exit:
+_empty:
+    sta host_str                ; A = 0
     rts
 
 ;=============================================================================
