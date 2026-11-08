@@ -2047,15 +2047,11 @@ TCP_OOO_TRY_FLUSH:
     rts
 
 TCP_OOO_FLUSH_CHECK_SEQ:
-    ldx #$00
-TCP_OOO_FLUSH_SEQ_LOOP:
-    lda TCP_OOO_SEQ,x
-    cmp REMOTE_ISN,x
-    bcc TCP_OOO_FLUSH_STALE
+    ; Modular (mod 2^32) compare: a segment just past the sequence wrap is
+    ; still in the future, not stale.
+    jsr TCP_SEQ_CMP_OOO_REMOTE
+    bmi TCP_OOO_FLUSH_STALE
     bne TCP_OOO_FLUSH_NO
-    inx
-    cpx #$04
-    bne TCP_OOO_FLUSH_SEQ_LOOP
 
     php
     sei

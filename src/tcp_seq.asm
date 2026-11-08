@@ -72,6 +72,23 @@ TCP_SEQ_CMP_SEG_ACK_TX_EXPECT:
     sta TCP_SEQ_DIFF+0
     jmp TCP_SEQ_FINISH_CMP
 
+; Out: A compares the saved out-of-order segment's SEQ to RCV.NXT.
+TCP_SEQ_CMP_OOO_REMOTE:
+    sec
+    lda TCP_OOO_SEQ+3
+    sbc REMOTE_ISN+3
+    sta TCP_SEQ_DIFF+3
+    lda TCP_OOO_SEQ+2
+    sbc REMOTE_ISN+2
+    sta TCP_SEQ_DIFF+2
+    lda TCP_OOO_SEQ+1
+    sbc REMOTE_ISN+1
+    sta TCP_SEQ_DIFF+1
+    lda TCP_OOO_SEQ+0
+    sbc REMOTE_ISN+0
+    sta TCP_SEQ_DIFF+0
+    jmp TCP_SEQ_FINISH_CMP
+
 TCP_SEQ_FINISH_CMP:
     lda TCP_SEQ_DIFF+0
     ora TCP_SEQ_DIFF+1

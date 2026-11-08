@@ -56,13 +56,31 @@ class OutOfOrderSlot(unittest.TestCase):
         got, want = self.deliver_out_of_order(0x00100000)
         self.assertEqual(got, want)
 
-    @unittest.expectedFailure
     def test_gap_filled_across_sequence_wrap(self):
-        """eth.asm TCP_OOO_TRY_FLUSH compares sequence numbers as unsigned
-        bytes, so a future segment just past the 2^32 wrap looks stale and is
-        dropped (the peer has to retransmit it)."""
+        """A future segment just past the 2^32 wrap is kept until the gap
+        fills (TCP_OOO_TRY_FLUSH used to compare unsigned and drop it)."""
         got, want = self.deliver_out_of_order(0xFFFFFFE0)
         self.assertEqual(got, want)
+
+    def test_passed_segment_frees_slot_across_wrap(self):
+        """A saved segment that RCV.NXT passes across the wrap is released as
+        stale, so the slot can hold the next out-of-order segment (an
+        unsigned compare kept it as 'future' forever)."""
+        s = Stack.ready()
+        p = Peer(s)
+        start = 0xFFFFFFE0
+        p.seq = start - 1
+        p.connect_stack()
+        s.deliver(p.segment(PSH | ACK, b'x' * 16, seq=0xFFFFFFF0))   # saved
+        s.poll(2)
+        s.deliver(p.segment(PSH | ACK, b'A' * 64, seq=start))         # covers it
+        s.poll(2)
+        self.assertEqual(s.peek('TCP_OOO_VALID'), 0)
+        s.deliver(p.segment(PSH | ACK, b'C' * 8, seq=0x40))           # next gap
+        s.poll(2)
+        s.deliver(p.segment(PSH | ACK, b'B' * 32, seq=0x20))
+        s.poll(2)
+        self.assertEqual(s.read_received(), b'A' * 64 + b'B' * 32 + b'C' * 8)
 
 
 class FinWait1Data(unittest.TestCase):
