@@ -79,6 +79,16 @@ _pub:
 
 
 ;=============================================================================
+; Discard everything waiting in the RX ring (tail = head).
+;=============================================================================
+RBUF_FLUSH_RX:
+    lda RBUF_HEAD_HI
+    sta RBUF_TAIL_HI
+    lda RBUF_HEAD_LO
+    sta RBUF_TAIL_LO
+    rts
+
+;=============================================================================
 ; Returns byte in A
 ; Carry set if buffer empty, clear if success
 ;=============================================================================

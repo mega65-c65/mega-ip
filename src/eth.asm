@@ -522,11 +522,13 @@ ETH_TCP_CONNECT_START:
     adc #$00
     sta LOCAL_PORT+0
 
-    ; Initialize connection state
+    ; Initialize connection state.  Bytes still unread from a previous
+    ; connection must not appear at the start of this one.
     jsr CLEAR_TCP_PAYLOAD
     jsr TCP_TX_RESET
     jsr CLEAR_REMOTE_ISN
     jsr TCP_OOO_CLEAR
+    jsr RBUF_FLUSH_RX
 
     jsr TCP_SEED_LOCAL_ISN
 
@@ -899,9 +901,9 @@ ETH_TCP_LISTEN_START:
     jsr TCP_TX_RESET
     jsr TCP_OOO_CLEAR
 
-    ; clean RX/TX rings (optional but safest for 'fresh' accept)
-    ;jsr RBUF_RESET_RX
-    ;jsr RBUF_RESET_TX
+    ; Bytes still unread from a previous connection must not appear at the
+    ; start of the next accepted one (TCP_TX_RESET above clears TX).
+    jsr RBUF_FLUSH_RX
 
     rts
 _busy_fail:
@@ -3546,10 +3548,7 @@ TCP_HARD_RESET:
     jsr CLEAR_REMOTE_ISN
 
     ; flush RX ring (optional, but avoids BASIC reading stale bytes)
-    lda RBUF_HEAD_HI
-    sta RBUF_TAIL_HI
-    lda RBUF_HEAD_LO
-    sta RBUF_TAIL_LO
+    jsr RBUF_FLUSH_RX
     jsr TCP_TX_RESET
 
     ; mark closed
