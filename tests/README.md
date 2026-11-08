@@ -6,12 +6,17 @@ These tests run the real assembled `eth.bin` on [m65sim](../tools/sim/README.md)
 python -m unittest discover -s tests
 ```
 
-Each run assembles `src/eth.asm` into a temp folder. Tests call routines by label and check registers, state bytes and the frames the stack transmits.
+Each run assembles `src/eth.asm` into a temp folder. Tests call routines by label and check registers, state bytes and the frames the stack transmits. Time passes with `Stack.run_frames()`, which polls at least twice per frame as a MEGA65 program would; the stack's timers count a frame when the raster has gone back since the previous poll.
 
 | File | Covers |
 |---|---|
 | `test_tcp.py` | ARP replies, connect, sending and receiving data, closing in every state, listen, ARP cache aging, the TX path and deferred slot, `ETH_WAIT_100MS` |
 | `test_dhcp.py` | DISCOVER, OFFER, REQUEST and ACK, late offers from a second server, ACKs from the wrong server |
+| `test_retransmit.py` | Data retransmission and timeout, SYN, SYN-ACK, FIN and ARP retries, TIME_WAIT length and expiry |
+| `test_rst.py` | RST in every synchronized state, out-of-window RSTs, RST during the handshake, stray RSTs |
+| `test_window.py` | Advertised window, full ring and zero window, window updates, data through the ring wrap, frames waiting in or dropped by the NIC |
+| `test_icmp.py` | Echo replies (fields, checksums, large and odd payloads) and requests that must not be answered |
+| `test_dns.py` | Query format, A records, CNAMEs (in one reply or followed), NXDOMAIN, truncation, malformed and mismatched replies, timeout |
 | `test_known_bugs.py` | Defects found in review (all fixed now), each with a control test; new known bugs go here |
 | `test_malformed.py` | Bad frames that must be dropped silently, and seeded fuzzing of the receive path |
 | `test_api.py` | The documented `$420xx` jump table in README, `api.asm` and the binary, and the fixed memory layout |
