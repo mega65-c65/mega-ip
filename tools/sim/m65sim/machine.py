@@ -22,6 +22,24 @@ class StopRun(Exception):
     pass
 
 
+class Registers:
+    """CPU registers as they were when a call returned (a snapshot, so a
+    later call can't change values a test is still checking)."""
+    __slots__ = ('a', 'x', 'y', 'z', 'b', 'p', 'sp', 'pc')
+
+    def __init__(self, cpu):
+        for name in self.__slots__:
+            setattr(self, name, getattr(cpu, name))
+
+    @property
+    def carry(self):
+        return self.p & 1
+
+    def __repr__(self):
+        return 'Registers(a=$%02x x=$%02x y=$%02x z=$%02x p=$%02x sp=$%02x)' % (
+            self.a, self.x, self.y, self.z, self.p, self.sp)
+
+
 class Machine:
     def __init__(self, cpu_map=None, instructions_per_line=2, lines_per_frame=312):
         self.pages = {}
@@ -207,7 +225,7 @@ class Machine:
         """JSR to `addr` with the given registers and run until it returns.
 
         A return address on the stack points at `return_addr`, which must not
-        be executed by the code under test.  Returns the CPU.
+        be executed by the code under test.  Returns a Registers snapshot.
         """
         c = self.cpu
         c.a, c.x, c.y, c.z = a & 0xFF, x & 0xFF, y & 0xFF, z & 0xFF
@@ -225,4 +243,4 @@ class Machine:
         if c.sp != sp_before:
             raise StopRun('stack unbalanced after $%04x: sp $%02x -> $%02x'
                           % (addr, sp_before, c.sp))
-        return c
+        return Registers(c)

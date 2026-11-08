@@ -266,6 +266,19 @@ class DmaJobs(unittest.TestCase):
         self.assertEqual(m.read_flat(0x0DE800), 0x22)
 
 
+class CallResult(unittest.TestCase):
+    def test_registers_are_a_snapshot(self):
+        text = ('    .cpu "45gs02"\n    * = $2000\n'
+                'one:\n    lda #1\n    ldx #2\n    rts\n'
+                'two:\n    lda #9\n    ldx #9\n    rts\n')
+        asm = assemble_text(text, TASS)
+        m = Machine()
+        m.load_flat(asm.start, asm.binary)
+        first = m.call(asm['one'])
+        m.call(asm['two'])
+        self.assertEqual((first.a, first.x), (1, 2))
+
+
 class EthernetModel(unittest.TestCase):
     def test_rotate_on_rising_edge_and_rxq(self):
         m = Machine()
