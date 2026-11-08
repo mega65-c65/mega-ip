@@ -839,8 +839,17 @@ ETH_CONNECT_CANCEL:
     lda CONNECT_SYN_SENT
     beq _clear_only
 
-    ; We sent SYN; send RST to abandon handshake
-    lda #TCP_FLAG_RST
+    ; We sent SYN; send RST to abandon handshake.  The SYN used sequence
+    ; number ISS, so the RST must carry ISS+1: a peer in SYN-RECEIVED
+    ; ignores a RST at ISS (below its RCV.NXT).
+    inc LOCAL_ISN+3
+    bne +
+    inc LOCAL_ISN+2
+    bne +
+    inc LOCAL_ISN+1
+    bne +
+    inc LOCAL_ISN+0
++   lda #TCP_FLAG_RST
     jsr ETH_BUILD_TCPIP_PACKET
     bcc +
     jmp _clear_only               ; build failed -> just clear

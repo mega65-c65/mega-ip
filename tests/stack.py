@@ -284,3 +284,40 @@ def dns_state(s):
 def dns_result(s):
     r = s.call('ETH_GET_DNS_RESULT_IP')
     return (r.a, r.x, r.y, r.z)
+
+
+def query_name(payload):
+    """The dotted name in a DNS query payload."""
+    labels, i = [], 12
+    while payload[i]:
+        n = payload[i]
+        labels.append(payload[i + 1:i + 1 + n].decode('ascii'))
+        i += 1 + n
+    return '.'.join(labels)
+
+
+class Responder:
+    """Answers the stack while it runs, for blocking calls: ARP requests for
+    any of `peers`, and DNS queries to `resolver` from `answers`
+    ({name: ip}; unknown names get no reply).  Install with
+    stack.eth.on_transmit = Responder(...)."""
+
+    def __init__(self, stack, peers=(), resolver=None, answers=None):
+        self.s = stack
+        self.peers = list(peers) + ([resolver] if resolver else [])
+        self.resolver = resolver
+        self.answers = answers or {}
+        self.queries = []
+
+    def __call__(self, raw):
+        f = net.Parsed(raw)
+        if f.arp and f.arp['op'] == 1:
+            for p in self.peers:
+                if tuple(f.arp['tpa']) == p.ip:
+                    self.s.deliver(p.arp_reply_to(f))
+        elif f.udp and f.udp['dport'] == 53 and self.resolver:
+            name = query_name(f.udp['payload'])
+            self.queries.append(name)
+            if name in self.answers:
+                r = self.resolver
+                self.s.deliver(net.dns_reply(f, self.answers[name], r.mac, r.ip, self.s.mac))
