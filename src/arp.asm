@@ -480,19 +480,43 @@ _cache_miss:
     rts
 
 ARP_PURGE_TICK:
-    .byte $00
+    .byte $00                       ; frames counted toward the next purge step
+ARP_PURGE_LAST_FRAME:
+    .byte $00                       ; FRAMECOUNT at the previous call
 
-; routine called by irq to countdown the first byte of each cache record
-; a zero byte indicates its a free slot
+ARP_PURGE_FRAMES        = 50        ; one TTL step per ~1 s (50 frames PAL)
+ARP_PURGE_MAX_ELAPSED   = 200       ; keeps TICK+elapsed within 8 bits
+
+; Called from every ETH_STATUS_POLL. Counts down the first byte of each cache
+; record once per ARP_PURGE_FRAMES video frames; a zero byte is a free slot.
+; Uses the hardware frame counter so entry lifetime doesn't depend on how
+; often the caller polls (TTL $FF ~= 4 minutes).
 ARP_CACHE_PURGE:
-    
-    inc ARP_PURGE_TICK
-    lda ARP_PURGE_TICK
-    cmp #60
-    bne _done                       ; only purge once every 60 IRQs (~1 s)
-    lda #$00
-    sta ARP_PURGE_TICK
+    lda MEGA65_FRAMECOUNT
+    tax
+    sec
+    sbc ARP_PURGE_LAST_FRAME        ; A = frames elapsed (mod 256)
+    stx ARP_PURGE_LAST_FRAME
+    cmp #ARP_PURGE_MAX_ELAPSED
+    bcc +
+    lda #ARP_PURGE_MAX_ELAPSED      ; long gaps only age entries a little
++   clc
+    adc ARP_PURGE_TICK
 
+_purge_step:
+    cmp #ARP_PURGE_FRAMES
+    bcc _save_tick
+    sbc #ARP_PURGE_FRAMES           ; C=1 here
+    sta ARP_PURGE_TICK
+    jsr _purge_once
+    lda ARP_PURGE_TICK
+    bra _purge_step
+
+_save_tick:
+    sta ARP_PURGE_TICK
+    rts
+
+_purge_once:
     ldx #$00
 _loop1
     lda ARP_CACHE+0, x
