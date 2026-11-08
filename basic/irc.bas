@@ -204,7 +204,7 @@
 2050 if left$(ob$,6)="/nick " then nk$=mid$(ob$,7):a$="nick "+nk$+cr$:sys $4201b:pr$="{wht}* nick is now "+nk$:gosub 1050:return
 2060 if ob$="/names" and ch$<>"" then nc=0:nt=0:ld=1:nr=0:nw$="":lc=-1:gosub 2540:gosub 3400:a$="names "+ch$+cr$:sys $4201b:return
 2070 if left$(ob$,4)="/me " then gosub 2960:return
-2080 if ob$="/quit" then a$="quit :bye"+cr$:sys $4201b:sys $42021:print chr$(19);chr$(19);"{clr}{wht}disconnected.":end
+2080 if ob$="/quit" then a$="quit :bye"+cr$:sys $4201b:sys $42021:gosub 9000:print chr$(19);chr$(19);"{clr}{wht}disconnected.":end
 2090 if ob$="/help" then gosub 2130:return
 2100 pr$="{lred}* unknown command.":gosub 1050:return
 2110 rem -- disconnected --
@@ -488,3 +488,6 @@
 4770 if cm$="318" then pr$="{rvon}{cyn}WHOIS done{rvof}":gosub 1050:wi=0:return
 4780 if cm$="401" then pr$="{rvon}{cyn}WHOIS{rvof} {lred}"+wt$:gosub 1050:wi=0:return
 4790 pr$="{rvon}{cyn}WHOIS "+cm$+"{rvof} {wht}"+wt$:gosub 1050:return
+9000 rem == poll until tx is idle so queued data and the fin go out ======
+9010 for dw=1 to 2000:sys $42024:sys $42066:rreg a:if a=1 then dw=2000
+9020 next dw:sys $42024:return

@@ -132,7 +132,7 @@
  1400 rcursor cx,cy:movspr 0,24+(cx*4),50+(cy*8)
  1410 gosub 1630
  1420 get a$:if a$="" then 1470
- 1430 if a$="{CTRL-W}" or a$="{f7}" then print:printxx$:sys $42021:sys $4205d:sleep 3:an=0:an$="":goto 640:rem disconnect
+ 1430 if a$="{CTRL-W}" or a$="{f7}" then print:printxx$:sys $42021:gosub 9000:sys $4205d:sleep 3:an=0:an$="":goto 640:rem disconnect
  1440 if a$="{f1}" then gosub 1590:goto1470
  1450 if a$="{f3}" or a$="{f5}" then gosub 1650:goto1470
  1460 sys$4201b:if ec=1 then printa$;:rcursor cx,cy:movspr 0,24+(cx*4),50+(cy*8)
@@ -248,3 +248,6 @@
   2610 data 0,0,240,0,0,240,0,0,0,0,0,0,0,0,0,0
   2620 data 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
   2630 data 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+  9000 rem == poll until tx is idle so queued data and the fin go out ======
+  9010 for dw=1 to 2000:sys $42024:sys $42066:rreg a:if a=1 then dw=2000
+  9020 next dw:sys $42024:return
