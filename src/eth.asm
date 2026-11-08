@@ -1555,34 +1555,8 @@ _ack_no_fin_bump:
     jsr ETH_BUILD_TCPIP_PACKET
     bcs _ack_defer_done            ; no frame built: don't queue a stale one
 
-    ; Copy the built frame into a side buffer and flag it for mainline
-    ; Clamp frame size to buffer limit
-    lda ETH_TX_LEN_LSB
-    ldx ETH_TX_LEN_MSB
-    cpx #0                   ; High byte non-zero?
-    bne _clamp_to_60         ; Yes, definitely > 60
-    cmp #61                  ; Check low byte
-    bcc _size_ok             ; < 61, we're good
-    
-_clamp_to_60:
-    lda #60
-    ldx #0
-    
-_size_ok:
-    sta ACK_REPLY_LEN_L
-    stx ACK_REPLY_LEN_H
-    tax                      ; X = length for copy
-    beq _ack_defer_done
-
-_ack_defer_copy:
-    dex
-    lda ETH_TX_FRAME_DEST_MAC,x
-    sta ACK_REPLY_PACKET,x
-    cpx #$00
-    bne _ack_defer_copy
-
-    lda #$01
-    sta ACK_REPLY_PENDING
+    ; Queue the ACK for mainline (or send it now if the slot is taken)
+    jsr DEFER_CURRENT_TX
 
 _ack_defer_done:
     lda REMOTE_ISN_BUMP
@@ -2466,6 +2440,15 @@ _tcp_rst_restore_loop:
 ; Defers transmit until out of IRQ
 ; ================================================================================
 DEFER_CURRENT_TX:
+    ; The single slot may already hold an unsent frame (a FIN, RST, ACK or
+    ; ARP request).  Send this frame directly instead of overwriting it, and
+    ; replace the slot only if the transmitter is busy.
+    lda ACK_REPLY_PENDING
+    beq _defer
+    jsr ETH_PACKET_SEND
+    bcc _done
+
+_defer:
     lda ETH_TX_LEN_LSB
     ldx ETH_TX_LEN_MSB
     cpx #$00
