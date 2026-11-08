@@ -1868,14 +1868,18 @@ _last_ack_seq_ok:
     jsr TCP_SEQ_CMP_SEG_ACK_LOCAL_ISN
     bne _done
 
-    ; peer ACKed your FIN, now go TIME_WAIT
-    jsr TCP_TIME_WAIT_RESET
+    ; peer ACKed our FIN.  The passive closer goes straight to CLOSED
+    ; (RFC 793); only the active closer waits in TIME_WAIT.
     lda #$00
     sta CONNECT_RETRY_TICKS
     sta CONNECT_RETRY_LEFT
 
-    lda #TCP_STATE_TIME_WAIT
+    lda #TCP_STATE_CLOSED
     sta TCP_STATE
+
+    lda TCP_EVENT_FLAG
+    ora #EV_LOCAL_CLOSE
+    sta TCP_EVENT_FLAG
     rts
 
     ;---------------------------------------------------------------------------
