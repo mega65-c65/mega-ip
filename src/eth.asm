@@ -163,6 +163,7 @@ TIME_WAIT_LAST_RASTER_LO: .byte $00
 TIME_WAIT_LAST_RASTER_HI: .byte $00
 CHARACTER_MODE:         .byte $00                   ; $00 = C= gfx (no translation), $01 = ASCII->PETSCII
 
+TCP_CLOSE_PENDING:      .byte 0                     ; 1 = app asked to close; FIN waits for TX to drain
 ACK_REPLY_PENDING:      .byte 0
 ACK_REPLY_LEN_L:        .byte 0
 ACK_REPLY_LEN_H:        .byte 0
@@ -921,19 +922,11 @@ ETH_TCP_DISCONNECT:
     rts
 
 _disconnect_established:
-    lda #TCP_FLAG_FIN|TCP_FLAG_ACK
-    jsr ETH_BUILD_TCPIP_PACKET
-    bcs _not_connected
-    jsr ETH_PACKET_SEND
-    bcs _not_connected
-
-    jsr CALC_LOCAL_ISN
-    jsr TCP_FIN_RETRY_INIT
-
-    lda #TCP_STATE_FIN_WAIT_1
-    sta TCP_STATE
-
-    rts
+    ; Graceful close: queued and unacknowledged data go out first.  The FIN
+    ; is sent now if TX is idle, otherwise by ETH_STATUS_POLL once it drains.
+    lda #$01
+    sta TCP_CLOSE_PENDING
+    jmp TCP_TRY_PENDING_FIN
 
 _disconnect_close_wait:
     lda #TCP_FLAG_FIN|TCP_FLAG_ACK
@@ -951,6 +944,50 @@ _disconnect_close_wait:
     sta TCP_STATE
 
 _not_connected:
+    rts
+
+;=============================================================================
+; Send the FIN for a pending close once all queued and unacknowledged data
+; has been sent and ACKed.  Called by ETH_TCP_DISCONNECT and on every
+; ETH_STATUS_POLL.  A busy transmitter leaves the close pending for the next
+; poll.  If the peer closed first (CLOSE_WAIT), hand over to the passive close.
+;=============================================================================
+TCP_TRY_PENDING_FIN:
+    lda TCP_CLOSE_PENDING
+    beq _done
+
+    lda TCP_STATE
+    cmp #TCP_STATE_ESTABLISHED
+    beq _check_tx_idle
+    ldx #$00
+    stx TCP_CLOSE_PENDING
+    cmp #TCP_STATE_CLOSE_WAIT
+    bne _done
+    jmp ETH_TCP_DISCONNECT            ; sends FIN, enters LAST_ACK
+
+_check_tx_idle:
+    lda TXQ_COUNT
+    ora TX_UNACK_PENDING
+    bne _done                         ; data still draining
+
+    lda #$00
+    sta TCP_DATA_PAYLOAD_SIZE
+    sta TCP_DATA_PAYLOAD_SIZE+1
+    lda #TCP_FLAG_FIN|TCP_FLAG_ACK
+    jsr ETH_BUILD_TCPIP_PACKET
+    bcs _done
+    jsr ETH_PACKET_SEND
+    bcs _done
+
+    jsr CALC_LOCAL_ISN
+    jsr TCP_FIN_RETRY_INIT
+
+    lda #TCP_STATE_FIN_WAIT_1
+    sta TCP_STATE
+    lda #$00
+    sta TCP_CLOSE_PENDING
+
+_done:
     rts
 
 ;=============================================================================
@@ -3517,6 +3554,7 @@ _check_fin_tick:
 _tick_fin_retry:
     jsr TCP_FIN_RETRY_TICK
 _after_tcp_ticks:
+    jsr TCP_TRY_PENDING_FIN
     jsr ARP_RETRY_TICK
     jsr DNS_TICK
     jsr DHCP_STATUS_TICK
