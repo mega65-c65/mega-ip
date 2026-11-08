@@ -26,3 +26,6 @@ desktop.ini
 
 # --- Local tooling ---
 .claude/
+
+# --- Python ---
+__pycache__/
