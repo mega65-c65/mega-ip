@@ -66,6 +66,8 @@ _LEN = {'imp': 0, 'acc': 0, 'imm': 1, 'iw': 2, 'zp': 1, 'zpx': 1, 'zpy': 1,
         'abs': 2, 'abx': 2, 'aby': 2, 'ind': 2, 'iax': 2, 'izx': 1, 'izy': 1,
         'izz': 1, 'isy': 1, 'rel': 1, 'rlw': 2, 'zpr': 2}
 
+_IZZ = [OPCODES[i][1] == 'izz' for i in range(256)]
+
 _BRANCH = {'bpl': (N, False), 'bmi': (N, True), 'bvc': (V, False), 'bvs': (V, True),
            'bcc': (C, False), 'bcs': (C, True), 'bne': (Z_FLAG, False),
            'beq': (Z_FLAG, True)}
@@ -83,6 +85,7 @@ class Cpu:
         self.p = E | I                  # 8-bit stack (E=1)
         self.pc = 0
         self.instructions = 0
+        self._table = self._build_table()
 
     # ---- helpers -----------------------------------------------------
     def _fetch(self):
@@ -186,32 +189,29 @@ class Cpu:
         self._nz(r)
 
     # ---- execution ----------------------------------------------------
-    def step(self):
-        start = self.pc
-        op = self._fetch()
-        flat = False
-        if op == 0xEA:
-            nxt = self.bus.read(self.pc)
-            if OPCODES[nxt][1] == 'izz':        # NOP prefix -> flat [zp],z
-                flat = True
-                op = self._fetch()
-        elif op == 0x42 and self.bus.read(self.pc) == 0x42:
-            raise CpuError('45GS02 Q instructions are not modelled (pc=$%04x)' % start)
-        mn, mode = OPCODES[op]
-        ops = [self._fetch() for _ in range(_LEN[mode])]
-        self._exec(mn, mode, ops, flat, start)
-        self.instructions += 1
-        self.bus.after_instruction(self)
-
-    def _exec(self, mn, mode, ops, flat, start):
-        # branches
-        if mn in _BRANCH or mn == 'bra':
+    def _build_table(self):
+        """Per-opcode (handler, mode, operand length), resolved once."""
+        table = []
+        for op in range(256):
+            mn, mode = OPCODES[op]
             if mn == 'bra':
-                take = True
+                h = self._make_branch(None, True)
+            elif mn in _BRANCH:
+                h = self._make_branch(*_BRANCH[mn])
+            elif mn[:3] in ('bbr', 'bbs'):
+                h = self._make_bbx(int(mn[3]), mn[:3] == 'bbs')
+            elif mn[:3] in ('rmb', 'smb'):
+                h = self._make_bit(int(mn[3]), mn[0] == 's')
             else:
-                f, want = _BRANCH[mn]
-                take = bool(self.p & f) == want
-            if take:
+                h = getattr(self, '_op_' + mn, None)
+                if h is None:
+                    raise CpuError('no handler for %s' % mn)
+            table.append((h, mode, _LEN[mode]))
+        return table
+
+    def _make_branch(self, flag, want):
+        def branch(mode, ops, flat, start):
+            if flag is None or bool(self.p & flag) == want:
                 if mode == 'rel':
                     off = ops[0] - 256 if ops[0] & 0x80 else ops[0]
                     self.pc = (self.pc + off) & 0xFFFF
@@ -219,27 +219,62 @@ class Cpu:
                     off = ops[0] | (ops[1] << 8)
                     off = off - 0x10000 if off & 0x8000 else off
                     self.pc = (start + 2 + off) & 0xFFFF
-            return
-        if mn[:3] in ('bbr', 'bbs'):
-            bit = int(mn[3])
+        return branch
+
+    def _make_bbx(self, bit, if_set):
+        def bbx(mode, ops, flat, start):
             v = self.bus.read(self._zp(ops[0]))
-            isset = bool(v & (1 << bit))
-            if isset == (mn[:3] == 'bbs'):
+            if bool(v & (1 << bit)) == if_set:
                 off = ops[1] - 256 if ops[1] & 0x80 else ops[1]
                 self.pc = (self.pc + off) & 0xFFFF
-            return
-        if mn[:3] in ('rmb', 'smb'):
-            bit = int(mn[3])
+        return bbx
+
+    def _make_bit(self, bit, set_it):
+        def rmb_smb(mode, ops, flat, start):
             addr = self._zp(ops[0])
             v = self.bus.read(addr)
-            v = (v | (1 << bit)) if mn[0] == 's' else (v & ~(1 << bit))
-            self.bus.write(addr, v)
-            return
+            self.bus.write(addr, (v | (1 << bit)) if set_it else (v & ~(1 << bit)))
+        return rmb_smb
 
-        h = getattr(self, '_op_' + mn, None)
-        if h is None:
-            raise CpuError('unimplemented %s at $%04x' % (mn, start))
+    def step(self):
+        table = self._table
+        read = self.bus.read
+        start = self.pc
+        op = read(start)
+        pc = (start + 1) & 0xFFFF
+        flat = False
+        if op == 0xEA:
+            nxt = read(pc)
+            if _IZZ[nxt]:                       # NOP prefix -> flat [zp],z
+                flat = True
+                op = nxt
+                pc = (pc + 1) & 0xFFFF
+        elif op == 0x42 and read(pc) == 0x42:
+            raise CpuError('45GS02 Q instructions are not modelled (pc=$%04x)' % start)
+        h, mode, n = table[op]
+        if n == 0:
+            ops = ()
+        elif n == 1:
+            ops = (read(pc),)
+            pc = (pc + 1) & 0xFFFF
+        else:
+            ops = (read(pc), read((pc + 1) & 0xFFFF))
+            pc = (pc + 2) & 0xFFFF
+        self.pc = pc
         h(mode, ops, flat, start)
+        self.instructions += 1
+        self.bus.after_instruction(self)
+
+    # The handler table holds bound methods and closures over this Cpu;
+    # rebuild it after a copy so it doesn't point at the original.
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state.pop('_table', None)
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        self._table = self._build_table()
 
     # loads / stores
     def _op_lda(self, m, o, f, s): self.a = self._nz(self._read(self._operand_addr(m, o, f)))

@@ -25,8 +25,9 @@ class StopRun(Exception):
 class Machine:
     def __init__(self, cpu_map=None, instructions_per_line=2, lines_per_frame=312):
         self.pages = {}
-        self.cpu_map = list(cpu_map or [])
-        self.io_visible = True
+        self._cpu_map = list(cpu_map or [])
+        self._io_visible = True
+        self._cpu_pages = None
         self.io_regs = {}
         self.cpu = Cpu(self)
         self.dma = Dma(self)
@@ -73,24 +74,84 @@ class Machine:
         return bytes(self.read_flat(addr + i) for i in range(n))
 
     # ---- CPU view --------------------------------------------------------
+    # Each 256-byte CPU page that maps to plain RAM gets a memoryview into
+    # the flat page, so ordinary reads and writes skip the address
+    # translation.  Pages that hit I/O or the ethernet buffer stay None and
+    # take the slow path.  Changing cpu_map or io_visible rebuilds the table.
+
+    @property
+    def cpu_map(self):
+        return self._cpu_map
+
+    @cpu_map.setter
+    def cpu_map(self, value):
+        self._cpu_map = list(value)
+        self._cpu_pages = None
+
+    @property
+    def io_visible(self):
+        return self._io_visible
+
+    @io_visible.setter
+    def io_visible(self, value):
+        self._io_visible = bool(value)
+        self._cpu_pages = None
+
+    def _build_cpu_pages(self):
+        table = []
+        for hi in range(256):
+            addr = hi << 8
+            flat = self.translate(addr) & 0x0FFFFFFF
+            special = ((self._io_visible and 0xD0 <= hi <= 0xDF)
+                       or (flat & 0xFFF) > 0xF00
+                       or (ETH_BUFFER - 0x100 < flat < ETH_BUFFER + 0x800)
+                       or (IO_FLAT - 0x100 < flat < IO_FLAT + 0x1000))
+            if special:
+                table.append(None)
+            else:
+                page = self._page(flat, True)
+                off = flat & 0xFFF
+                table.append(memoryview(page)[off:off + 256])
+        self._cpu_pages = table
+        return table
+
     def translate(self, addr):
-        for first, last, base in self.cpu_map:
+        for first, last, base in self._cpu_map:
             if first <= addr <= last:
                 return base + (addr - first)
         return addr
 
     def read(self, addr):
+        pages = self._cpu_pages or self._build_cpu_pages()
+        mv = pages[(addr >> 8) & 0xFF]
+        if mv is not None:
+            return mv[addr & 0xFF]
         addr &= 0xFFFF
-        if self.io_visible and 0xD000 <= addr <= 0xDFFF:
+        if self._io_visible and 0xD000 <= addr <= 0xDFFF:
             return self.io_read(addr)
         return self.read_flat(self.translate(addr))
 
     def write(self, addr, v):
+        pages = self._cpu_pages or self._build_cpu_pages()
+        mv = pages[(addr >> 8) & 0xFF]
+        if mv is not None:
+            mv[addr & 0xFF] = v & 0xFF
+            return
         addr &= 0xFFFF
-        if self.io_visible and 0xD000 <= addr <= 0xDFFF:
+        if self._io_visible and 0xD000 <= addr <= 0xDFFF:
             self.io_write(addr, v & 0xFF)
             return
         self.write_flat(self.translate(addr), v)
+
+    # memoryviews can't be pickled or deep-copied: drop the page table from
+    # snapshots and rebuild it on first use.
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state['_cpu_pages'] = None
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
 
     # ---- video timing ----------------------------------------------------
     @property
