@@ -57,7 +57,8 @@ DHCP_LAST_RASTER_HI:        .byte $00
 DHCP_XID:                   .byte $12,$34,$56,$78
 DHCP_SERVER_ID:             .byte $00,$00,$00,$00
 DHCP_SELECTED_SERVER_ID:    .byte $00,$00,$00,$00
-DHCP_OFFER_IP:              .byte $00,$00,$00,$00  ; yiaddr from OFFER
+DHCP_OFFER_IP:              .byte $00,$00,$00,$00  ; yiaddr of the reply being parsed
+DHCP_SELECTED_IP:           .byte $00,$00,$00,$00  ; address we request (chosen offer / lease)
 DHCP_LEASE_SECS:            .byte $00,$00,$00,$00
 ;DNS_SERVER:                 .byte $00,$00,$00,$00  ; new: primary DNS
 DHCP_FLAGS:                 .byte $80,$00           ; broadcast bit 0x8000
@@ -96,6 +97,7 @@ _loop:
     sta DHCP_SERVER_ID,y
     sta DHCP_SELECTED_SERVER_ID,y
     sta DHCP_OFFER_IP,y
+    sta DHCP_SELECTED_IP,y
     sta DHCP_LEASE_SECS,y
     sta LOCAL_IP,Y
     sta GATEWAY_IP,Y
@@ -424,7 +426,9 @@ _discover_tx_fail:
 
 ;=============================================================================
 ; DHCP REQUEST
-; (uses DHCP_SERVER_ID and DHCP_OFFER_IP captured from OFFER)
+; (uses DHCP_SELECTED_IP and DHCP_SELECTED_SERVER_ID, saved when the offer
+;  was accepted and refreshed on ACK.  DHCP_OFFER_IP/DHCP_SERVER_ID hold the
+;  last parsed reply, which may be a late or foreign one.)
 ;=============================================================================
 DHCP_SEND_REQUEST:
     jsr DHCP_BUILD_BOOTP_COMMON
@@ -455,16 +459,16 @@ DHCP_SEND_REQUEST:
     lda #$04
     jsr opt_put_len
     ldy #$00
--   lda DHCP_OFFER_IP,y
+-   lda DHCP_SELECTED_IP,y
     jsr opt_put_byte
     iny
     cpy #4
     bne -
     ; 54 = server identifier (only if we captured it)
-    lda DHCP_SERVER_ID+0
-    ora DHCP_SERVER_ID+1
-    ora DHCP_SERVER_ID+2
-    ora DHCP_SERVER_ID+3
+    lda DHCP_SELECTED_SERVER_ID+0
+    ora DHCP_SELECTED_SERVER_ID+1
+    ora DHCP_SELECTED_SERVER_ID+2
+    ora DHCP_SELECTED_SERVER_ID+3
     beq _skip_svid
 
     lda #DHCP_OPT_SERVER_ID
@@ -472,7 +476,7 @@ DHCP_SEND_REQUEST:
     lda #$04
     jsr opt_put_len
     ldy #$00
--   lda DHCP_SERVER_ID,y
+-   lda DHCP_SELECTED_SERVER_ID,y
     jsr opt_put_byte
     iny
     cpy #4
@@ -892,6 +896,7 @@ _ack_sane:
     ldy #0
 -   lda DHCP_OFFER_IP,y
     sta LOCAL_IP,y
+    sta DHCP_SELECTED_IP,y          ; renewals request the address we hold
     lda opt_mask,y
     sta SUBNET_MASK,y
     lda opt_router,y
