@@ -1,14 +1,6 @@
 @echo off
 cls
 
-rem Run the unit tests first; stop before touching target\ if any fail.
-echo Running simulator self-tests...
-python -m unittest discover -s tools\sim\tests
-if errorlevel 1 goto tests_failed
-echo Running mega-ip unit tests...
-python -m unittest discover -s tests
-if errorlevel 1 goto tests_failed
-
 if not exist target mkdir target
 
 del /q target\*.bin 2>nul
@@ -50,10 +42,3 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "$t=Get-Content -Raw 'bas
 .\c1541.exe target\megaip.d81 -write target\ansi-term.pb ansi-term.pb,s
 .\c1541.exe target\megaip.d81 -write basic\index.html index.html,s
 .\c1541.exe target\megaip.d81 -write basic\about.html about.html,s
-
-goto :eof
-
-:tests_failed
-echo.
-echo *** Unit tests failed - build stopped. target\ was not changed. ***
-exit /b 1

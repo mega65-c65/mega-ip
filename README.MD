@@ -11,6 +11,10 @@ https://files.mega65.org?id=f5c206da-9fef-4a07-a54d-6149d8105a44
 The public SYS jump table is the supported interface. Internal data addresses
 are not part of the API; use the getters below instead of PEEK/POKE.
 
+## Running the tests
+
+Run `test.bat` from the repo root. It runs the stack's unit tests on a Python MEGA65 simulator (no emulator or hardware needed; Python 3 only). See [tests/README.md](tests/README.md).
+
 ## Tools and credits
 * "petcat" and "c1541" are part of the VICE emulation package
 * 64TASS is available from sourceforge and is included here for build simplicity

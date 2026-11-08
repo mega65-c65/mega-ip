@@ -3,7 +3,7 @@
 All of these were confirmed here first as expected failures and are now
 fixed, so the tests guard against regressions.  To record a newly found
 bug, add a test marked @unittest.expectedFailure with the reason: the
-suite (and build.bat) stays green while it is known, and when a fix lands
+suite (and test.bat) stays green while it is known, and when a fix lands
 the test reports an unexpected success and the run fails, prompting removal
 of the marker in the same commit as the fix.  Each defect has a control
 test showing the same path works in the ordinary case, so a failure here

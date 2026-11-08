@@ -3,8 +3,11 @@
 These tests run the real assembled `eth.bin` on [m65sim](../tools/sim/README.md), a Python MEGA65 simulator, with a scripted host on the LAN. They don't need Xemu or hardware, and nothing needs to be installed beyond Python 3 and the repo's `64tass.exe`.
 
 ```
-python -m unittest discover -s tests
+test.bat                     simulator self-tests, then these tests
+python -m unittest discover -s tests          (just these)
 ```
+
+`test.bat coverage` and `test.bat mutate ...` run the coverage report and mutation testing described below. The build (`build.bat`) doesn't run the tests.
 
 Each run assembles `src/eth.asm` into a temp folder. Tests call routines by label and check registers, state bytes and the frames the stack transmits. Time passes with `Stack.run_frames()`, which polls at least twice per frame as a MEGA65 program would; the stack's timers count a frame when the raster has gone back since the previous poll.
 
@@ -34,7 +37,7 @@ Test classes or docstrings that name a commit are regression tests for that fix.
 
 ## Known bugs
 
-Two known limitations are recorded this way now: DHCP options more than 255 bytes into the options field (`test_review_items.py`) and the peer's zero window (`test_peers.py`). A newly found bug can be recorded in `test_known_bugs.py` as a test marked `@unittest.expectedFailure`, so the run (and `build.bat`) stays green while the bug is known; the result line shows `expected failures=N`. When a fix lands, that test passes, unittest reports an unexpected success and the run fails: remove the marker in the same commit as the fix.
+Two known limitations are recorded this way now: DHCP options more than 255 bytes into the options field (`test_review_items.py`) and the peer's zero window (`test_peers.py`). A newly found bug can be recorded in `test_known_bugs.py` as a test marked `@unittest.expectedFailure`, so the run (and `test.bat`) stays green while the bug is known; the result line shows `expected failures=N`. When a fix lands, that test passes, unittest reports an unexpected success and the run fails: remove the marker in the same commit as the fix.
 
 ## Fuzzing
 
