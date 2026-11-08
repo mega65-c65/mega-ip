@@ -156,10 +156,9 @@ class SynReceivedDataAck(unittest.TestCase):
         s.poll()
         self.assertEqual(s.read_received(), b'GET /')
 
-    @unittest.expectedFailure
     def test_first_ack_carries_data(self):
-        """eth.asm SYN_RECEIVED accepts only a pure ACK; a final ACK with data
-        (common when the pure ACK was lost) is dropped."""
+        """A final handshake ACK that carries data completes the handshake and
+        delivers the data (it used to be dropped)."""
         s = Stack.ready()
         s.call('ETH_TCP_LISTEN_START', 0x00, 80)
         p = Peer(s, port=5000)
@@ -168,6 +167,28 @@ class SynReceivedDataAck(unittest.TestCase):
         s.poll()
         self.assertEqual(s.state, 'ESTABLISHED')
         self.assertEqual(s.read_received(), b'GET /')
+        acks = [f for f in s.sent() if f.tcp]
+        self.assertTrue(acks and acks[-1].tcp['ack'] == p.seq)
+
+    def test_first_ack_carries_fin(self):
+        s = Stack.ready()
+        s.call('ETH_TCP_LISTEN_START', 0x00, 80)
+        p = Peer(s, port=5000)
+        p.open_to_listener(80)
+        p.send(FIN | ACK)
+        s.poll()
+        self.assertEqual(s.state, 'CLOSE_WAIT')
+        self.assertEqual(s.peek('TCP_ACCEPT_FLAGS') & 1, 1)
+
+    def test_ack_with_wrong_ack_number_is_ignored(self):
+        s = Stack.ready()
+        s.call('ETH_TCP_LISTEN_START', 0x00, 80)
+        p = Peer(s, port=5000)
+        p.open_to_listener(80)
+        p.send(PSH | ACK, b'GET /', ack=p.ack + 7)
+        s.poll()
+        self.assertEqual(s.state, 'SYN_RECEIVED')
+        self.assertEqual(s.read_received(), b'')
 
 
 class DnsReplyDestination(unittest.TestCase):

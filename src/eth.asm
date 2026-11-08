@@ -1879,15 +1879,11 @@ _check_SYN_RCVD:
     cmp #TCP_STATE_SYN_RECEIVED
     bne _done
 
-    ; Expect a pure ACK (no SYN/FIN/RST), payload len 0
+    ; Expect an ACK without SYN/RST.  It may already carry data or a FIN
+    ; (e.g. when the client's pure ACK was lost); those are handled below.
     lda ETH_RX_TCP_FLAGS
-    and #(TCP_FLAG_ACK | TCP_FLAG_SYN | TCP_FLAG_FIN | TCP_FLAG_RST)
+    and #(TCP_FLAG_ACK | TCP_FLAG_SYN | TCP_FLAG_RST)
     cmp #TCP_FLAG_ACK
-    bne _done
-
-    ; Optional sanity: require zero payload
-    lda TCP_RX_DATA_PAYLOAD_SIZE
-    ora TCP_RX_DATA_PAYLOAD_SIZE+1
     bne _done
 
     jsr TCP_SEQ_CMP_SEG_SEQ_REMOTE
@@ -1918,6 +1914,13 @@ _synrcvd_ack_check:
     lda #$00
     sta TCP_LISTEN_ENABLED
 
+    ; Process any data or FIN on the final ACK as ESTABLISHED.
+    lda TCP_RX_DATA_PAYLOAD_SIZE
+    ora TCP_RX_DATA_PAYLOAD_SIZE+1
+    bne _copy_payload_and_ack
+    lda ETH_RX_TCP_FLAGS
+    and #TCP_FLAG_FIN
+    bne _got_FIN_IN_ESTABLISHED
     rts
 
 _done:
