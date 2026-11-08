@@ -113,6 +113,18 @@ class Stack:
                 return bytes(out)
             out.append(c.a)
 
+    def set_astr(self, text):
+        """Make BASIC's A$ hold `text` (descriptor at $FD60, data in bank 1)."""
+        data = text.encode('ascii') if isinstance(text, str) else bytes(text)
+        self.m.write_flat(0xFD60, len(data))
+        self.m.write_flat(0xFD61, 0x00)
+        self.m.write_flat(0xFD62, 0xF0)
+        self.m.load_flat(0x1F000, data)
+
+    def set_host(self, name):
+        """Put a NUL-terminated hostname in host_str (as a previous lookup would)."""
+        self.poke('host_str', name.encode('ascii') + b'\x00')
+
     def send_data(self, payload):
         """Queue `payload` like ETH_TCP_SEND does from BASIC; returns carry."""
         self.poke('TCP_DATA_PAYLOAD', payload)
@@ -155,6 +167,21 @@ class Peer:
         if 'seq' not in kw:
             self.seq += len(payload) + (1 if flags & (SYN | FIN) else 0)
         return frame
+
+    def open_to_listener(self, listen_port):
+        """Send a SYN to a listening stack and return its SYN-ACK frame."""
+        s = self.s
+        self.local_port = listen_port
+        s.deliver(self.arp_request_for_stack())       # let it learn our MAC
+        s.poll()
+        s.sent()
+        self.send(SYN)
+        s.poll()
+        synacks = [f for f in s.sent() if f.tcp and f.tcp['flags'] & SYN]
+        if not synacks:
+            raise AssertionError('no SYN-ACK from listener (state %s)' % s.state)
+        self.ack = synacks[0].tcp['seq'] + 1
+        return synacks[0]
 
     def connect_stack(self):
         """Drive an active open from the stack to this peer to ESTABLISHED."""

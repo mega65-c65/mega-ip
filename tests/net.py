@@ -93,6 +93,43 @@ def dhcp_fields(parsed):
     return xid, opts.get(53, b'\x00')[0], opts
 
 
+def refix_checksums(frame):
+    """Recompute the IPv4 header and TCP/UDP checksums of an IPv4 frame after
+    fields were changed, so a mutated frame gets past checksum checks."""
+    f = bytearray(frame)
+    if len(f) < 34 or f[12:14] != b'\x08\x00':
+        return bytes(f)
+    ihl = (f[14] & 0x0F) * 4
+    if ihl < 20 or 14 + ihl > len(f):
+        return bytes(f)
+    f[24:26] = b'\x00\x00'
+    f[24:26] = struct.pack('!H', checksum(bytes(f[14:14 + ihl])))
+    total = struct.unpack('!H', f[16:18])[0]
+    seg_start, seg_end = 14 + ihl, min(14 + total, len(f))
+    seg = f[seg_start:seg_end]
+    proto = f[23]
+    pos = {PROTO_TCP: 16, PROTO_UDP: 6}.get(proto)
+    if pos is not None and len(seg) >= pos + 2:
+        seg[pos:pos + 2] = b'\x00\x00'
+        pseudo = bytes(f[26:34]) + struct.pack('!BBH', 0, proto, len(seg))
+        seg[pos:pos + 2] = struct.pack('!H', checksum(pseudo + bytes(seg)))
+        f[seg_start:seg_end] = seg
+    return bytes(f)
+
+
+def dns_reply(query, answer_ip, server_mac, server_ip, client_mac, dst_ip=None):
+    """An A-record answer to the stack's DNS `query` (a Parsed frame).
+
+    `dst_ip` overrides the IP destination (normally the stack's address)."""
+    q = query.udp['payload']
+    question = q[12:]
+    msg = q[0:2] + struct.pack('!HHHHH', 0x8180, 1, 1, 0, 0) + question
+    msg += struct.pack('!HHHIH', 0xC00C, 1, 1, 60, 4) + bytes(answer_ip)
+    dst = bytes(dst_ip) if dst_ip else bytes(query.ip['src'])
+    u = udp(server_ip, dst, 53, query.udp['sport'], msg)
+    return ethernet(client_mac, server_mac, ETH_IPV4, ipv4(server_ip, dst, PROTO_UDP, u))
+
+
 class Parsed:
     """Fields of a transmitted frame; missing layers stay None."""
 
