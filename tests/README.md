@@ -29,6 +29,7 @@ Each run assembles `src/eth.asm` into a temp folder. Tests call routines by labe
 | `test_review_items.py` | Remaining review items confirmed or ruled out (ARP header validation, DNS port wrap, DHCP option position, `RBUF_PUT`) |
 | `test_known_bugs.py` | Defects found in review (all fixed now), each with a control test; new known bugs go here |
 | `test_malformed.py` | Bad frames that must be dropped silently, and seeded fuzzing of the receive path |
+| `test_parser_fuzz.py` | Structure-aware fuzzing of the DNS and DHCP reply parsers: replies that pass the ID, port and checksum checks but have random structure, with an oracle (a lookup only resolves to an A record in the reply; DHCP only binds from a valid ACK) |
 | `test_api.py` | The documented `$420xx` jump table in README, `api.asm` and the binary, and the fixed memory layout |
 | `stack.py` | Harness: `Stack` (load, call, peek/poke, poll, `run_frames`, sent frames, BASIC `A$`, block and byte readers), `Peer` (answers ARP, drives a TCP connection either way), `Responder` (answers ARP and DNS while a blocking call runs) and DNS helpers |
 | `net.py` | Builds and parses Ethernet, ARP, IPv4, TCP, UDP, DHCP and DNS frames with real checksums |
@@ -41,9 +42,9 @@ Two known limitations are recorded this way now: DHCP options more than 255 byte
 
 ## Fuzzing
 
-`test_malformed.py` feeds random and mutated frames to a connected stack. After every frame it checks that the code doesn't crash, hang or unbalance the stack; every 50 frames it checks nothing was written outside the stack's own memory (zero page and stack, its bank 4 image, the bank 5 ring); at the end it checks the stack still connects and passes data.
+`test_malformed.py` feeds random and mutated frames to a connected stack, and `test_parser_fuzz.py` feeds structured DNS and DHCP replies that get past the ID and checksum checks into the parsers. After every frame it checks that the code doesn't crash, hang or unbalance the stack; every 50 frames it checks nothing was written outside the stack's own memory (zero page and stack, its bank 4 image, the bank 5 ring); at the end it checks the stack still connects and passes data.
 
-The default is 400 frames from a fixed seed, so the result is the same on every run and a build takes about a second for it. For a deeper run:
+The defaults (400 frames, 300 replies per parser) use fixed seeds, so the result is the same on every run and a build takes about a second for it. For a deeper run:
 
 ```
 set MEGAIP_FUZZ=5000
