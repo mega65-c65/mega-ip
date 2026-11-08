@@ -24,15 +24,19 @@ def start_lookup(s, host='example.com'):
     s.call('ETH_SET_PRIMARY_DNS', *dns.ip)
     s.set_host(host)
     s.call('DNS_RESOLVE_START')
-    for _ in range(200):
-        s.poll()
-        for f in s.sent():
+    found = []
+
+    def watch(sent):
+        for f in sent:
             if f.arp and f.arp['op'] == 1 and tuple(f.arp['tpa']) == dns.ip:
                 s.deliver(dns.arp_reply_to(f))
-            elif f.udp and f.udp['dport'] == 53:
-                return dns, f
-        s.m.advance_frames(2)
-    raise AssertionError('no DNS query sent')
+            elif f.udp and f.udp['dport'] == 53 and not found:
+                found.append(f)
+
+    s.run_frames(500, on_frame=watch, until=lambda: bool(found))
+    if not found:
+        raise AssertionError('no DNS query sent')
+    return dns, found[0]
 
 
 def dns_state(s):

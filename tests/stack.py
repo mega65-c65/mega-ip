@@ -70,8 +70,17 @@ class Stack:
         return int.from_bytes(self.peek(name, n), 'big')
 
     # ---- stack API -------------------------------------------------------
+    # Raster timing.  ETH_INIT busy-waits ~4 s of raster lines for the PHY,
+    # so it runs with very short lines.  Afterwards a line is long enough
+    # that a poll spans only a few lines, as at 40 MHz; otherwise the
+    # frame-paced timers would see the raster wrap more than once per frame.
+    INIT_INSTRUCTIONS_PER_LINE = 2
+    INSTRUCTIONS_PER_LINE = 400
+
     def init(self, ip=None, gateway=None, mask=None):
+        self.m.instructions_per_line = self.INIT_INSTRUCTIONS_PER_LINE
         self.call('ETH_INIT')
+        self.m.instructions_per_line = self.INSTRUCTIONS_PER_LINE
         self.call('ETH_SET_LOCAL_IP', *(ip or self.MY_IP))
         self.call('ETH_SET_GATEWAY_IP', *(gateway or self.GATEWAY))
         self.call('ETH_SET_SUBNET_MASK', *(mask or self.MASK))
@@ -83,6 +92,29 @@ class Stack:
         for _ in range(times):
             a = self.call('ETH_STATUS_POLL').a
         return a
+
+    def run_frames(self, frames, polls_per_frame=4, until=None, on_frame=None):
+        """Let `frames` video frames pass, polling `polls_per_frame` times per
+        frame as a program on the MEGA65 would.  The frame-paced timers notice
+        a new frame when the raster has gone back since the last poll, so they
+        need several polls per frame.
+
+        `on_frame(sent)` gets the frames transmitted at each poll; `until()`
+        stops early when it returns true.  Returns (events seen OR'd together,
+        frames run).
+        """
+        step = self.m.instructions_per_line * self.m.lines_per_frame // polls_per_frame
+        events = 0
+        for n in range(1, frames + 1):
+            for _ in range(polls_per_frame):
+                self.m.time_offset += step
+                events |= self.poll()
+                sent = self.sent()
+                if on_frame:
+                    on_frame(sent)
+            if until and until():
+                return events, n
+        return events, frames
 
     @property
     def state(self):

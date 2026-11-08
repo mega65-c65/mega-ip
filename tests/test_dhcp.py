@@ -9,20 +9,21 @@ SERVER_A, SERVER_B = (192, 168, 1, 1), (192, 168, 1, 2)
 IP_A, IP_B = (192, 168, 1, 100), (192, 168, 1, 200)
 
 
-def dhcp_sent(s):
-    return [f for f in s.sent() if f.udp and f.udp['dport'] == 67]
+def wait_for_dhcp(s, msg_type, max_frames=2000):
+    """Let frames pass (polling) until the stack sends `msg_type`."""
+    found = []
 
+    def watch(sent):
+        for f in sent:
+            if f.udp and f.udp['dport'] == 67:
+                xid, t, opts = net.dhcp_fields(f)
+                if t == msg_type and not found:
+                    found.append((xid, opts))
 
-def wait_for_dhcp(s, msg_type, max_rounds=400):
-    """Poll, letting frames pass, until the stack sends `msg_type`."""
-    for _ in range(max_rounds):
-        s.poll()
-        for f in dhcp_sent(s):
-            xid, t, opts = net.dhcp_fields(f)
-            if t == msg_type:
-                return xid, opts
-        s.m.advance_frames(5)
-    raise AssertionError('stack never sent DHCP message type %d' % msg_type)
+    s.run_frames(max_frames, on_frame=watch, until=lambda: bool(found))
+    if not found:
+        raise AssertionError('stack never sent DHCP message type %d' % msg_type)
+    return found[0]
 
 
 class DhcpClient(unittest.TestCase):
