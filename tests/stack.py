@@ -200,10 +200,10 @@ class Peer:
         return net.ethernet(net.BROADCAST, self.mac, net.ETH_ARP, body)
 
     # TCP
-    def segment(self, flags, payload=b'', seq=None, ack=None, window=4096):
+    def segment(self, flags, payload=b'', seq=None, ack=None, window=4096, options=b''):
         t = net.tcp(self.ip, self.s.peek('LOCAL_IP', 4), self.port, self.local_port,
                     self.seq if seq is None else seq, self.ack if ack is None else ack,
-                    flags, payload, window)
+                    flags, payload, window, options)
         ip = net.ipv4(self.ip, self.s.peek('LOCAL_IP', 4), net.PROTO_TCP, t)
         return net.ethernet(self.s.mac, self.mac, net.ETH_IPV4, ip)
 

@@ -40,9 +40,19 @@ def ipv4(src, dst, proto, payload, ident=0x1234, ttl=64, frag=0x4000):
     return hdr + payload
 
 
-def tcp(src_ip, dst_ip, sport, dport, seq, ack, flags, payload=b'', window=4096):
+LINUX_SYN_OPTIONS = (b'\x02\x04\x05\xb4'            # MSS 1460
+                     b'\x04\x02'                    # SACK permitted
+                     b'\x08\x0a\x00\x12\x34\x56\x00\x00\x00\x00'   # timestamps
+                     b'\x01'                        # NOP
+                     b'\x03\x03\x07')               # window scale 7
+TIMESTAMP_OPTIONS = b'\x01\x01\x08\x0a\x00\x12\x34\x57\x00\x00\x00\x01'
+
+
+def tcp(src_ip, dst_ip, sport, dport, seq, ack, flags, payload=b'', window=4096,
+        options=b''):
+    options = bytes(options) + bytes(-len(options) % 4)
     hdr = struct.pack('!HHIIBBHHH', sport, dport, seq & 0xFFFFFFFF, ack & 0xFFFFFFFF,
-                      5 << 4, flags, window, 0, 0)
+                      (5 + len(options) // 4) << 4, flags, window, 0, 0) + options
     pseudo = bytes(src_ip) + bytes(dst_ip) + struct.pack('!BBH', 0, PROTO_TCP,
                                                          len(hdr) + len(payload))
     csum = checksum(pseudo + hdr + payload)

@@ -1285,6 +1285,17 @@ _no_fin_in_established:
     rts
 
 _not_retx_synack:
+    ; A zero-length segment behind RCV.NXT is a keepalive probe
+    ; (SEG.SEQ = RCV.NXT-1): answer with an ACK so the peer keeps the
+    ; connection.  A pure ACK at RCV.NXT needs no reply.
+    lda TCP_RX_DATA_PAYLOAD_SIZE
+    ora TCP_RX_DATA_PAYLOAD_SIZE+1
+    bne _copy_payload_and_ack
+    jsr TCP_SEQ_CMP_SEG_SEQ_REMOTE
+    bpl _est_done
+    jsr TCP_DEFER_DUP_ACK
+    rts
+
 _copy_payload_and_ack:
     ; Any payload?
     lda TCP_RX_DATA_PAYLOAD_SIZE
