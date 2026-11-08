@@ -28,8 +28,8 @@ The hardware models follow the MEGA65 book and xemu's sources. Tests show code i
 from m65sim import Machine, assemble, find_tass
 
 asm = assemble('src/main.asm', find_tass())
-m = Machine(cpu_map=[(0x2000, 0x7FFF, 0x40000)])   # bank 4 at $2000
-m.load_flat(0x40000 + asm.start, asm.binary)
+m = Machine(cpu_map=[(0x2000, 0x7FFF, 0x42000)])   # CPU $2000-$7FFF -> flat $42000
+m.load_flat(0x40000 + asm.start, asm.binary)      # code assembled at $2000
 m.call(asm['MY_ROUTINE'], a=1)
 print(m.cpu.a, m.eth.take_sent())
 ```
