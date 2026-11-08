@@ -3024,30 +3024,6 @@ ANSI_GET_EOL_COUNT:
 _ansi_eol_count_ok:
     rts
 
-ANSI_GET_ROWS_COUNT:
-    jsr ANSI_GET_COUNT
-    lda #SCREEN_ROWS
-    sec
-    sbc ASCII_ROW
-    sta TEMP_HI
-    lda TEMP_A
-    cmp TEMP_HI
-    bcc _ansi_rows_count_ok
-    lda TEMP_HI
-    sta TEMP_A
-_ansi_rows_count_ok:
-    rts
-
-ANSI_GET_SCREEN_COUNT:
-    jsr ANSI_GET_COUNT
-    lda TEMP_A
-    cmp #SCREEN_ROWS
-    bcc _ansi_screen_count_ok
-    lda #SCREEN_ROWS
-    sta TEMP_A
-_ansi_screen_count_ok:
-    rts
-
 ANSI_INSERT_CHARS:
     jsr ANSI_GET_EOL_COUNT
     lda TEMP_A
@@ -3128,132 +3104,122 @@ ANSI_ERASE_CHARS:
 _ansi_ech_done:
     jmp ASCII_RECALC_PTR
 
+; IL/DL act only when the cursor is inside the scroll region, and only move
+; rows between the cursor and the bottom margin (VT100).
 ANSI_INSERT_LINES:
-    jsr ANSI_GET_ROWS_COUNT
+    jsr ANSI_CURSOR_IN_REGION
+    bcs _ansi_il_done
+    jsr ANSI_GET_COUNT
     lda TEMP_A
-    beq _ansi_il_done
     sta ASCII_WORK_COUNT
-    lda #SCREEN_ROWS-1
-    sta ASCII_DST_ROW
-_ansi_il_copy:
-    lda ASCII_DST_ROW
-    sec
-    sbc ASCII_WORK_COUNT
-    cmp ASCII_ROW
-    bcc _ansi_il_clear
-    sta ASCII_SRC_ROW
-    jsr ASCII_COPY_SRC_TO_DST_ROW
-    lda ASCII_DST_ROW
-    beq _ansi_il_clear
-    dec ASCII_DST_ROW
-    bra _ansi_il_copy
-_ansi_il_clear:
     lda ASCII_ROW
-    sta ASCII_DST_ROW
-    lda ASCII_WORK_COUNT
-    sta TEMP_A
-_ansi_il_clear_loop:
-    lda TEMP_A
-    beq _ansi_il_done
-    jsr ASCII_CLEAR_DST_ROW
-    inc ASCII_DST_ROW
-    dec TEMP_A
-    bra _ansi_il_clear_loop
+    jmp ANSI_REGION_SHIFT_DOWN
 _ansi_il_done:
-    jmp ASCII_RECALC_PTR
+    rts
 
 ANSI_DELETE_LINES:
-    jsr ANSI_GET_ROWS_COUNT
+    jsr ANSI_CURSOR_IN_REGION
+    bcs _ansi_dl_done
+    jsr ANSI_GET_COUNT
     lda TEMP_A
-    beq _ansi_dl_done
     sta ASCII_WORK_COUNT
     lda ASCII_ROW
-    sta ASCII_DST_ROW
-_ansi_dl_copy:
-    lda ASCII_DST_ROW
-    clc
-    adc ASCII_WORK_COUNT
-    cmp #SCREEN_ROWS
-    bcs _ansi_dl_clear
-    sta ASCII_SRC_ROW
-    jsr ASCII_COPY_SRC_TO_DST_ROW
-    inc ASCII_DST_ROW
-    bra _ansi_dl_copy
-_ansi_dl_clear:
-    lda ASCII_WORK_COUNT
-    sta TEMP_A
-_ansi_dl_clear_loop:
-    lda TEMP_A
-    beq _ansi_dl_done
-    jsr ASCII_CLEAR_DST_ROW
-    inc ASCII_DST_ROW
-    dec TEMP_A
-    bra _ansi_dl_clear_loop
+    jmp ANSI_REGION_SHIFT_UP
 _ansi_dl_done:
-    jmp ASCII_RECALC_PTR
+    rts
 
-ANSI_SCROLL_UP:
-    jsr ANSI_GET_SCREEN_COUNT
-    lda TEMP_A
-    beq _ansi_su_done
-    sta ASCII_WORK_COUNT
-    lda #0
+; C=0 if ASCII_SCROLL_TOP <= ASCII_ROW <= ASCII_SCROLL_BOTTOM, else C=1.
+ANSI_CURSOR_IN_REGION:
+    lda ASCII_ROW
+    cmp ASCII_SCROLL_TOP
+    bcc _ansi_cir_out
+    lda ASCII_SCROLL_BOTTOM
+    cmp ASCII_ROW
+    bcc _ansi_cir_out
+    clc
+    rts
+_ansi_cir_out:
+    sec
+    rts
+
+; Shift rows A..ASCII_SCROLL_BOTTOM up by ASCII_WORK_COUNT (>=1) and clear
+; the rows vacated at the bottom margin.  Rows outside the region are kept.
+ANSI_REGION_SHIFT_UP:
     sta ASCII_DST_ROW
-_ansi_su_copy:
+_ansi_rsu_copy:
     lda ASCII_DST_ROW
     clc
     adc ASCII_WORK_COUNT
-    cmp #SCREEN_ROWS
-    bcs _ansi_su_clear
-    sta ASCII_SRC_ROW
+    bcs _ansi_rsu_clear
+    cmp ASCII_SCROLL_BOTTOM
+    beq +
+    bcs _ansi_rsu_clear
++   sta ASCII_SRC_ROW
     jsr ASCII_COPY_SRC_TO_DST_ROW
     inc ASCII_DST_ROW
-    bra _ansi_su_copy
-_ansi_su_clear:
-    lda ASCII_WORK_COUNT
-    sta TEMP_A
-_ansi_su_clear_loop:
-    lda TEMP_A
-    beq _ansi_su_done
-    jsr ASCII_CLEAR_DST_ROW
+    bra _ansi_rsu_copy
+_ansi_rsu_clear:
+    lda ASCII_DST_ROW
+    cmp ASCII_SCROLL_BOTTOM
+    beq +
+    bcs _ansi_rsu_done
++   jsr ASCII_CLEAR_DST_ROW
     inc ASCII_DST_ROW
-    dec TEMP_A
-    bra _ansi_su_clear_loop
-_ansi_su_done:
+    bra _ansi_rsu_clear
+_ansi_rsu_done:
     jmp ASCII_RECALC_PTR
 
-ANSI_SCROLL_DOWN:
-    jsr ANSI_GET_SCREEN_COUNT
-    lda TEMP_A
-    beq _ansi_sd_done
-    sta ASCII_WORK_COUNT
-    lda #SCREEN_ROWS-1
+; Shift rows A..ASCII_SCROLL_BOTTOM down by ASCII_WORK_COUNT (>=1); rows
+; pushed past the bottom margin are lost, and the rows opened at A are
+; cleared.  Rows outside the region are kept.
+ANSI_REGION_SHIFT_DOWN:
+    sta ANSI_REGION_START
+    lda ASCII_SCROLL_BOTTOM
     sta ASCII_DST_ROW
-_ansi_sd_copy:
+_ansi_rsd_copy:
     lda ASCII_DST_ROW
     sec
     sbc ASCII_WORK_COUNT
-    bcc _ansi_sd_clear
+    bcc _ansi_rsd_clear
+    cmp ANSI_REGION_START
+    bcc _ansi_rsd_clear
     sta ASCII_SRC_ROW
     jsr ASCII_COPY_SRC_TO_DST_ROW
-    lda ASCII_DST_ROW
-    beq _ansi_sd_clear
     dec ASCII_DST_ROW
-    bra _ansi_sd_copy
-_ansi_sd_clear:
-    lda #0
-    sta ASCII_DST_ROW
-    lda ASCII_WORK_COUNT
+    bra _ansi_rsd_copy
+_ansi_rsd_clear:
+    lda ASCII_WORK_COUNT            ; ASCII_CLEAR_DST_ROW clobbers WORK_COUNT
     sta TEMP_A
-_ansi_sd_clear_loop:
+    lda ANSI_REGION_START
+    sta ASCII_DST_ROW
+_ansi_rsd_clear_loop:
     lda TEMP_A
-    beq _ansi_sd_done
-    jsr ASCII_CLEAR_DST_ROW
+    beq _ansi_rsd_done
+    lda ASCII_DST_ROW
+    cmp ASCII_SCROLL_BOTTOM
+    beq +
+    bcs _ansi_rsd_done
++   jsr ASCII_CLEAR_DST_ROW
     inc ASCII_DST_ROW
     dec TEMP_A
-    bra _ansi_sd_clear_loop
-_ansi_sd_done:
+    bra _ansi_rsd_clear_loop
+_ansi_rsd_done:
     jmp ASCII_RECALC_PTR
+
+; SU/SD scroll the whole scroll region, whatever the cursor row.
+ANSI_SCROLL_UP:
+    jsr ANSI_GET_COUNT
+    lda TEMP_A
+    sta ASCII_WORK_COUNT
+    lda ASCII_SCROLL_TOP
+    jmp ANSI_REGION_SHIFT_UP
+
+ANSI_SCROLL_DOWN:
+    jsr ANSI_GET_COUNT
+    lda TEMP_A
+    sta ASCII_WORK_COUNT
+    lda ASCII_SCROLL_TOP
+    jmp ANSI_REGION_SHIFT_DOWN
 
 ANSI_ERASE_LINE:
     lda ANSI_PARAM0
@@ -5121,6 +5087,7 @@ ANSI_COLOR_WORK:        .byte 0
 ASCII_WRAP_MODE:        .byte 1
 ASCII_SCROLL_TOP:       .byte 0
 ASCII_SCROLL_BOTTOM:    .byte SCREEN_ROWS-1
+ANSI_REGION_START:      .byte 0             ; first row for ANSI_REGION_SHIFT_DOWN
 ASCII_SAVED_ROW:        .byte 0
 ASCII_SAVED_COL:        .byte 0
 ASCII_SAVED_FG_COLOR:   .byte ASCII_DEFAULT_COLOR
