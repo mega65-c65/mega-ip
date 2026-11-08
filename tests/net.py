@@ -71,20 +71,26 @@ DHCP_OFFER, DHCP_REQUEST, DHCP_ACK, DHCP_NAK, DHCP_DISCOVER = 2, 3, 5, 6, 1
 
 
 def dhcp_reply(xid, chaddr, msg_type, yiaddr, server_id, mask=(255, 255, 255, 0),
-               router=None, dns=None, lease=3600):
-    """A BOOTREPLY from a DHCP server, as a complete broadcast frame."""
+               router=None, dns=None, lease=3600, send_server_id=True, src_ip=None):
+    """A BOOTREPLY from a DHCP server, as a complete broadcast frame.
+    mask=None leaves option 1 out; send_server_id=False leaves option 54
+    out; src_ip overrides the IPv4 source (default: server_id)."""
     bootp = struct.pack('!BBBB4sHH4s4s4s4s', 2, 1, 6, 0, bytes(xid), 0, 0x8000,
                         bytes(4), bytes(yiaddr), bytes(server_id), bytes(4))
     bootp += bytes(chaddr) + bytes(10) + bytes(64) + bytes(128)
-    opts = bytes([99, 130, 83, 99, 53, 1, msg_type, 54, 4]) + bytes(server_id)
-    opts += bytes([1, 4]) + bytes(mask)
+    opts = bytes([99, 130, 83, 99, 53, 1, msg_type])
+    if send_server_id:
+        opts += bytes([54, 4]) + bytes(server_id)
+    if mask:
+        opts += bytes([1, 4]) + bytes(mask)
     opts += bytes([3, 4]) + bytes(router or server_id)
     if dns:
         opts += bytes([6, 4]) + bytes(dns)
     opts += bytes([51, 4]) + struct.pack('!I', lease) + bytes([255])
     payload = bootp + opts
-    u = udp(server_id, (255, 255, 255, 255), 67, 68, payload)
-    ip = ipv4(server_id, (255, 255, 255, 255), PROTO_UDP, u)
+    src = src_ip or server_id
+    u = udp(src, (255, 255, 255, 255), 67, 68, payload)
+    ip = ipv4(src, (255, 255, 255, 255), PROTO_UDP, u)
     return ethernet(BROADCAST, b'\x02\x00\x00\x00\x00' + bytes([server_id[3]]), ETH_IPV4, ip)
 
 

@@ -42,6 +42,54 @@ class OutOfOrderSlot(unittest.TestCase):
         got, want = self.deliver_out_of_order(0xFFFFFFE0)
         self.assertEqual(got, want)
 
+    def saved_fin(self):
+        s = Stack.ready()
+        p = Peer(s)
+        p.connect_stack()
+        base = p.seq
+        s.deliver(p.segment(PSH | FIN | ACK, b'END', seq=base + 5))   # data+FIN early
+        s.poll()
+        self.assertEqual(s.peek('TCP_OOO_VALID'), 1)
+        return s, p, base
+
+    def test_saved_segment_with_fin_closes_when_gap_fills(self):
+        s, p, base = self.saved_fin()
+        s.deliver(p.segment(PSH | ACK, b'start', seq=base))
+        s.poll(2)
+        self.assertEqual(s.read_received(), b'startEND')
+        self.assertEqual(s.state, 'CLOSE_WAIT')
+        self.assertEqual([f for f in s.sent() if f.tcp][-1].tcp['ack'], base + 9)
+
+    def test_saved_fin_flushed_after_our_own_fin(self):
+        s, p, base = self.saved_fin()
+        s.call('ETH_TCP_DISCONNECT')
+        fin = [f for f in s.sent() if f.tcp and f.tcp['flags'] & FIN][0]
+        s.deliver(p.segment(PSH | ACK, b'start', seq=base, ack=fin.tcp['seq'] + 1))
+        s.poll(2)
+        self.assertEqual(s.read_received(), b'startEND')
+        self.assertEqual(s.state, 'TIME_WAIT')
+
+    def test_early_segment_in_fin_wait_2_recovers_by_retransmit(self):
+        """The slot is only used in ESTABLISHED; in FIN_WAIT_2 an early
+        segment is answered with a duplicate ACK and the peer resends it."""
+        s = Stack.ready()
+        p = Peer(s)
+        p.connect_stack()
+        base = p.seq
+        s.call('ETH_TCP_DISCONNECT')
+        fin = [f for f in s.sent() if f.tcp and f.tcp['flags'] & FIN][0]
+        p.ack = fin.tcp['seq'] + 1
+        p.send(ACK)
+        s.poll()
+        late = p.segment(PSH | FIN | ACK, b'END', seq=base + 5)
+        s.deliver(late)
+        s.deliver(p.segment(PSH | ACK, b'start', seq=base))
+        s.poll(2)
+        s.deliver(late)                                   # peer's retransmission
+        s.poll()
+        self.assertEqual(s.read_received(), b'startEND')
+        self.assertEqual(s.state, 'TIME_WAIT')
+
     def test_passed_segment_frees_slot_across_wrap(self):
         """A saved segment that RCV.NXT passes across the wrap is released as
         stale, so the slot can hold the next out-of-order segment (an

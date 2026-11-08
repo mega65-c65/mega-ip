@@ -71,6 +71,55 @@ class Answers(unittest.TestCase):
         self.assertEqual(dns_result(s), (4, 3, 2, 1))
 
 
+class ReplySections(unittest.TestCase):
+    def deliver(self, s, dns, q, body, an=1, ns=0, ar=0):
+        p = q.udp['payload']
+        msg = p[0:2] + struct.pack('!HHHHH', 0x8180, 1, an, ns, ar) + p[12:] + body
+        me = s.peek('LOCAL_IP', 4)
+        u = net.udp(dns.ip, me, 53, q.udp['sport'], msg)
+        s.deliver(net.ethernet(s.mac, dns.mac, net.ETH_IPV4, net.ipv4(dns.ip, me, net.PROTO_UDP, u)))
+        s.poll()
+
+    def test_authority_and_additional_sections(self):
+        s = Stack.ready()
+        dns, q = start_lookup(s)
+        ns = b'\xc0\x0c' + struct.pack('!HHIH', 2, 1, 60, 6) + b'\x03ns1\xc0\x0c'
+        glue = a_record((9, 9, 9, 9), b'\x03ns1\xc0\x0c')
+        self.deliver(s, dns, q, a_record((1, 2, 3, 4)) + ns + glue, an=1, ns=1, ar=1)
+        self.assertEqual(dns_state(s), DNS_STATE_DONE)
+        self.assertEqual(dns_result(s), (1, 2, 3, 4))
+
+    def test_answer_for_another_name_is_skipped(self):
+        s = Stack.ready()
+        dns, q = start_lookup(s)
+        self.deliver(s, dns, q, a_record((7, 7, 7, 7), b'\x05other\x00') + a_record((1, 2, 3, 4)),
+                     an=2)
+        self.assertEqual(dns_result(s), (1, 2, 3, 4))
+
+
+class Hostnames(unittest.TestCase):
+    def test_bad_names_are_rejected_without_a_query(self):
+        for name in ('exa mple.com', 'a..b', 'x' * 64 + '.com', 'a.' * 70):
+            with self.subTest(name=name[:20]):
+                s = Stack.ready()
+                s.set_host(name)
+                self.assertEqual(s.call('DNS_RESOLVE_START').carry, 1)
+                self.assertEqual(s.sent(), [])
+
+    def test_label_of_63_is_accepted(self):
+        s = Stack.ready()
+        _, q = start_lookup(s, 'x' * 63 + '.com')
+        self.assertEqual(q.udp['payload'][12], 63)
+
+    def test_zero_length_ml_buffers_are_rejected(self):
+        s = Stack.ready()
+        s.set_host('old.example')
+        self.assertEqual(s.call(0x760F, 0x00, 0x10, 0x02, 0).a, 0)
+        self.assertEqual(s.call(0x7618, 0x00, 0x30, 0).a, 0)
+        s.poll()
+        self.assertEqual(s.sent(), [])
+
+
 class Failures(unittest.TestCase):
     def check_fails(self, **kw):
         s = Stack.ready()
