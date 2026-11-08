@@ -22,7 +22,7 @@ Test classes or docstrings that name a commit are regression tests for that fix.
 
 ## Known bugs
 
-Tests in `test_known_bugs.py` are marked `@unittest.expectedFailure`, so the run (and `build.bat`) stays green while the bug is known; the result line shows `expected failures=N`. When a fix lands, that test passes, unittest reports an unexpected success and the run fails: remove the marker in the same commit as the fix.
+A newly found bug can be recorded in `test_known_bugs.py` as a test marked `@unittest.expectedFailure`, so the run (and `build.bat`) stays green while the bug is known; the result line shows `expected failures=N`. When a fix lands, that test passes, unittest reports an unexpected success and the run fails: remove the marker in the same commit as the fix.
 
 ## Fuzzing
 
