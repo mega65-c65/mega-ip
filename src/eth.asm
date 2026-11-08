@@ -1746,12 +1746,14 @@ _got_FIN_ACK:
     lda #$00
     sta REMOTE_ISN_BUMP
 
-    ; send final ACK
+    ; send final ACK.  The FIN is already consumed, so enter TIME_WAIT even if
+    ; the ACK can't be built: TIME_WAIT re-ACKs the peer's retransmitted FIN,
+    ; while staying in FIN_WAIT_2 would hang (no timer, FIN now looks old).
     lda #TCP_FLAG_ACK
     jsr ETH_BUILD_TCPIP_PACKET
-    bcs _done
+    bcs +
     jsr DEFER_CURRENT_TX
-
++
     ; reset TIME_WAIT counter
     jsr TCP_TIME_WAIT_RESET
     lda #$00
