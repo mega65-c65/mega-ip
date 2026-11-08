@@ -1716,7 +1716,18 @@ _check_FIN_WAIT_1:
 
 _fin_wait_1_seq_ok:
     jsr TCP_SEQ_CMP_SEG_ACK_LOCAL_ISN
-    bne _done
+    beq _got_FIN_WAIT_1_ACK
+    bpl _done                       ; ACK beyond SND.NXT: ignore
+
+    ; Our FIN isn't ACKed yet, but the peer may still send data (or its own
+    ; FIN) before it sees ours.  Take and ACK it, and stay in FIN_WAIT_1.
+    lda TCP_RX_DATA_PAYLOAD_SIZE
+    ora TCP_RX_DATA_PAYLOAD_SIZE+1
+    bne _copy_payload_and_ack
+    lda ETH_RX_TCP_FLAGS
+    and #TCP_FLAG_FIN
+    bne _got_FIN_ACK
+    jmp _done
 
 _got_FIN_WAIT_1_ACK:
     lda #TCP_STATE_FIN_WAIT_2

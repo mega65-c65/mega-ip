@@ -97,11 +97,9 @@ class FinWait1Data(unittest.TestCase):
         s.poll()
         self.assertEqual(s.read_received(), b'hi')
 
-    @unittest.expectedFailure
     def test_data_before_peer_acks_our_fin(self):
-        """eth.asm FIN_WAIT_1 drops in-sequence data whose ACK doesn't yet
-        cover our FIN (bne _done after TCP_SEQ_CMP_SEG_ACK_LOCAL_ISN), without
-        ACKing it."""
+        """In-sequence data whose ACK doesn't yet cover our FIN is taken and
+        ACKed, staying in FIN_WAIT_1 (it used to be dropped silently)."""
         s = Stack.ready()
         p = Peer(s)
         p.connect_stack()
@@ -113,6 +111,34 @@ class FinWait1Data(unittest.TestCase):
         self.assertEqual(s.read_received(), b'hi')
         acks = [f for f in s.sent() if f.tcp]
         self.assertTrue(acks and acks[-1].tcp['ack'] == p.seq)
+        self.assertEqual(s.state, 'FIN_WAIT_1')
+
+    def test_simultaneous_close(self):
+        """The peer's FIN arrives before it ACKs ours: ACK it and finish in
+        TIME_WAIT."""
+        s = Stack.ready()
+        p = Peer(s)
+        p.connect_stack()
+        s.call('ETH_TCP_DISCONNECT')
+        fin = [f for f in s.sent() if f.tcp and f.tcp['flags'] & FIN][0]
+        p.ack = fin.tcp['seq']
+        p.send(FIN | ACK)
+        s.poll()
+        acks = [f for f in s.sent() if f.tcp]
+        self.assertTrue(acks and acks[-1].tcp['ack'] == p.seq)
+        self.assertEqual(s.state, 'TIME_WAIT')
+
+    def test_ack_beyond_snd_nxt_is_ignored(self):
+        s = Stack.ready()
+        p = Peer(s)
+        p.connect_stack()
+        s.call('ETH_TCP_DISCONNECT')
+        fin = [f for f in s.sent() if f.tcp and f.tcp['flags'] & FIN][0]
+        p.ack = fin.tcp['seq'] + 5
+        p.send(PSH | ACK, b'hi')
+        s.poll()
+        self.assertEqual(s.read_received(), b'')
+        self.assertEqual(s.state, 'FIN_WAIT_1')
 
 
 class SynReceivedDataAck(unittest.TestCase):
