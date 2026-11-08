@@ -279,6 +279,35 @@ class CallResult(unittest.TestCase):
         self.assertEqual((first.a, first.x), (1, 2))
 
 
+class CoverageReport(unittest.TestCase):
+    def test_records_executed_instructions_per_routine(self):
+        import copy
+        import tempfile
+        from m65sim import Coverage, assemble, coverage_report, parse_listing
+        text = ('    .cpu "45gs02"\n    * = $2000\n'
+                'taken:\n    lda #1\n    beq +\n    rts\n'
+                '+   lda #2\n    rts\n'
+                'never:\n    lda #3\n    rts\n')
+        work = tempfile.mkdtemp(prefix='m65sim_cov_')
+        src = work + '/cov.asm'
+        with open(src, 'w') as f:
+            f.write(text)
+        lst = work + '/cov.lst'
+        asm = assemble(src, TASS, workdir=work, extra_args=['-L', lst, '--line-numbers'])
+        cov = Coverage()
+        m = Machine()
+        m.coverage = cov
+        m.load_flat(asm.start, asm.binary)
+        copy.deepcopy(m).call(asm['taken'])            # copies share the collector
+        listing = parse_listing(lst)
+        self.assertEqual(len(listing), 7)
+        hit = {(i.routine, i.source) for i in listing if i.addr in cov}
+        self.assertEqual(hit, {('taken', 'lda #1'), ('taken', 'beq +'), ('taken', 'rts')})
+        out = coverage_report(cov, listing)
+        self.assertIn('Instruction coverage: 3 of 7', out)
+        self.assertIn('never', out.split('Routines never entered')[1])
+
+
 class EthernetModel(unittest.TestCase):
     def test_rotate_on_rising_edge_and_rxq(self):
         m = Machine()

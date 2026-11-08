@@ -48,6 +48,14 @@ python -m unittest discover -s tests -p test_malformed.py
 
 A failure names the seed and case number and prints the frame, so it can be reproduced exactly.
 
+## Coverage
+
+```
+python tests/coverage.py
+```
+
+runs the whole suite with instruction recording on and maps the executed addresses back to source lines through a 64tass listing. It prints coverage per source file and writes the full report to `target/coverage.txt`: routines no test enters, then for each partly covered routine the source lines that never ran (`--all` includes routines with only one or two missed lines). Use it to find what still needs a test.
+
 ## Checking a test against older code
 
 Set `MEGAIP_ROOT` to another checkout to assemble its `src/eth.asm` instead, for example to confirm a regression test fails without its fix:

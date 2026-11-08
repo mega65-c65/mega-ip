@@ -264,6 +264,9 @@ class Cpu:
         table = self._table
         read = self.bus.read
         start = self.pc
+        cov = getattr(self.bus, 'coverage', None)
+        if cov is not None:
+            cov.add(start)
         op = read(start)
         pc = (start + 1) & 0xFFFF
         flat = False
@@ -299,12 +302,15 @@ class Cpu:
         after = bus.after_instruction
         izz = _IZZ
         hook = getattr(bus, 'needs_after_instruction', None)
+        cov = getattr(bus, 'coverage', None)
         left = max_instructions
         while self.pc != stop_pc:
             if left <= 0:
                 return False
             left -= 1
             start = self.pc
+            if cov is not None:
+                cov.add(start)
             op = read(start)
             pc = (start + 1) & 0xFFFF
             flat = False

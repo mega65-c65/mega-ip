@@ -56,6 +56,7 @@ class Machine:
         self.rng_state = 0x1234
         self._dma_pending = False
         self.io_writes = []          # (addr, value) for registers no model owns
+        self.coverage = None         # a coverage.Coverage to record executed PCs
 
     # ---- flat memory -----------------------------------------------------
     def _page(self, addr, create):

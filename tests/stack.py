@@ -12,7 +12,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, 'tools', 'sim'))
 
-from m65sim import Machine, assemble, find_tass  # noqa: E402
+from m65sim import Coverage, Machine, assemble, find_tass  # noqa: E402
 
 import net  # noqa: E402
 from net import ACK, FIN, PSH, RST, SYN  # noqa: E402,F401
@@ -20,6 +20,9 @@ from net import ACK, FIN, PSH, RST, SYN  # noqa: E402,F401
 BANK4 = 0x40000
 _ASSEMBLY = None
 _READY = None
+# Set MEGAIP_COVERAGE (tests/coverage.py does) to record every executed
+# instruction of every stack in the run into this one collector.
+COVERAGE = Coverage() if os.environ.get('MEGAIP_COVERAGE') else None
 
 
 def assembly():
@@ -45,6 +48,7 @@ class Stack:
     def __init__(self):
         self.asm = assembly()
         self.m = Machine(cpu_map=[(0x2000, 0x7FFF, BANK4 + 0x2000)])
+        self.m.coverage = COVERAGE
         self.m.load_flat(BANK4 + self.asm.start, self.asm.binary)
         self.eth = self.m.eth
         self.mac = bytes(self.eth.mac)
