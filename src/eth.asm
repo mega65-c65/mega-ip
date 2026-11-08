@@ -2668,7 +2668,9 @@ _tx_fail:
 ;=============================================================================
 ETH_WAIT_100MS:
 
-    ldx #>1600                  ; high byte
+    ; The dey/dex loop runs Y + 256*(X-1) raster lines, so X needs the
+    ; high byte rounded up: 1600 = $40 + 256*6 with X=7.
+    ldx #>(1600+255)            ; high byte, rounded up
     ldy #<1600                  ; low byte
 
 _wait_outer
