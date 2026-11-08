@@ -1,6 +1,7 @@
 """Mutation testing: flip branches in eth.bin and check the tests notice.
 
     python tests/mutate.py [--sample N] [--file dns.asm] [--jobs J] [--seed S]
+                           [--rerun SURVIVORS.txt]
 
 Each mutant flips one conditional branch (BEQ<->BNE, BCC<->BCS, BMI<->BPL,
 BVC<->BVS, 8- and 16-bit forms) among the instructions the suite executes,
@@ -78,9 +79,15 @@ def main():
     ap.add_argument('--file', help='only branches in this source file, e.g. dns.asm')
     ap.add_argument('--jobs', type=int, default=os.cpu_count() or 2)
     ap.add_argument('--seed', type=int, default=1)
+    ap.add_argument('--rerun', metavar='FILE',
+                    help='only the "survived:" lines saved from an earlier run')
     args = ap.parse_args()
 
     branches = executed_branches(args.file)
+    if args.rerun:
+        with open(args.rerun) as f:
+            wanted = {line.split()[1] for line in f if line.strip().startswith('survived:')}
+        branches = [b for b in branches if '%s:%d' % (b[0].file, b[0].line) in wanted]
     if args.sample and args.sample < len(branches):
         branches = random.Random(args.seed).sample(branches, args.sample)
     print('%d mutants, %d jobs' % (len(branches), args.jobs))

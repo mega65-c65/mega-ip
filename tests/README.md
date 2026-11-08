@@ -21,6 +21,8 @@ Each run assembles `src/eth.asm` into a temp folder. Tests call routines by labe
 | `test_sessions.py` | Many connections on one stack: back-to-back client sessions with every kind of close, the web server's accept loop, state and unread data not leaking between connections |
 | `test_routing.py` | Gateway routing and subnet masks, frame filtering, ARP, ping and DNS during a transfer, the send queue |
 | `test_timers.py` | Timers when the program polls once per frame at a fixed raster line |
+| `test_peers.py` | Segments as real hosts send them: TCP options, timestamps, overlapping and duplicate retransmissions, keepalive probes, segment sizes around byte boundaries, a peer's zero window (known limitation) |
+| `test_comparisons.py` | Address and field checks compared byte by byte (MAC, peer MAC, IPs, DHCP client address, mask contiguity, DNS reply address), FIN and SYN-ACK retry intervals, the window-update threshold, over-long host names |
 | `test_review_items.py` | Remaining review items confirmed or ruled out (ARP header validation, DNS port wrap, DHCP option position, `RBUF_PUT`) |
 | `test_known_bugs.py` | Defects found in review (all fixed now), each with a control test; new known bugs go here |
 | `test_malformed.py` | Bad frames that must be dropped silently, and seeded fuzzing of the receive path |
@@ -32,7 +34,7 @@ Test classes or docstrings that name a commit are regression tests for that fix.
 
 ## Known bugs
 
-One known limitation is recorded this way now: DHCP options more than 255 bytes into the options field (`test_review_items.py`). A newly found bug can be recorded in `test_known_bugs.py` as a test marked `@unittest.expectedFailure`, so the run (and `build.bat`) stays green while the bug is known; the result line shows `expected failures=N`. When a fix lands, that test passes, unittest reports an unexpected success and the run fails: remove the marker in the same commit as the fix.
+Two known limitations are recorded this way now: DHCP options more than 255 bytes into the options field (`test_review_items.py`) and the peer's zero window (`test_peers.py`). A newly found bug can be recorded in `test_known_bugs.py` as a test marked `@unittest.expectedFailure`, so the run (and `build.bat`) stays green while the bug is known; the result line shows `expected failures=N`. When a fix lands, that test passes, unittest reports an unexpected success and the run fails: remove the marker in the same commit as the fix.
 
 ## Fuzzing
 
@@ -55,6 +57,16 @@ python tests/coverage.py
 ```
 
 runs the whole suite with instruction recording on and maps the executed addresses back to source lines through a 64tass listing. It prints coverage per source file and writes the full report to `target/coverage.txt`: routines no test enters, then for each partly covered routine the source lines that never ran (`--all` includes routines with only one or two missed lines). Use it to find what still needs a test.
+
+## Mutation testing
+
+```
+python tests/mutate.py [--sample N] [--file dns.asm] [--jobs J] [--rerun SURVIVORS.txt]
+```
+
+flips one conditional branch at a time in `eth.bin` (only branches the suite runs) and runs the whole suite on each mutant, in parallel. A mutant the suite fails on is killed; a surviving one is a branch whose direction no test checks. Some survivors make no observable difference (for example, a loop that copies bytes which are already equal), so read each one before writing a test. It runs the suite once per mutant, so it isn't part of the build: the full set (about 800 branches) takes about 15 minutes on 12 cores. Save the output and use `--rerun` on it to retest only the survivors after adding tests. Last full run: 682 of 807 killed (85%); most of the rest make no observable difference or are checks repeated later in the receive path.
+
+Every test also checks the checksums of everything the stack sends: `Stack.sent()` fails on a bad IPv4, TCP, UDP or ICMP checksum.
 
 ## Checking a test against older code
 
