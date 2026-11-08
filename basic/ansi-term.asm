@@ -610,7 +610,9 @@ RX_BYTE_DONE:
     jsr CURSOR_SPRITE_UPDATE
 _rx_block_no_cursor:
     jsr TERMINAL_POLL_STATUS
-    bra CHECK_RX
+    ; Check the keyboard between blocks so Ctrl-W/F7 and typing still work
+    ; while the host streams data; CHECK_KEYBOARD falls through to CHECK_RX.
+    bra CHECK_KEYBOARD
 
 CHECK_STATUS:
     jsr TERMINAL_POLL_STATUS
