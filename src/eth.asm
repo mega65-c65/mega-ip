@@ -865,15 +865,20 @@ _done:
 ;=============================================================================
 ETH_TCP_LISTEN_START:
 
+    ; only if no active connection in progress.  Check before touching the
+    ; ports: changing LOCAL_PORT under a live connection breaks it.
+    pha
+    lda TCP_STATE
+    cmp #TCP_STATE_CLOSED
+    beq +
+    pla
+    bra _busy_fail
++   pla
+
     sta TCP_LISTEN_PORT
     sta LOCAL_PORT
     stx TCP_LISTEN_PORT+1
     stx LOCAL_PORT+1
-
-    ; only if no active connection in progress
-    lda TCP_STATE
-    cmp #TCP_STATE_CLOSED
-    bne _busy_fail
 
     lda #0
     sta TCP_ACCEPT_FLAGS        ; clear accepted/fail
