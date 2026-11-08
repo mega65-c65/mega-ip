@@ -316,28 +316,33 @@
  5600 rem == upload file ====================================================
  5610 print"..";ts$;" - upload - ";fl$
  5620 gosub 6200
+ 5625 if uq=1 then print"..";ts$;" - upload timed out":sys $4205d:goto 730
  5630 if fl$="" then goto 5800
  5640 open 15,8,15:print#15,"s:"+fl$:close 15
  5650 close 2:open 2,8,2,fl$+","+ft$+",w"
- 5660 gosub 6300:close 2:goto 5800
+ 5660 gosub 6300:close 2:if uq=0 then goto 5800
+ 5670 open 15,8,15:print#15,"s:"+fl$:close 15
+ 5680 print"..";ts$;" - upload timed out":sys $4205d:goto 730
  5800 rem == redirect to file manager ======================================
  5810 sys $42015,1:a$="HTTP/1.0 303 See Other"+cr$+"Location: /files.html"+cr$:gosub 1000
  5820 a$="Content-Length: 0"+cr$+"Connection: close"+cr$+cr$:gosub 1000
  5830 gosub 1030:sys $42021:gosub 1030:sleep1:sys $4205d:goto 730
  6200 rem == discard http headers ==========================================
- 6210 hl=0
+ 6210 hl=0:iw=0:uq=0
  6220 sys $42024:sys $4201e:rreg a
- 6230 if a=0 then 6220
- 6240 if a=13 then 6220
+ 6230 if a=0 then iw=iw+1:if iw<20000 then 6220
+ 6235 if a=0 then uq=1:return
+ 6240 iw=0:if a=13 then 6220
  6250 if a=10 then if hl=0 then return
  6260 if a=10 then hl=0:goto 6220
  6270 hl=hl+1:goto 6220
  6300 rem == receive upload body ===========================================
- 6310 ub=0:bs$="":sys $42015,0
+ 6310 ub=0:bs$="":iw=0:uq=0:sys $42015,0
  6320 if ub>=cl then 6380
  6330 sys $42024:sys $4761e:rreg a,x
- 6340 if x=0 then 6330
- 6350 bs$=bs$+chr$(a):ub=ub+1
+ 6340 if x=0 then iw=iw+1:if iw<20000 then 6330
+ 6345 if x=0 then uq=1:return
+ 6350 iw=0:bs$=bs$+chr$(a):ub=ub+1
  6360 if len(bs$)<128 then 6320
  6370 print#2,bs$;:bs$="":goto 6320
  6380 if len(bs$)>0 then print#2,bs$;
