@@ -2630,6 +2630,13 @@ _pad_min_frame:
     sta ETH_TX_LEN_LSB
 
 _tx_len_ready:
+    ; make sure ethernet is not under reset, then wait for the previous frame
+    ; to finish (TXIDLE) before touching TXSIZE or the hardware TX buffer.
+    lda #$03
+    sta MEGA65_ETH_CTRL1
+    jsr ETH_WAIT_CLEAR_TO_SEND
+    bcs _tx_fail
+
     lda ETH_TX_LEN_LSB
     sta MEGA65_ETH_TXSIZE_LSB
     sta _len_lsb
@@ -2664,13 +2671,6 @@ _ETH_BUF_SRC:
     .word $0000                 ; modulo (ignored)
 plp
 
-    ; make sure ethernet is not under reset
-    lda #$03
-    sta MEGA65_ETH_CTRL1
-
-    ; be sure we can send
-    jsr ETH_WAIT_CLEAR_TO_SEND
-    bcs _tx_fail
     ; transmit now
     lda #$01
     sta MEGA65_ETH_COMMAND
