@@ -1304,8 +1304,9 @@ _dup_entire:
     sta REMOTE_ISN_BUMP
     lda #TCP_FLAG_ACK
     jsr ETH_BUILD_TCPIP_PACKET
+    bcs +                          ; no frame built: don't queue a stale one
     jsr DEFER_CURRENT_TX
-    jsr _apply_peer_fin_state
++   jsr _apply_peer_fin_state
     plp
     rts
 
@@ -1318,8 +1319,9 @@ _dup_entire_ack:
     jsr CALC_REMOTE_ISN
     lda #TCP_FLAG_ACK
     jsr ETH_BUILD_TCPIP_PACKET
+    bcs +                          ; no frame built: don't queue a stale one
     jsr DEFER_CURRENT_TX
-    plp
++   plp
     rts
 
 _have_tail:
@@ -1509,7 +1511,8 @@ _ack_no_fin_bump:
 
     lda #TCP_FLAG_ACK
     jsr ETH_BUILD_TCPIP_PACKET
-    
+    bcs _ack_defer_done            ; no frame built: don't queue a stale one
+
     ; Copy the built frame into a side buffer and flag it for mainline
     ; Clamp frame size to buffer limit
     lda ETH_TX_LEN_LSB
@@ -2691,11 +2694,14 @@ ETH_BUILD_TCPIP_PACKET:
 
     pha                             ; push the TCP_FLAG to stack
 
-    lda TCP_STATE                   ; dont do a ARP if we already have a TCP peer
+    ; Use the saved peer MAC for every state of a live connection.  Closing
+    ; states must not depend on the ARP cache: a passive peer is never cached,
+    ; and an active peer's entry can age out during the connection.
+    lda TCP_STATE
     cmp #TCP_STATE_ESTABLISHED
     beq _use_tcp_peer_mac
-    cmp #TCP_STATE_SYN_SENT
-    bne _route_lookup
+    cmp #TCP_STATE_CLOSED
+    beq _route_lookup
     lda TCP_PEER_MAC_VALID
     bne _use_tcp_peer_mac
 
