@@ -86,6 +86,14 @@ class Filtering(unittest.TestCase):
                 self.s.poll()
                 self.assertEqual(self.s.sent(), [])
 
+    def test_unicast_mac_ending_in_ff_is_not_broadcast(self):
+        """The broadcast check must compare all six bytes."""
+        for mac in (b'\x02\x11\x22\x33\x44\xff', b'\xff\xff\xff\xff\xff\xfe'):
+            with self.subTest(mac=mac.hex()):
+                self.s.deliver(self.ping_frame(self.s, self.p, mac))
+                self.s.poll()
+                self.assertEqual(self.s.sent(), [])
+
     def test_arp_request_for_another_host_is_ignored(self):
         body = net.arp(1, self.p.mac, self.p.ip, bytes(6), (192, 168, 1, 99))
         self.s.deliver(net.ethernet(net.BROADCAST, self.p.mac, net.ETH_ARP, body))

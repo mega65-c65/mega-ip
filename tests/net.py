@@ -153,7 +153,7 @@ class Parsed:
         self.raw = raw
         self.dst, self.src = raw[0:6], raw[6:12]
         self.ethertype = struct.unpack('!H', raw[12:14])[0]
-        self.arp = self.ip = self.tcp = self.udp = None
+        self.arp = self.ip = self.tcp = self.udp = self.icmp = None
         body = raw[14:]
         if self.ethertype == ETH_ARP:
             hw, pt, hl, pl, op = struct.unpack('!HHBBH', body[:8])
@@ -173,8 +173,22 @@ class Parsed:
                                 window=win, payload=seg[hlen:],
                                 checksum_ok=checksum(pseudo + seg) == 0)
             elif body[9] == PROTO_UDP:
-                sport, dport, length = struct.unpack('!HHH', seg[:6])
-                self.udp = dict(sport=sport, dport=dport, payload=seg[8:length])
+                sport, dport, length, csum = struct.unpack('!HHHH', seg[:8])
+                pseudo = body[12:20] + struct.pack('!BBH', 0, PROTO_UDP, length)
+                self.udp = dict(sport=sport, dport=dport, payload=seg[8:length],
+                                checksum_ok=csum == 0 or checksum(pseudo + seg[:length]) == 0)
+            elif body[9] == PROTO_ICMP:
+                self.icmp = dict(type=seg[0], checksum_ok=checksum(seg) == 0)
+
+    def checksum_errors(self):
+        """Names of the checksums that are wrong in this frame."""
+        bad = []
+        if self.ip and not self.ip['header_ok']:
+            bad.append('IPv4 header')
+        for name, layer in (('TCP', self.tcp), ('UDP', self.udp), ('ICMP', self.icmp)):
+            if layer and not layer['checksum_ok']:
+                bad.append(name)
+        return bad
 
     def __repr__(self):
         if self.arp:

@@ -32,6 +32,15 @@ def assembly():
     if _ASSEMBLY is None:
         src_root = os.environ.get('MEGAIP_ROOT', ROOT)
         _ASSEMBLY = assemble(os.path.join(src_root, 'src', 'eth.asm'), find_tass(ROOT))
+        # MEGAIP_MUTATE="addr=byte[,addr=byte...]" (CPU addresses, hex) patches
+        # the binary, for tests/mutate.py.
+        patch = os.environ.get('MEGAIP_MUTATE')
+        if patch:
+            binary = bytearray(_ASSEMBLY.binary)
+            for item in patch.split(','):
+                addr, value = item.split('=')
+                binary[int(addr, 16) - _ASSEMBLY.start] = int(value, 16)
+            _ASSEMBLY.binary = bytes(binary)
     return _ASSEMBLY
 
 
@@ -128,7 +137,15 @@ class Stack:
         return self.eth.receive(frame)
 
     def sent(self):
-        return [net.Parsed(f) for f in self.eth.take_sent()]
+        """Frames transmitted since the last call.  Every checksum in them is
+        verified: a frame the stack sends with a bad checksum fails the test."""
+        frames = [net.Parsed(f) for f in self.eth.take_sent()]
+        for f in frames:
+            bad = f.checksum_errors()
+            if bad:
+                raise AssertionError('stack sent %r with bad %s checksum'
+                                     % (f, ', '.join(bad)))
+        return frames
 
     @classmethod
     def ready(cls):

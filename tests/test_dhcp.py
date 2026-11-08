@@ -101,6 +101,28 @@ class DhcpClient(unittest.TestCase):
         s.poll(3)
         self.assertNotEqual(tuple(s.peek('LOCAL_IP', 4)), IP_A)
 
+    def test_discover_backoff_doubles_then_caps(self):
+        s = Stack.ready()
+        s.call('ETH_DHCP_START')
+        times, frame = [], [0]
+
+        def on_frame(sent):
+            times.extend(frame[0] for f in sent if f.udp and f.udp['dport'] == 67)
+
+        def until():
+            frame[0] += 1
+            return len(times) >= 7
+        s.run_frames(4000, on_frame=on_frame, until=until)
+        gaps = [b - a for a, b in zip(times, times[1:])]
+        tick = s.asm['DHCP_TICK_FRAMES']
+        backoff = s.asm['DHCP_INITIAL_BACKOFF']
+        expected = []
+        for _ in gaps:
+            expected.append(backoff * tick)
+            backoff = min(backoff * 2, s.asm['DHCP_MAX_BACKOFF'])
+        for got, want in zip(gaps, expected):
+            self.assertAlmostEqual(got, want, delta=3)
+
     def test_busy_transmitter_retries_discover(self):
         s = Stack.ready()
         s.eth.tx_busy = True             # each busy send waits out the TX timeout,

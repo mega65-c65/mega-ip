@@ -83,6 +83,22 @@ class TcpOptions(unittest.TestCase):
         self.assertEqual(s.sent(), [])
 
 
+class SegmentSizes(unittest.TestCase):
+    def test_segment_lengths_around_byte_boundaries(self):
+        """TCP lengths whose low byte is below the 20-byte minimum header
+        (256-275) are valid; the minimum-length check must look at the high
+        byte too."""
+        for payload_len in (1, 235, 236, 240, 255, 256, 1000):
+            with self.subTest(payload=payload_len):
+                s = Stack.ready()
+                p = Peer(s)
+                p.connect_stack()
+                data = bytes((i * 13) & 0xFF for i in range(payload_len))
+                p.send(PSH | ACK, data)
+                s.poll()
+                self.assertEqual(s.read_received(), data)
+
+
 class Retransmissions(unittest.TestCase):
     def test_overlapping_retransmission_delivers_only_new_bytes(self):
         s = Stack.ready()
