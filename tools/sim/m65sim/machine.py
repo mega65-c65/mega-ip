@@ -215,6 +215,10 @@ class Machine:
         self.io_writes.append((addr, v))
 
     # ---- execution ------------------------------------------------------
+    def needs_after_instruction(self):
+        """Lets Cpu.run() skip after_instruction() when nothing is pending."""
+        return self._dma_pending
+
     def after_instruction(self, cpu):
         if self._dma_pending:
             self._dma_pending = False
@@ -234,12 +238,9 @@ class Machine:
         c.push(ret >> 8)
         c.push(ret & 0xFF)
         c.pc = addr & 0xFFFF
-        limit = c.instructions + max_instructions
-        while c.pc != return_addr:
-            if c.instructions >= limit:
-                raise StopRun('$%04x did not return within %d instructions (pc=$%04x)'
-                              % (addr, max_instructions, c.pc))
-            c.step()
+        if not c.run(return_addr, max_instructions):
+            raise StopRun('$%04x did not return within %d instructions (pc=$%04x)'
+                          % (addr, max_instructions, c.pc))
         if c.sp != sp_before:
             raise StopRun('stack unbalanced after $%04x: sp $%02x -> $%02x'
                           % (addr, sp_before, c.sp))

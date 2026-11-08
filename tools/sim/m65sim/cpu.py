@@ -85,6 +85,7 @@ class Cpu:
         self.p = E | I                  # 8-bit stack (E=1)
         self.pc = 0
         self.instructions = 0
+        self._addr_modes = self._build_addr_modes()
         self._table = self._build_table()
 
     # ---- helpers -----------------------------------------------------
@@ -116,41 +117,59 @@ class Cpu:
         return self.bus.read(self._zp(zp)) | (self.bus.read(self._zp(zp + 1)) << 8)
 
     # ---- addressing ---------------------------------------------------
+    # Each mode has a small function returning ('mem', addr16),
+    # ('flat', addr28), ('acc',) or ('imm', value); the dict is looked up per
+    # instruction instead of walking an if-chain.
+
+    def _am_acc(self, o, f): return ('acc',)
+    def _am_imm(self, o, f): return ('imm', o[0])
+    def _am_zp(self, o, f): return ('mem', (self.b << 8) | o[0])
+    def _am_zpx(self, o, f): return ('mem', (self.b << 8) | ((o[0] + self.x) & 0xFF))
+    def _am_zpy(self, o, f): return ('mem', (self.b << 8) | ((o[0] + self.y) & 0xFF))
+    def _am_abs(self, o, f): return ('mem', o[0] | (o[1] << 8))
+    def _am_abx(self, o, f): return ('mem', ((o[0] | (o[1] << 8)) + self.x) & 0xFFFF)
+    def _am_aby(self, o, f): return ('mem', ((o[0] | (o[1] << 8)) + self.y) & 0xFFFF)
+    def _am_izx(self, o, f): return ('mem', self._ptr16(o[0] + self.x))
+    def _am_izy(self, o, f): return ('mem', (self._ptr16(o[0]) + self.y) & 0xFFFF)
+
+    def _am_izz(self, o, f):
+        if f:
+            ptr = 0
+            for i in range(4):
+                ptr |= self.bus.read(self._zp(o[0] + i)) << (8 * i)
+            return ('flat', ((ptr & 0x0FFFFFFF) + self.z) & 0x0FFFFFFF)
+        return ('mem', (self._ptr16(o[0]) + self.z) & 0xFFFF)
+
+    def _am_isy(self, o, f):
+        base = 0x100 | ((self.sp + o[0]) & 0xFF)
+        ptr = self.bus.read(base) | (self.bus.read(0x100 | ((base + 1) & 0xFF)) << 8)
+        return ('mem', (ptr + self.y) & 0xFFFF)
+
     def _operand_addr(self, mode, ops, flat):
         """Return ('mem', addr16) / ('flat', addr28) / ('acc',) / ('imm', v)."""
-        if mode == 'acc':
-            return ('acc',)
+        fn = self._addr_modes.get(mode)
+        if fn is None:
+            raise CpuError('no operand address for mode %s' % mode)
+        return fn(ops, flat)
+
+    def _val(self, mode, ops, flat):
+        """The operand's value (fast path for loads and ALU ops)."""
         if mode == 'imm':
-            return ('imm', ops[0])
-        if mode == 'zp':
-            return ('mem', self._zp(ops[0]))
-        if mode == 'zpx':
-            return ('mem', self._zp(ops[0] + self.x))
-        if mode == 'zpy':
-            return ('mem', self._zp(ops[0] + self.y))
-        w = ops[0] | (ops[1] << 8) if len(ops) == 2 else None
-        if mode == 'abs':
-            return ('mem', w)
-        if mode == 'abx':
-            return ('mem', (w + self.x) & 0xFFFF)
-        if mode == 'aby':
-            return ('mem', (w + self.y) & 0xFFFF)
-        if mode == 'izx':
-            return ('mem', self._ptr16(ops[0] + self.x))
-        if mode == 'izy':
-            return ('mem', (self._ptr16(ops[0]) + self.y) & 0xFFFF)
-        if mode == 'izz':
-            if flat:
-                ptr = 0
-                for i in range(4):
-                    ptr |= self.bus.read(self._zp(ops[0] + i)) << (8 * i)
-                return ('flat', ((ptr & 0x0FFFFFFF) + self.z) & 0x0FFFFFFF)
-            return ('mem', (self._ptr16(ops[0]) + self.z) & 0xFFFF)
-        if mode == 'isy':
-            base = 0x100 | ((self.sp + ops[0]) & 0xFF)
-            ptr = self.bus.read(base) | (self.bus.read(0x100 | ((base + 1) & 0xFF)) << 8)
-            return ('mem', (ptr + self.y) & 0xFFFF)
-        raise CpuError('no operand address for mode %s' % mode)
+            return ops[0]
+        loc = self._addr_modes[mode](ops, flat)
+        kind = loc[0]
+        if kind == 'mem':
+            return self.bus.read(loc[1])
+        if kind == 'flat':
+            return self.bus.read_flat(loc[1])
+        return self.a                                   # acc
+
+    def _store(self, mode, ops, flat, v):
+        loc = self._addr_modes[mode](ops, flat)
+        if loc[0] == 'mem':
+            self.bus.write(loc[1], v & 0xFF)
+        else:
+            self._write(loc, v)
 
     def _read(self, loc):
         kind = loc[0]
@@ -189,6 +208,11 @@ class Cpu:
         self._nz(r)
 
     # ---- execution ----------------------------------------------------
+    def _build_addr_modes(self):
+        return {m: getattr(self, '_am_' + m) for m in
+                ('acc', 'imm', 'zp', 'zpx', 'zpy', 'abs', 'abx', 'aby', 'izx', 'izy',
+                 'izz', 'isy')}
+
     def _build_table(self):
         """Per-opcode (handler, mode, operand length), resolved once."""
         table = []
@@ -265,37 +289,82 @@ class Cpu:
         self.instructions += 1
         self.bus.after_instruction(self)
 
+    def run(self, stop_pc, max_instructions):
+        """Execute until PC == stop_pc or `max_instructions` have run.
+        Returns True if stop_pc was reached.  Same semantics as calling
+        step() in a loop, with the per-instruction overhead hoisted out."""
+        table = self._table
+        bus = self.bus
+        read = bus.read
+        after = bus.after_instruction
+        izz = _IZZ
+        hook = getattr(bus, 'needs_after_instruction', None)
+        left = max_instructions
+        while self.pc != stop_pc:
+            if left <= 0:
+                return False
+            left -= 1
+            start = self.pc
+            op = read(start)
+            pc = (start + 1) & 0xFFFF
+            flat = False
+            if op == 0xEA:
+                nxt = read(pc)
+                if izz[nxt]:
+                    flat = True
+                    op = nxt
+                    pc = (pc + 1) & 0xFFFF
+            elif op == 0x42 and read(pc) == 0x42:
+                raise CpuError('45GS02 Q instructions are not modelled (pc=$%04x)' % start)
+            h, mode, n = table[op]
+            if n == 0:
+                ops = ()
+            elif n == 1:
+                ops = (read(pc),)
+                pc = (pc + 1) & 0xFFFF
+            else:
+                ops = (read(pc), read((pc + 1) & 0xFFFF))
+                pc = (pc + 2) & 0xFFFF
+            self.pc = pc
+            h(mode, ops, flat, start)
+            self.instructions += 1
+            if hook is None or hook():
+                after(self)
+        return True
+
     # The handler table holds bound methods and closures over this Cpu;
     # rebuild it after a copy so it doesn't point at the original.
     def __getstate__(self):
         state = self.__dict__.copy()
         state.pop('_table', None)
+        state.pop('_addr_modes', None)
         return state
 
     def __setstate__(self, state):
         self.__dict__.update(state)
+        self._addr_modes = self._build_addr_modes()
         self._table = self._build_table()
 
     # loads / stores
-    def _op_lda(self, m, o, f, s): self.a = self._nz(self._read(self._operand_addr(m, o, f)))
-    def _op_ldx(self, m, o, f, s): self.x = self._nz(self._read(self._operand_addr(m, o, f)))
-    def _op_ldy(self, m, o, f, s): self.y = self._nz(self._read(self._operand_addr(m, o, f)))
-    def _op_ldz(self, m, o, f, s): self.z = self._nz(self._read(self._operand_addr(m, o, f)))
-    def _op_sta(self, m, o, f, s): self._write(self._operand_addr(m, o, f), self.a)
-    def _op_stx(self, m, o, f, s): self._write(self._operand_addr(m, o, f), self.x)
-    def _op_sty(self, m, o, f, s): self._write(self._operand_addr(m, o, f), self.y)
-    def _op_stz(self, m, o, f, s): self._write(self._operand_addr(m, o, f), self.z)
+    def _op_lda(self, m, o, f, s): self.a = self._nz(self._val(m, o, f))
+    def _op_ldx(self, m, o, f, s): self.x = self._nz(self._val(m, o, f))
+    def _op_ldy(self, m, o, f, s): self.y = self._nz(self._val(m, o, f))
+    def _op_ldz(self, m, o, f, s): self.z = self._nz(self._val(m, o, f))
+    def _op_sta(self, m, o, f, s): self._store(m, o, f, self.a)
+    def _op_stx(self, m, o, f, s): self._store(m, o, f, self.x)
+    def _op_sty(self, m, o, f, s): self._store(m, o, f, self.y)
+    def _op_stz(self, m, o, f, s): self._store(m, o, f, self.z)
 
     # logic / arithmetic
-    def _op_ora(self, m, o, f, s): self.a = self._nz(self.a | self._read(self._operand_addr(m, o, f)))
-    def _op_and(self, m, o, f, s): self.a = self._nz(self.a & self._read(self._operand_addr(m, o, f)))
-    def _op_eor(self, m, o, f, s): self.a = self._nz(self.a ^ self._read(self._operand_addr(m, o, f)))
-    def _op_adc(self, m, o, f, s): self._adc(self._read(self._operand_addr(m, o, f)))
-    def _op_sbc(self, m, o, f, s): self._adc(self._read(self._operand_addr(m, o, f)) ^ 0xFF)
-    def _op_cmp(self, m, o, f, s): self._cmp(self.a, self._read(self._operand_addr(m, o, f)))
-    def _op_cpx(self, m, o, f, s): self._cmp(self.x, self._read(self._operand_addr(m, o, f)))
-    def _op_cpy(self, m, o, f, s): self._cmp(self.y, self._read(self._operand_addr(m, o, f)))
-    def _op_cpz(self, m, o, f, s): self._cmp(self.z, self._read(self._operand_addr(m, o, f)))
+    def _op_ora(self, m, o, f, s): self.a = self._nz(self.a | self._val(m, o, f))
+    def _op_and(self, m, o, f, s): self.a = self._nz(self.a & self._val(m, o, f))
+    def _op_eor(self, m, o, f, s): self.a = self._nz(self.a ^ self._val(m, o, f))
+    def _op_adc(self, m, o, f, s): self._adc(self._val(m, o, f))
+    def _op_sbc(self, m, o, f, s): self._adc(self._val(m, o, f) ^ 0xFF)
+    def _op_cmp(self, m, o, f, s): self._cmp(self.a, self._val(m, o, f))
+    def _op_cpx(self, m, o, f, s): self._cmp(self.x, self._val(m, o, f))
+    def _op_cpy(self, m, o, f, s): self._cmp(self.y, self._val(m, o, f))
+    def _op_cpz(self, m, o, f, s): self._cmp(self.z, self._val(m, o, f))
 
     def _op_bit(self, m, o, f, s):
         v = self._read(self._operand_addr(m, o, f))
