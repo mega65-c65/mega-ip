@@ -39,13 +39,14 @@ class TcpOptions(unittest.TestCase):
         self.assertEqual(final[-1].tcp['ack'], p.seq)
 
     def test_our_syn_has_no_options_we_cant_honour(self):
-        """We send a plain 20-byte header, so peers never turn on window
+        """Our SYN's only option is the MSS, so peers never turn on window
         scaling, SACK or timestamps for us."""
         s = Stack.ready()
         p = Peer(s)
         sent = connect_with_synack_options(s, p, LINUX_SYN_OPTIONS)
         syn = [f for f in sent if f.tcp and f.tcp['flags'] & SYN][0]
-        self.assertEqual(syn.raw[14 + 20 + 12] >> 4, 5)
+        self.assertEqual(syn.raw[14 + 20 + 12] >> 4, 6)
+        self.assertEqual(syn.raw[14 + 20 + 20:14 + 20 + 24], b'\x02\x04\x05\xb4')
 
     def test_accept_client_syn_with_options(self):
         s = Stack.ready()
@@ -154,14 +155,12 @@ class Keepalive(unittest.TestCase):
 
 
 class PeerWindow(unittest.TestCase):
-    @unittest.expectedFailure
     def test_connection_survives_a_long_zero_window(self):
-        """Known limitation: the stack ignores the peer's window.  It keeps
-        sending into a zero window and counts each resend as a retry, so a
-        peer that stays at window 0 for a few seconds (busy, or opening with
-        Win=0 as some servers do) gets the connection closed with
-        EV_TX_TIMEOUT.  RFC 793 needs a persist timer that probes without
-        giving up.  Fixing it means tracking SND.WND."""
+        """The stack tracks the peer's window (SND.WND) and sends nothing
+        into a zero window, so a peer that stays at window 0 for a while
+        (busy, or opening with Win=0 as some servers do) keeps the
+        connection.  It doesn't probe the window: it waits for the peer's
+        window update (test_send_window.py)."""
         s = Stack.ready()
         p = Peer(s)
         p.connect_stack()

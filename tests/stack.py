@@ -82,6 +82,9 @@ class Stack:
     def word_be(self, name, n=4):
         return int.from_bytes(self.peek(name, n), 'big')
 
+    def word_le(self, name, n=2):
+        return int.from_bytes(self.peek(name, n), 'little')
+
     # ---- stack API -------------------------------------------------------
     # Raster timing.  ETH_INIT busy-waits ~4 s of raster lines for the PHY,
     # so it runs with very short lines.  Afterwards a line is long enough

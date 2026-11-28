@@ -219,6 +219,12 @@ _chk_sip:
     lda ETH_RX_FRAME_PAYLOAD+11,x
     sta SEG_ACK+3
 
+    ; SEG.WND -> SEG_WND (little endian; no window scaling is offered)
+    lda ETH_RX_FRAME_PAYLOAD+14,x
+    sta SEG_WND+1
+    lda ETH_RX_FRAME_PAYLOAD+15,x
+    sta SEG_WND
+
     ; ---- compute payload size and TCP_DATA_OFFSET (payload start) ----
     jsr CALC_RX_TCP_BYTE_COUNT
 
@@ -306,8 +312,7 @@ TCP_PASSIVE_SEND_SYNACK:
     sta ETH_TX_TYPE
     lda #$00
     sta ETH_TX_TYPE+1
-    sta TCP_DATA_PAYLOAD_SIZE
-    sta TCP_DATA_PAYLOAD_SIZE+1
+    jsr TCP_SET_SYN_MSS               ; a 24-byte header with the MSS option
 
     lda #20
     sta TCP_HEADER_SIZE
@@ -320,13 +325,13 @@ TCP_PASSIVE_SEND_SYNACK:
 
     jsr TCP_RESTORE_PEER_MAC
 
-    lda #60
+    lda #60                           ; 14 + 20 + 24, padded to the minimum
     sta ETH_TX_LEN_LSB
     lda #$00
     sta ETH_TX_LEN_MSB
 
     jsr ETH_PACKET_SEND
-    rts
+    jmp TCP_CLEAR_SYN_MSS             ; (keeps C)
 
 ;=============================================================================
 ; Validate inbound TCP checksum over pseudo-header + TCP segment.

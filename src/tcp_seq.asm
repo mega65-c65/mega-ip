@@ -55,23 +55,6 @@ TCP_SEQ_CMP_SEG_ACK_LOCAL_ISN:
     sta TCP_SEQ_DIFF+0
     jmp TCP_SEQ_FINISH_CMP
 
-; Out: A compares SEG.ACK to the ACK needed to retire pending data.
-TCP_SEQ_CMP_SEG_ACK_TX_EXPECT:
-    sec
-    lda SEG_ACK+3
-    sbc TX_UNACK_EXPECT_ACK+3
-    sta TCP_SEQ_DIFF+3
-    lda SEG_ACK+2
-    sbc TX_UNACK_EXPECT_ACK+2
-    sta TCP_SEQ_DIFF+2
-    lda SEG_ACK+1
-    sbc TX_UNACK_EXPECT_ACK+1
-    sta TCP_SEQ_DIFF+1
-    lda SEG_ACK+0
-    sbc TX_UNACK_EXPECT_ACK+0
-    sta TCP_SEQ_DIFF+0
-    jmp TCP_SEQ_FINISH_CMP
-
 ; Out: A compares the saved out-of-order segment's SEQ to RCV.NXT.
 TCP_SEQ_CMP_OOO_REMOTE:
     sec

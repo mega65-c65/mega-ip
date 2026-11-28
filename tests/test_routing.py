@@ -154,9 +154,12 @@ class SendQueue(unittest.TestCase):
         s = Stack.ready()
         p = Peer(s)
         p.connect_stack()
-        results = [s.send_data(bytes([0x30 + i]) * 100) for i in range(4)]
-        self.assertEqual(results, [0, 0, 0, 1])        # 1 in flight + 200 queued
-        self.assertEqual(s.peek('TXQ_COUNT'), 200)
+        size = s.asm['TX_RING_SIZE']                   # in flight + queued
+        results = [s.send_data(bytes([0x30 + i % 10]) * 200) for i in range(11)]
+        self.assertEqual(results, [0] * 10 + [1])      # 2000 fit, 200 more don't
+        self.assertEqual(s.word_le('TXQ_COUNT'), 2000)
+        self.assertEqual(s.send_data(b'x' * (size - 2000)), 0)    # exactly full
+        self.assertEqual(s.send_data(b'x'), 1)
 
     def test_queued_data_delivered_in_order_once(self):
         s = Stack.ready()

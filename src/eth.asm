@@ -64,8 +64,21 @@ EV_TX_TIMEOUT               = %00100000     ; data retransmit retries exhausted
 
 TCP_PAYLOAD_MAX             = 235
 TCP_PAYLOAD_PADDED_SIZE     = TCP_PAYLOAD_MAX + 1
-TCP_RECV_WINDOW_CAP_LO      = $00          ; advertise at most 1024 bytes
-TCP_RECV_WINDOW_CAP_HI      = $04          ; to avoid overrunning 45E100 RX FIFO
+TCP_MSS                     = 1460         ; announced in our SYN and SYN-ACK (option 2)
+; The receive window is capped at two full-size segments.  The 45E100 holds
+; three waiting frames, and a peer bursts the whole window at once, so the cap
+; is counted in frames: without the MSS option peers sent 536-byte segments and
+; the old 1024-byte cap was two frames as well, but less than half the data.
+TCP_RECV_WINDOW_CAP         = 2 * TCP_MSS
+TCP_RECV_WINDOW_CAP_LO      = <TCP_RECV_WINDOW_CAP
+TCP_RECV_WINDOW_CAP_HI      = >TCP_RECV_WINDOW_CAP
+; The send ring: data the application has queued and data sent but not yet
+; acknowledged.  Up to TCP_TX_WINDOW bytes are in flight (and no more than the
+; peer's window), so several segments go out per round trip.
+TX_RING_BASE                = $7800        ; bank 4, above the ML call staging area
+TX_RING_SIZE                = $0800        ; 2 KB, a power of two
+TX_RING_MASK_HI             = >(TX_RING_SIZE - 1)
+TCP_TX_WINDOW               = TX_RING_SIZE
 DNS_HOST_BUFFER_SIZE        = 128
 DNS_HOST_MAX                = DNS_HOST_BUFFER_SIZE - 1
 BANK1_WORKSPACE_LOW_HI      = $20          ; bank-1 offset $2000 -> physical $12000
@@ -252,22 +265,27 @@ TCP_RX_DATA_PAYLOAD_SIZE:
 ; OUTGOING TCP DATA QUEUE
 ;=============================================================================
 
-TXQ_HEAD:               .byte 0
-TXQ_TAIL:               .byte 0
-TXQ_COUNT:              .byte 0
-TXQ_NEW_COUNT:          .byte 0
+; Ring indexes (0..TX_RING_SIZE-1) and byte counts, all 16-bit little endian.
+; SND.UNA is TX_UNACK_SEQ (the sequence number of ring[TXQ_UNA]); SND.NXT is
+; LOCAL_ISN (the sequence number of ring[TXQ_NXT]).
+TXQ_HEAD:               .word 0                     ; where the application writes next
+TXQ_UNA:                .word 0                     ; the oldest unacknowledged byte
+TXQ_NXT:                .word 0                     ; the next byte to send
+TXQ_COUNT:              .word 0                     ; bytes held: queued + in flight
+TXQ_INFLIGHT:           .word 0                     ; bytes sent, not yet acknowledged
+TXQ_SCAN:               .word 0
+TXQ_TMP:                .word 0
 TXQ_ENQ_LEN:            .byte 0
 TXQ_SEND_LEN:           .byte 0
-TXQ_SCAN:               .byte 0
+TX_PEER_WINDOW:         .word 0                     ; the peer's last advertised window
+SEG_WND:                .word 0                     ; the received segment's window
 
-TX_UNACK_PENDING:       .byte 0
-TX_UNACK_LEN:           .byte 0
+TX_UNACK_PENDING:       .byte 0                     ; 1 while the retransmit timer runs
 TX_UNACK_RETRY_TICKS:   .byte 0
 TX_UNACK_RETRY_LEFT:    .byte 0
 TCP_TX_LAST_RASTER_LO:  .byte 0
 TCP_TX_LAST_RASTER_HI:  .byte 0
 TX_UNACK_SEQ:           .byte 0,0,0,0
-TX_UNACK_EXPECT_ACK:    .byte 0,0,0,0
 TX_SAVE_LOCAL_ISN:      .byte 0,0,0,0
 TCP_PEER_MAC_VALID:     .byte 0
 TCP_PEER_MAC:           .byte 0,0,0,0,0,0
@@ -282,12 +300,6 @@ TCP_RST_SAVE_BUMP:        .byte 0
 TCP_RST_TCP_OFF:          .byte 0
 TCP_RST_REPLY_FLAGS:      .byte 0
 
-
-TX_APP_QUEUE:
-    .fill 256, $00
-
-TX_UNACK_PAYLOAD:
-    .fill TCP_PAYLOAD_MAX, $00
 
 
 ;=============================================================================
@@ -664,10 +676,43 @@ _capture_syn_loop:
     jmp CONNECT_SET_EXPECT_FROM_SYN_ISS
 
 
+;=============================================================================
+; The MSS option (kind 2, length 4, TCP_MSS) for a SYN or SYN-ACK.  It goes
+; in the payload buffer as 4 bytes, and BUILD_TCP_HEADER makes a SYN's header
+; 24 bytes long, so the lengths, the checksum and the frame all come out as a
+; 24-byte header with no data.  TCP_CLEAR_SYN_MSS afterwards (keeps C).
+;=============================================================================
+TCP_SET_SYN_MSS:
+    lda #$02
+    sta TCP_DATA_PAYLOAD+0
+    lda #$04
+    sta TCP_DATA_PAYLOAD+1
+    lda #>TCP_MSS
+    sta TCP_DATA_PAYLOAD+2
+    lda #<TCP_MSS
+    sta TCP_DATA_PAYLOAD+3
+    lda #$04
+    sta TCP_DATA_PAYLOAD_SIZE
+    lda #$00
+    sta TCP_DATA_PAYLOAD_SIZE+1
+    rts
+
+TCP_CLEAR_SYN_MSS:
+    lda #$00
+    sta TCP_DATA_PAYLOAD+0
+    sta TCP_DATA_PAYLOAD+1
+    sta TCP_DATA_PAYLOAD+2
+    sta TCP_DATA_PAYLOAD+3
+    sta TCP_DATA_PAYLOAD_SIZE
+    sta TCP_DATA_PAYLOAD_SIZE+1
+    rts
+
 CONNECT_SEND_SYN:
     jsr CONNECT_PREPARE_SYN_ISN
+    jsr TCP_SET_SYN_MSS
     lda #TCP_FLAG_SYN
     jsr ETH_BUILD_TCPIP_PACKET
+    jsr TCP_CLEAR_SYN_MSS
     bcs _connect_syn_not_sent
     jsr ETH_PACKET_SEND
     bcs _connect_syn_not_sent
@@ -984,6 +1029,7 @@ TCP_TRY_PENDING_FIN:
 
 _check_tx_idle:
     lda TXQ_COUNT
+    ora TXQ_COUNT+1
     ora TX_UNACK_PENDING
     bne _done                         ; data still draining
 
@@ -1021,8 +1067,8 @@ ETH_TCP_SEND:
 
     jsr CLEAR_TCP_PAYLOAD
 
-    ; Give the stack a chance to send immediately when no segment is in flight.
-    ; If TX is busy, the queued data remains pending for ETH_STATUS_POLL.
+    ; Give the stack a chance to send at once (what the window allows).
+    ; Whatever is left stays queued for ETH_STATUS_POLL.
     jsr TCP_TX_TICK
     clc
     rts
@@ -1711,7 +1757,8 @@ _set_local_after_syn:
     bcs _done
     jsr DEFER_CURRENT_TX
 
-    ; handshake complete
+    ; handshake complete: the SYN-ACK's window is the peer's first window
+    jsr TCP_TX_TAKE_PEER_WINDOW
     lda #TCP_STATE_ESTABLISHED
     sta TCP_STATE
     lda #$00
@@ -1921,7 +1968,8 @@ _synrcvd_ack_check:
     cpx #$04
     bne _synrcvd_ack_check
 
-    ; Handshake complete
+    ; Handshake complete: the final ACK's window is the peer's first window
+    jsr TCP_TX_TAKE_PEER_WINDOW
     lda #TCP_STATE_ESTABLISHED
     sta TCP_STATE
     lda #$00
@@ -1985,13 +2033,14 @@ TCP_OOO_SAVE_CURRENT:
     ora TCP_RX_DATA_PAYLOAD_SIZE+1
     beq TCP_OOO_SAVE_DONE
 
-    ; Keep this slot bounded to the advertised receive cap.
+    ; Keep this slot bounded to one full-size segment (TCP_MSS: $51000-$515B3).
     lda TCP_RX_DATA_PAYLOAD_SIZE+1
-    cmp #TCP_RECV_WINDOW_CAP_HI
+    cmp #>TCP_MSS
     bcc TCP_OOO_SAVE_LEN_OK
     bne TCP_OOO_SAVE_DONE
     lda TCP_RX_DATA_PAYLOAD_SIZE
-    bne TCP_OOO_SAVE_DONE
+    cmp #<TCP_MSS+1
+    bcs TCP_OOO_SAVE_DONE
 
 TCP_OOO_SAVE_LEN_OK:
     ldx #$00
@@ -2934,7 +2983,15 @@ BUILD_TCP_HEADER:
     ; 1010 = 5  ...  5x4 = 20 tcp header size (min)
     ; 1111 = 15 ... 15x4 = 60 tcp header size (max)
     ; final 4 bits are reserved, leave zero
-    lda #%01010000                                  
+    ; A SYN is 24 bytes: its MSS option is the first 4 bytes of the payload
+    ; buffer (TCP_SET_SYN_MSS), right after the 20 bytes built here.
+    and #TCP_FLAG_SYN
+    beq _plain_header
+    lda #%01100000
+    bra _set_offset
+_plain_header:
+    lda #%01010000
+_set_offset:
     sta TCP_HDR_FLGS_OFFS
 
     ; Save the actual TCP header size for checksum calculation
@@ -4511,6 +4568,7 @@ _dns_start_astr_fail:
 ;=============================================================================
 ETH_TCP_TX_IDLE:
     lda TXQ_COUNT
+    ora TXQ_COUNT+1
     ora TX_UNACK_PENDING
     beq _tcp_tx_idle_yes
     lda #$00
@@ -5467,28 +5525,19 @@ _fin_retx_fail:
 ;=============================================================================
 ; Send one byte over TCP
 ; In: A = byte to send
+; Out: A=1 C=0 queued; A=0 C=1 not connected or the send ring is full.
+; The byte is queued, not sent: the next ETH_STATUS_POLL sends everything
+; queued by then, so bytes sent one at a time leave in as few segments as
+; possible.
 ;=============================================================================
 ETH_TCP_SEND_BYTE:
-    sta TCP_DATA_PAYLOAD
-    lda #$01
-    sta TCP_DATA_PAYLOAD_SIZE
-    lda #$00
-    sta TCP_DATA_PAYLOAD_SIZE+1
-
-    lda TCP_STATE
-    cmp #TCP_STATE_ESTABLISHED
-    bne _send_byte_fail
-
-    jsr ETH_TCP_SEND
+    jsr TCP_TX_PUT_BYTE
     bcs _send_byte_fail
     lda #$01
-    clc
     rts
 
 _send_byte_fail:
-    jsr CLEAR_TCP_PAYLOAD
     lda #$00
-    sec
     rts
 
 ;=============================================================================
@@ -5688,4 +5737,5 @@ ML_CALL_RET_X:          .byte $00
 ML_CALL_RET_Y:          .byte $00
 ML_CALL_RET_Z:          .byte $00
 
-.cerror * > $8000, "fixed tables exceed mapped bank-4 window"
+.cerror * > TX_RING_BASE, "ML call staging area overlaps the send ring"
+.cerror TX_RING_BASE + TX_RING_SIZE > $8000, "the send ring exceeds the mapped bank-4 window"

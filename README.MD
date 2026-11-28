@@ -123,14 +123,31 @@ is the BASIC `SYS` address.
 | `$42063` | DNS start from `A$` | Non-blocking; `RREG A`, 1 means started |
 | `$42066` | TCP TX idle | `RREG A`, 1 means queue empty and no unacked data |
 
-`$42024` is also the TCP transmit pump. It retires ACKed outbound data,
-retransmits unacknowledged data on a frame-paced timeout, and returns non-zero
-for TCP events or closed state. Current event bits are: `$01` reset/closed,
+`$42024` is also the TCP transmit pump. It retires ACKed outbound data, sends
+queued data, retransmits unacknowledged data on a frame-paced timeout, and
+returns non-zero for TCP events or closed state. Current event bits are: `$01` reset/closed,
 `$02` peer FIN, `$04` local close complete, `$08` TIME_WAIT done, `$10` connect
 fail, `$20` TX timeout.
 
 The receive path also answers ordinary IPv4 ICMP echo requests, so another
 machine on the network can `ping` the MEGA65 while the stack is being polled.
+
+## TCP behaviour
+
+- **Sending:** data goes into a 2 KB send queue. Segments of up to 235 bytes
+  are cut from it, and several can be in flight at once, up to 2 KB and the
+  peer's advertised window. A short segment waits while data is in flight
+  (Nagle's rule), so bytes queued one at a time leave together. If a segment
+  is lost, everything from the oldest unacknowledged byte is sent again; six
+  timeouts in a row with no progress drop the connection (event `$20`).
+- **The peer's window:** nothing is sent into a zero window. The stack waits
+  for the peer's window update; it doesn't probe the window.
+- **Receiving:** the SYN and SYN-ACK announce an MSS of 1460, and the
+  advertised window is at most 2920 bytes (two full-size frames, as the
+  45E100 holds three waiting frames). Received data goes into a 4 KB ring.
+- **Memory:** the code and its buffers use bank 4 `$42000-$47FFF` (the send
+  queue is `$47800-$47FFF`), and bank 5 `$50000-$515FF` (the receive ring and
+  one out-of-order segment). Keep other data out of these.
 
 The stable application ABI is the BASIC-facing `$42000` jump table above.
 Secondary ML-only helpers currently live at `$47600+` in bank 4. They do not
@@ -141,7 +158,7 @@ zero so older probe code fails quietly instead of jumping into reclaimed space.
 
 | Address | Purpose | Notes |
 | --- | --- | --- |
-| `$47600` | TCP send byte | `A=byte` |
+| `$47600` | TCP send byte | `A=byte`; queued, and sent by the next `$42024` poll. `A=1` queued, `A=0` (carry set) not connected or queue full |
 | `$47603` | DNS lookup buffer | Blocking compatibility wrapper |
 | `$47606` | ML-safe init | Lightweight init/reset helper |
 | `$47609` | Reserved | Returns zero |

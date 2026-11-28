@@ -24,13 +24,15 @@ Each run assembles `src/eth.asm` into a temp folder. Tests call routines by labe
 | `test_sessions.py` | Many connections on one stack: back-to-back client sessions with every kind of close, the web server's accept loop, state and unread data not leaking between connections |
 | `test_routing.py` | Gateway routing and subnet masks, frame filtering, ARP, ping and DNS during a transfer, the send queue |
 | `test_timers.py` | Timers when the program polls once per frame at a fixed raster line |
-| `test_peers.py` | Segments as real hosts send them: TCP options, timestamps, overlapping and duplicate retransmissions, keepalive probes, segment sizes around byte boundaries, a peer's zero window (known limitation) |
+| `test_peers.py` | Segments as real hosts send them: TCP options, timestamps, overlapping and duplicate retransmissions, keepalive probes, segment sizes around byte boundaries, a peer's zero window |
+| `test_send_window.py` | The send queue and sliding window: several segments in flight, the peer's window and window updates, Nagle's rule, the ML send byte, go-back-N after a loss and the retry limit, the MSS option on SYN and SYN-ACK, full-size received segments |
 | `test_comparisons.py` | Address and field checks compared byte by byte (MAC, peer MAC, IPs, DHCP client address, mask contiguity, DNS reply address), FIN and SYN-ACK retry intervals, the window-update threshold, over-long host names |
 | `test_review_items.py` | Remaining review items confirmed or ruled out (ARP header validation, DNS port wrap, DHCP option position, `RBUF_PUT`) |
 | `test_known_bugs.py` | Defects found in review (all fixed now), each with a control test; new known bugs go here |
 | `test_malformed.py` | Bad frames that must be dropped silently, and seeded fuzzing of the receive path |
 | `test_parser_fuzz.py` | Structure-aware fuzzing of the DNS and DHCP reply parsers: replies that pass the ID, port and checksum checks but have random structure, with an oracle (a lookup only resolves to an A record in the reply; DHCP only binds from a valid ACK) |
 | `test_api.py` | The documented `$420xx` jump table in README, `api.asm` and the binary, and the fixed memory layout |
+| `sim_rate.py` | Not a test: rough upload and download speed over a link with a round-trip delay (`python tests\sim_rate.py 100` for 100 ms). Set `MEGAIP_ROOT` to compare another checkout |
 | `stack.py` | Harness: `Stack` (load, call, peek/poke, poll, `run_frames`, sent frames, BASIC `A$`, block and byte readers), `Peer` (answers ARP, drives a TCP connection either way), `Responder` (answers ARP and DNS while a blocking call runs) and DNS helpers |
 | `net.py` | Builds and parses Ethernet, ARP, IPv4, TCP, UDP, DHCP and DNS frames with real checksums |
 
@@ -38,7 +40,7 @@ Test classes or docstrings that name a commit are regression tests for that fix.
 
 ## Known bugs
 
-Two known limitations are recorded this way now: DHCP options more than 255 bytes into the options field (`test_review_items.py`) and the peer's zero window (`test_peers.py`). A newly found bug can be recorded in `test_known_bugs.py` as a test marked `@unittest.expectedFailure`, so the run (and `test.bat`) stays green while the bug is known; the result line shows `expected failures=N`. When a fix lands, that test passes, unittest reports an unexpected success and the run fails: remove the marker in the same commit as the fix.
+One known limitation is recorded this way now: DHCP options more than 255 bytes into the options field (`test_review_items.py`). A newly found bug can be recorded in `test_known_bugs.py` as a test marked `@unittest.expectedFailure`, so the run (and `test.bat`) stays green while the bug is known; the result line shows `expected failures=N`. When a fix lands, that test passes, unittest reports an unexpected success and the run fails: remove the marker in the same commit as the fix.
 
 ## Fuzzing
 
