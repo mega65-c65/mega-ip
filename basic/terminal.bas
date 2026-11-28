@@ -137,11 +137,13 @@
  1450 if a$="{f3}" or a$="{f5}" then gosub 1650:goto1470
  1460 sys$4201b:if ec=1 then printa$;:rcursor cx,cy:movspr 0,24+(cx*4),50+(cy*8)
  1470 sys $4201e:rreg a:if a=0 or a=10 then 1570  : rem get incoming byte
- 1480 if a=27 then an=1:goto 1570
+ 1480 if a=27 then an=1:an$="":goto 1570
  1490 if a=91 and an=1 then an=2:goto 1570
+ 1494 if an=3 then an=0:goto 1570 : rem the character set of esc ( or esc )
+ 1496 if an=1 then an=-3*(a=40 or a=41):goto 1570 : rem esc and one more
  1500 if an=2 then begin
- 1510 :an$=an$+chr$(a)
- 1520 :if (a>64 and a<91) or (a>192 and a<219) then an=0:gosub1760
+ 1510 :an$=an$+chr$(a):if len(an$)>32 then an=0:an$="":goto 1570
+ 1520 :if (a>63 and a<127) or (a>192 and a<219) then an=0:gosub1760
  1530 :goto1570
  1540 bend
  1550 print chr$(a);:rcursor cx,cy:movspr 0,24+(cx*4),50+(cy*8)
@@ -169,7 +171,7 @@
  1760 rem == ansi code handling ===========================================
  1770 ap$=left$(an$,len(an$)-1):ac$=right$(an$,1):an$=""
  1780 pc=0:t$="":fort=1tolen(ap$)
- 1790 :if mid$(ap$,t,1)=";" then ap(pc)=val(t$):t$="":pc=pc+1:goto1810
+ 1790 :if mid$(ap$,t,1)=";" then ap(pc)=val(t$):t$="":pc=pc-(pc<10):goto1810
  1800 :t$=t$+mid$(ap$,t,1)
  1810 nextt
  1820 ap(pc)=val(t$):if pc=0 and ap(pc)=0 then ap(pc)=1

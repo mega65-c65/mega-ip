@@ -158,5 +158,30 @@ class Sgr(unittest.TestCase):
         self.assertEqual(shown(ESC + '[48;2;0;0;7;32m'), '')
 
 
+class EscapeParser(unittest.TestCase):
+    def test_escape_and_one_character(self):
+        """ESC 7, ESC c and the like: the next '[' is plain text again."""
+        self.assertEqual(shown(ESC + '7[INFO] ok'), p('[INFO] ok'))
+
+    def test_character_set_selection_is_not_shown(self):
+        self.assertEqual(shown(ESC + '(B' + ESC + ')0ok'), p('ok'))
+
+    def test_an_interrupted_sequence_does_not_carry_over(self):
+        """ESC [ 3 then ESC [ 1 m is bold (1), not red (31)."""
+        self.assertEqual(shown(ESC + '[3' + ESC + '[1m'), '')
+
+    def test_final_bytes_beyond_the_letters(self):
+        """ESC [ 5 @ (insert characters) ends at the '@': the X is text."""
+        self.assertEqual(shown(ESC + '[5@X'), p('X'))
+        self.assertEqual(shown(ESC + '[2~X'), p('X'))
+
+    def test_more_parameters_than_the_array_holds(self):
+        params = ';'.join(str(n) for n in range(1, 13))
+        self.assertEqual(shown(ESC + '[' + params + ';31m'), p('{rvon}{red}'))
+
+    def test_a_sequence_that_never_ends_is_dropped(self):
+        self.assertTrue(shown(ESC + '[' + '1' * 40 + 'hi').endswith(p('hi')))
+
+
 if __name__ == '__main__':
     unittest.main()
