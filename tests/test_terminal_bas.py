@@ -183,5 +183,23 @@ class EscapeParser(unittest.TestCase):
         self.assertTrue(shown(ESC + '[' + '1' * 40 + 'hi').endswith(p('hi')))
 
 
+class DeviceStatusReport(unittest.TestCase):
+    def ask(self, request, col=9, row=4):
+        t = Terminal()
+        t.pos = (col, row)
+        t.receive('x' + ESC + request)          # x: the program reads the cursor
+        return t.sent
+
+    def test_cursor_position_is_row_then_column(self):
+        self.assertEqual(self.ask('[6n', col=9, row=4), [b'\x1b[5;10R'])
+        self.assertEqual(self.ask('[6n', col=0, row=0), [b'\x1b[1;1R'])
+
+    def test_status_request_answers_ok(self):
+        self.assertEqual(self.ask('[5n'), [b'\x1b[0n'])
+
+    def test_other_requests_get_no_reply(self):
+        self.assertEqual(self.ask('[n'), [])
+
+
 if __name__ == '__main__':
     unittest.main()

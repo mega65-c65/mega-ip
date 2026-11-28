@@ -201,8 +201,9 @@
  2040 :cursor cx,cy:gosub 2360:return
  2050 bend
  2060 if ac$="n" then begin
- 2070 :a$=chr$(27)+"["+mid$(str$(cx+1),2)+";"+mid$(str$(cy+1),2)+"R"
- 2080 :sys $4201b
+ 2070 :if ap(0)=6 then a$=chr$(27)+"["+mid$(str$(cy+1),2)+";"+mid$(str$(cx+1),2)+"R":sys $4201b
+ 2080 :if ap(0)=5 then a$=chr$(27)+"[0n":sys $4201b
+ 2085 :return
  2090 bend
  2100 if ac$="A" then begin
  2110 :if ap(0)=0 then ap(0)=1
