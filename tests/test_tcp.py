@@ -6,7 +6,7 @@ scripted peer host on the LAN.  Tests named after a commit guard that fix.
 
 import unittest
 
-from stack import ACK, FIN, PSH, Peer, Stack
+from stack import ACK, FIN, PSH, RST, SYN, Peer, Stack
 
 EV_LOCAL_CLOSE = 0x04
 
@@ -381,6 +381,56 @@ class TransmitPath(unittest.TestCase):
         self.assertEqual(s.eth.sent, [])
         self.assertEqual(s.peek('ACK_REPLY_PACKET', 60), new)
         self.assertEqual(s.peek('ACK_REPLY_PENDING'), 1)
+
+
+class PaddingIsZero(unittest.TestCase):
+    """Frames under 60 bytes are padded with zeros, not with what an earlier
+    frame left in the transmit buffer (Stack.sent() checks the padding)."""
+
+    def dirty(self, s):
+        # after the Ethernet header (its source MAC and type are set once)
+        s.poke('ETH_TX_FRAME_PAYLOAD', b'\xee' * 128)
+        s.poke('ACK_REPLY_PACKET', b'\xee' * 60)
+
+    def peer_known(self, s, p):
+        s.deliver(p.arp_request_for_stack())
+        s.poll()
+        s.sent()
+
+    def test_syn_ack(self):
+        s = Stack.ready()
+        s.call('ETH_TCP_LISTEN_START', 0, 80)
+        c = Peer(s, port=5000)
+        c.local_port = 80
+        self.peer_known(s, c)
+        self.dirty(s)
+        c.send(SYN)
+        s.poll()
+        synacks = [f for f in s.sent() if f.tcp and f.tcp['flags'] & SYN]
+        self.assertEqual(len(synacks), 1)
+        self.assertEqual(len(synacks[0].raw), 60)
+
+    def test_rst_for_a_closed_port(self):
+        s = Stack.ready()
+        p = Peer(s)
+        p.local_port = 4444
+        self.peer_known(s, p)
+        self.dirty(s)
+        p.send(PSH | ACK, b'x')
+        s.poll()
+        rsts = [f for f in s.sent() if f.tcp and f.tcp['flags'] & RST]
+        self.assertEqual(len(rsts), 1)
+        self.assertEqual(len(rsts[0].raw), 60)
+
+    def test_pure_ack(self):
+        s = Stack.ready()
+        p = Peer(s)
+        p.connect_stack()
+        self.dirty(s)
+        p.send(PSH | ACK, b'data')
+        s.poll()
+        acks = [f for f in s.sent() if f.tcp]
+        self.assertEqual(acks[-1].tcp['ack'], p.seq)
 
 
 class Timing(unittest.TestCase):

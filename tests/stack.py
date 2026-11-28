@@ -44,6 +44,19 @@ def assembly():
     return _ASSEMBLY
 
 
+def padding(raw):
+    """The link-layer padding after an IPv4 packet or an ARP message (b''
+    for anything else, or a length that doesn't parse)."""
+    kind = raw[12:14]
+    if kind == b'\x08\x00' and len(raw) >= 18:
+        end = 14 + int.from_bytes(raw[16:18], 'big')
+    elif kind == b'\x08\x06':
+        end = 14 + 28
+    else:
+        return b''
+    return raw[end:] if end <= len(raw) else b''
+
+
 TCP_STATES = {0x00: 'CLOSED', 0x02: 'SYN_SENT', 0x03: 'SYN_RECEIVED', 0x04: 'ESTABLISHED',
               0x05: 'FIN_WAIT_1', 0x06: 'FIN_WAIT_2', 0x07: 'CLOSE_WAIT',
               0x09: 'LAST_ACK', 0x0A: 'TIME_WAIT'}
@@ -152,6 +165,10 @@ class Stack:
             if len(f.raw) < 60 or len(f.raw) % 2:
                 raise AssertionError('stack sent %r with length %d (must be even, >= 60)'
                                      % (f, len(f.raw)))
+            pad = padding(f.raw)
+            if pad.strip(b'\x00'):
+                raise AssertionError('stack sent %r with stale bytes in its padding: %s'
+                                     % (f, pad.hex()))
         return frames
 
     @classmethod

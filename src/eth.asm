@@ -2437,7 +2437,7 @@ _tcp_rst_mac_copy:
     dey
     bpl _tcp_rst_mac_copy
 
-    lda #60
+    lda #14+20+20                     ; zero-padded to 60 when sent
     sta ETH_TX_LEN_LSB
     lda #$00
     sta ETH_TX_LEN_MSB

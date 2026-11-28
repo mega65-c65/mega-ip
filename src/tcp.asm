@@ -325,7 +325,7 @@ TCP_PASSIVE_SEND_SYNACK:
 
     jsr TCP_RESTORE_PEER_MAC
 
-    lda #60                           ; 14 + 20 + 24, padded to the minimum
+    lda #14+20+24                     ; ETH_PACKET_SEND zero-pads it to the minimum
     sta ETH_TX_LEN_LSB
     lda #$00
     sta ETH_TX_LEN_MSB
