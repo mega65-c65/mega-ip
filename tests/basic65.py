@@ -165,6 +165,10 @@ class Basic:
     def get(self):
         return ''
 
+    def input(self, prompt):
+        """What the user types for INPUT (a str of PETSCII)."""
+        raise BasicError('INPUT not stubbed')
+
     def ti(self):
         return 0
 
@@ -504,6 +508,19 @@ class Basic:
         while True:
             self.setvar(self.take()[1], self.regs[n])
             n += 1
+            if not self.accept('op', ','):
+                return
+
+    def st_input(self):
+        prompt = ''
+        if self.peek()[0] == 'str':
+            prompt = self.take()[1]
+            if not (self.accept('op', ',') or self.accept('op', ';')):
+                raise BasicError('INPUT prompt without , or ;')
+        while True:
+            name = self.take()[1]
+            text = self.input(prompt)
+            self.setvar(name, text if name.endswith('$') else basic_val(text))
             if not self.accept('op', ','):
                 return
 

@@ -92,14 +92,8 @@
  1000 bend
  1010 rem == validate ip address ===========================================
  1020 ip$="":print:input"{wht} - Remote IP Address:",ip$:x=0
- 1030 fort=1tolen(ip$)
- 1040 :if mid$(ip$,t,1)="." then x=x+1
- 1050 next
- 1060 if x<>3 then x=0:goto1010
- 1070 t$="":ct=0
- 1080 fort=1tolen(ip$)
- 1090 :if mid$(ip$,t,1)="." then ip(ct)=val(t$):ct=ct+1:t$="":else t$=t$+mid$(ip$,t,1)
- 1100 nextt:ip(ct)=val(t$)
+ 1030 oc$=ip$:gosub2380:if x=0 then 1010
+ 1040 fort=0to3:ip(t)=oc(t):nextt
  1110 input " -{$a0}Remote Port:";po
  1120 if po<1 or po>65534 then 1110
  1130 ph=int(po/256):pl=mod(po,256)
@@ -240,11 +234,15 @@
  2410 :if mid$(oc$,t,1)="." then x=x+1
  2420 next
  2430 if x<>3 then x=0:return
- 2440 t$="":ct=0
+ 2440 t$="":ct=0:ok=1
  2450 fort=1tolen(oc$)
-  2460 :if mid$(oc$,t,1)="." then oc(ct)=val(t$):ct=ct+1:t$="":else t$=t$+mid$(oc$,t,1)
-  2470 nextt:oc(ct)=val(t$)
-  2480 x=1:return
+ 2460 :if mid$(oc$,t,1)="." then gosub2485:ct=ct+1:t$="":else t$=t$+mid$(oc$,t,1)
+ 2470 nextt:gosub2485
+ 2480 x=ok:return
+ 2485 if t$="" or len(t$)>3 then ok=0:return
+ 2486 forq=1tolen(t$):if mid$(t$,q,1)<"0" or mid$(t$,q,1)>"9" then ok=0
+ 2487 nextq:oc(ct)=val(t$):if oc(ct)>255 then ok=0
+ 2488 return
   2490 rem == install 4x8 block cursor sprite ===============================
   2500 restore 2600
   2510 for i=0 to 63:read b:poke $0600+i,b:next

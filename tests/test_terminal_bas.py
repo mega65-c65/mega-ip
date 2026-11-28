@@ -201,5 +201,42 @@ class DeviceStatusReport(unittest.TestCase):
         self.assertEqual(self.ask('[n'), [])
 
 
+class Addresses(unittest.TestCase):
+    """The dotted address parser (GOSUB 2380): X=1 and OC(0..3), or X=0."""
+
+    def parse(self, text):
+        t = Terminal()
+        t.run(2380, **{'oc$': p(text)})
+        return t.getvar('x'), [t.element('oc', i) for i in range(4)]
+
+    def test_good_addresses(self):
+        self.assertEqual(self.parse('192.168.1.76'), (1, [192, 168, 1, 76]))
+        self.assertEqual(self.parse('255.255.255.0'), (1, [255, 255, 255, 0]))
+        self.assertEqual(self.parse('0.0.0.0'), (1, [0, 0, 0, 0]))
+
+    def test_bad_addresses(self):
+        for text in ('192.168.1.256', '192.168.1.300', '1..2.3', '1.2.3.',
+                     '.1.2.3', 'a.b.c.d', '1.2.3', '1.2.3.4.5', '1.2.3.4x', '1.2.3.0004'):
+            with self.subTest(text=text):
+                self.assertEqual(self.parse(text)[0], 0)
+
+    def test_remote_address_asks_again_until_it_is_good(self):
+        class Typing(Terminal):
+            def __init__(self, answers):
+                super().__init__()
+                self.answers = [p(a) for a in answers]
+                self.prompts = 0
+
+            def input(self, prompt):
+                if 'Remote IP' not in ''.join(chr(to_ascii(ord(c))) for c in prompt):
+                    raise Stop                      # on to the port: done
+                self.prompts += 1
+                return self.answers.pop(0)
+        t = Typing(['192.168.1.300', '10.0.0.1'])
+        t.run(1020)
+        self.assertEqual(t.prompts, 2)
+        self.assertEqual([t.element('ip', i) for i in range(4)], [10, 0, 0, 1])
+
+
 if __name__ == '__main__':
     unittest.main()
