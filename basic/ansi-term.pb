@@ -3,3 +3,4 @@
 0xDECAFBAD BBS,bbs.decafbad.com,6523,A,,
 8-bit Archive, 8-bitarchive.com,2223,A,,
 Star Wars, towel.blinkenlights.nl,23,A,,
+Retrocampus BBS,bbs.retrocampus.com,6510,P,,
