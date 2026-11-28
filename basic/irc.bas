@@ -32,7 +32,7 @@
 410 sys $42024:sys $42036:rreg a
 420 if a=2 then 450
 430 if a=3 then print"{lred}lookup failed.{wht}":end
-440 if ti-tt<600 then 410:else print"{lred}timed out.{wht}":end
+440 if ti-tt<15 then 410:else print"{lred}timed out.{wht}":end
 450 sys $42033:rreg a,x,y,z
 460 ad$=mid$(str$(a),2)+"."+mid$(str$(x),2)+"."+mid$(str$(y),2)+"."+mid$(str$(z),2)
 470 sys $4200c,a,x,y,z              : rem set remote ip
@@ -48,11 +48,11 @@
 570 sys $4202a:rreg a
 580 if (a and 1) then 610
 590 if (a and 2) then print"{lred} failed.{wht}":end
-600 if ti-tt<2000 then 570:else print"{lred} timed out.{wht}":end
+600 if ti-tt<30 then 570:else print"{lred} timed out.{wht}":end
 610 li=0:jn=0:rl$="":ob$="":tp$="":pj$="":ld=0:rd=0:nt=0:nr=0:nw$="":lc=-1:pd=0:iw=0:ij=0:jp=0:wi=0:wf$="" : rem ld=names loading
 620 gosub 800:gosub 1530             : rem ui, register
 630 rem ====================== main loop =========================
-640 if jp=1 and ti-jt>600 then gosub 4100
+640 if jp=1 and ti-jt>10 then gosub 4100
 650 gosub 4590
 660 get k$:if k$<>"" then gosub 1800 : rem keyboard gets first chance
 665 sys $42024:rreg a:if a<>0 then 2110

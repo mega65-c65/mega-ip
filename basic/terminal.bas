@@ -78,9 +78,9 @@
   880 bt=ti
   890 sys $42024:sys $42036:rreg a       :rem poll and check for reply
   900 rem quiet dns wait
-  905 if a=1 and ti-bt<600 then 890
+  905 if a=1 and ti-bt<15 then 890
   906 if a=1 then print:print"{lred} - Timed out.{wht}":sleep 3:cursor px,py:goto640
-  907 if a=0 and ti-bt<600 then 890
+  907 if a=0 and ti-bt<15 then 890
   908 if a=0 then print:print"{lred} - Timed out.{wht}":sleep 3:cursor px,py:goto640
   910 if a=2 then begin
   920 :rem retrieve the ip address
