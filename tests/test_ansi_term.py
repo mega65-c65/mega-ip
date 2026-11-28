@@ -99,5 +99,15 @@ class PhonebookSave(unittest.TestCase):
         self.assertEqual(t.calls('CLOSE'), 1)
 
 
+class NewSession(unittest.TestCase):
+    def test_cursor_keys_mode_resets(self):
+        """A host that set application cursor keys (ESC [ ? 1 h) doesn't
+        leave them set for the next host."""
+        t = Term()
+        t.poke('ANSI_CURSOR_APP_MODE', 1)
+        t.call('ASCII_START_SCREEN')
+        self.assertEqual(t.peek('ANSI_CURSOR_APP_MODE'), 0)
+
+
 if __name__ == '__main__':
     unittest.main()

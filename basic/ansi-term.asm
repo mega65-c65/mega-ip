@@ -2454,6 +2454,7 @@ ASCII_START_SCREEN:
     sta ANSI_G1_GRAPHICS
     sta ANSI_USE_G1
     sta ANSI_INTERMEDIATE
+    sta ANSI_CURSOR_APP_MODE          ; a new host starts with normal cursor keys
     lda #1
     sta ASCII_WRAP_MODE
     lda #ASCII_DEFAULT_COLOR
