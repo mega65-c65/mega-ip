@@ -174,19 +174,21 @@
  1810 nextt
  1820 ap(pc)=val(t$):if pc=0 and ap(pc)=0 then ap(pc)=1
  1830 if ac$="m" then begin
- 1840 :fort=0topc
- 1850 :if ap(t)=30 or ap(t)=90 then print"{gry1}";:return
- 1860 :if ap(t)=31 or ap(t)=91 then print"{red}";:return
- 1870 :if ap(t)=32 or ap(t)=92 then print"{grn}";:return
- 1880 :if ap(t)=33 or ap(t)=93 then print"{yel}";:return
- 1890 :if ap(t)=34 or ap(t)=94 then print"{blu}";:return
- 1900 :if ap(t)=35 or ap(t)=95 then print"{pur}";:return
- 1910 :if ap(t)=36 or ap(t)=96 then print"{cyn}";:return
- 1920 :if ap(t)=37 or ap(t)=97 then print"{gry3}";:return
- 1930 :if ap(t)=38 or ap(t)=98 then print"{rvon}";:return
- 1940 :if ap(t)=27 then print"{rvof}";:return
- 1950 :if ap(t)=7 then print"{rvof}";:return
- 1960 :return
+ 1840 :if pc=0 then ap(0)=val(ap$)
+ 1850 :fort=0topc:sg=ap(t)
+ 1860 :if sg=0 or sg=27 then print"{rvof}";
+ 1870 :if sg=0 or sg=39 then print"{wht}";
+ 1880 :if sg=7 then print"{rvon}";
+ 1890 :if sg=30 or sg=90 then print"{gry1}";
+ 1900 :if sg=31 or sg=91 then print"{red}";
+ 1910 :if sg=32 or sg=92 then print"{grn}";
+ 1920 :if sg=33 or sg=93 then print"{yel}";
+ 1930 :if sg=34 or sg=94 then print"{blu}";
+ 1940 :if sg=35 or sg=95 then print"{pur}";
+ 1945 :if sg=36 or sg=96 then print"{cyn}";
+ 1950 :if sg=37 or sg=97 then print"{gry3}";
+ 1955 :if sg=38 or sg=48 then t=pc
+ 1960 :nextt:return
  1970 bend
  1980 if ac$="f" or ac$="H" then begin
  1990 :cy=ap(0)-1:cx=ap(1)-1
