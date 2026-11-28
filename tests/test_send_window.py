@@ -4,7 +4,7 @@ byte API, and the MSS option on SYN and SYN-ACK."""
 
 import unittest
 
-from stack import ACK, PSH, SYN, Peer, Stack
+from stack import ACK, FIN, PSH, SYN, Peer, Stack
 
 EV_TX_TIMEOUT = 0x20
 ML_SEND_BYTE = 0x7600
@@ -382,6 +382,106 @@ class AcksAfterATimeout(unittest.TestCase):
         s.poll()
         self.assertEqual(s.word_le('TX_PEER_WINDOW'), 4096)
         self.assertEqual(s.word_le('TXQ_COUNT'), 940 - 235)
+
+
+class PeerClosesFirst(unittest.TestCase):
+    """The peer's FIN closes its side only: data queued or in flight on ours
+    still goes out (and is resent) in CLOSE_WAIT, and our FIN follows it."""
+
+    def fin_with_data_queued(self, window=470, acked=235):
+        s, p = connected(window)
+        want = bytes((i * 11) & 0xFF for i in range(1000))
+        queue(s, want)
+        s.poll()
+        segs = data(s.sent())
+        start = segs[0].tcp['seq']
+        r = Receiver(s, p)
+        r.take(segs, ack=False)
+        r.got = r.got[:acked]                            # the peer has only this much
+        p.ack = start + acked
+        p.send(FIN | ACK, window=window)
+        s.poll()
+        self.assertEqual(s.state, 'CLOSE_WAIT')
+        return s, p, r, want, start
+
+    def drain(self, s, r, window=470):
+        fins = []
+        for _ in range(3000):
+            tick(s)
+            frames = s.sent()
+            fins += [f for f in frames if f.tcp and f.tcp['flags'] & FIN]
+            r.take(frames, window=window)
+            if s.state != 'CLOSE_WAIT':
+                break
+        return fins
+
+    def test_queued_data_is_delivered_after_the_peer_fin(self):
+        s, p, r, want, start = self.fin_with_data_queued()
+        fins = self.drain(s, r)
+        self.assertEqual(bytes(r.got), want)
+        self.assertEqual(len(fins), 1)                   # then our FIN, after the data
+        self.assertEqual(fins[0].tcp['seq'], start + len(want))
+        self.assertEqual(s.state, 'LAST_ACK')
+
+    def test_lost_data_is_resent_in_close_wait(self):
+        s, p, r, want, start = self.fin_with_data_queued(acked=0)
+        resent = []
+        for _ in range(3000):
+            tick(s)
+            resent += [f for f in data(s.sent()) if f.tcp['seq'] == start]
+            if resent:
+                break
+        self.assertTrue(resent, 'nothing was sent again in CLOSE_WAIT')
+        self.assertEqual(s.state, 'CLOSE_WAIT')
+
+    def test_disconnect_in_close_wait_waits_for_the_data(self):
+        s, p, r, want, start = self.fin_with_data_queued()
+        s.call('ETH_TCP_DISCONNECT')
+        s.poll()
+        sent = s.sent()
+        self.assertEqual([f for f in sent if f.tcp and f.tcp['flags'] & FIN], [])
+        self.assertEqual(s.state, 'CLOSE_WAIT')
+        r.take(sent)
+        fins = self.drain(s, r)
+        self.assertEqual(bytes(r.got), want)
+        self.assertEqual(len(fins), 1)
+        self.assertEqual(fins[0].tcp['seq'], start + len(want))
+        p.ack = fins[0].tcp['seq'] + 1
+        p.send(ACK)
+        s.poll()
+        self.assertEqual(s.state, 'CLOSED')
+
+    def test_disconnect_in_close_wait_with_nothing_queued_sends_the_fin_at_once(self):
+        s, p = connected()
+        p.send(FIN | ACK)
+        s.poll()
+        s.sent()
+        s.call('ETH_TCP_DISCONNECT')
+        fins = [f for f in s.sent() if f.tcp and f.tcp['flags'] & FIN]
+        self.assertEqual(len(fins), 1)
+        self.assertEqual(s.state, 'LAST_ACK')
+
+    def test_the_application_can_still_send_after_the_peer_fin(self):
+        """A half-close: the peer sends its request and FIN, the reply
+        follows."""
+        s, p = connected()
+        p.send(PSH | FIN | ACK, b'GET / HTTP/1.0\r\n\r\n')
+        s.poll()
+        self.assertEqual(s.state, 'CLOSE_WAIT')
+        s.sent()
+        self.assertEqual(s.send_data(b'HTTP/1.0 200 OK\r\n\r\n'), 0)
+        s.poll()
+        sent = data(s.sent())
+        self.assertEqual([f.tcp['payload'] for f in sent], [b'HTTP/1.0 200 OK\r\n\r\n'])
+        self.assertEqual(sent[0].tcp['ack'], p.seq)
+        p.ack = sent[0].tcp['seq'] + len(sent[0].tcp['payload'])
+        s.call('ETH_TCP_DISCONNECT')                     # waits for the ACK
+        self.assertEqual(s.state, 'CLOSE_WAIT')
+        p.send(ACK)
+        s.poll()
+        fins = [f for f in s.sent() if f.tcp and f.tcp['flags'] & FIN]
+        self.assertEqual([f.tcp['seq'] for f in fins], [p.ack])
+        self.assertEqual(s.state, 'LAST_ACK')
 
 
 class Mss(unittest.TestCase):

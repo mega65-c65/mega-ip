@@ -51,6 +51,17 @@ TCP_TX_RESET:
     sta TX_PEER_WINDOW
     rts
 
+; Z=1 when the connection sends data: ESTABLISHED, or CLOSE_WAIT (the peer
+; has closed its side; ours stays open until the application closes it).
+; X, Y kept.
+TCP_TX_CAN_SEND:
+    lda TCP_STATE
+    cmp #TCP_STATE_ESTABLISHED
+    beq _yes
+    cmp #TCP_STATE_CLOSE_WAIT
+_yes:
+    rts
+
 ; The window of the segment just received becomes the peer's window (the
 ; handshake's SYN-ACK or final ACK, then every acceptable ACK).
 TCP_TX_TAKE_PEER_WINDOW:
@@ -138,8 +149,7 @@ _fail:
 ; C=0 queued, C=1 not connected or the ring is full.
 TCP_TX_PUT_BYTE:
     tax
-    lda TCP_STATE
-    cmp #TCP_STATE_ESTABLISHED
+    jsr TCP_TX_CAN_SEND
     bne _refused
     lda TXQ_COUNT+1
     cmp #>TX_RING_SIZE
@@ -158,7 +168,8 @@ _refused:
     rts
 
 ;=============================================================================
-; An ACK arrived (ESTABLISHED): free what it covers, and take the window.
+; An ACK arrived (ESTABLISHED or CLOSE_WAIT): free what it covers, and take
+; the window.
 ; Only segments at RCV.NXT count, as before.
 ;=============================================================================
 TCP_TX_ACK_CHECK:
@@ -291,8 +302,7 @@ _ret:
 ; what the window allows.
 ;=============================================================================
 TCP_TX_TICK:
-    lda TCP_STATE
-    cmp #TCP_STATE_ESTABLISHED
+    jsr TCP_TX_CAN_SEND
     beq _established
     jmp TCP_TX_RESET
 
@@ -400,8 +410,7 @@ _frame_elapsed:
 ; C=1: not connected, or the transmitter couldn't take a segment.
 ;=============================================================================
 TCP_TX_TRY_SEND_QUEUED:
-    lda TCP_STATE
-    cmp #TCP_STATE_ESTABLISHED
+    jsr TCP_TX_CAN_SEND
     beq _next_segment
     sec
     rts

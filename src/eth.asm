@@ -979,34 +979,14 @@ ETH_TCP_LISTEN_STOP:
 ;=============================================================================
 ETH_TCP_DISCONNECT:
 
-    lda TCP_STATE
-    cmp #TCP_STATE_ESTABLISHED
-    beq _disconnect_established
-    cmp #TCP_STATE_CLOSE_WAIT
-    beq _disconnect_close_wait
-    rts
-
-_disconnect_established:
-    ; Graceful close: queued and unacknowledged data go out first.  The FIN
-    ; is sent now if TX is idle, otherwise by ETH_STATUS_POLL once it drains.
+    ; Graceful close (ESTABLISHED, or CLOSE_WAIT after the peer's FIN):
+    ; queued and unacknowledged data go out first.  The FIN is sent now if
+    ; TX is idle, otherwise by ETH_STATUS_POLL once it drains.
+    jsr TCP_TX_CAN_SEND
+    bne _not_connected
     lda #$01
     sta TCP_CLOSE_PENDING
     jmp TCP_TRY_PENDING_FIN
-
-_disconnect_close_wait:
-    lda #TCP_FLAG_FIN|TCP_FLAG_ACK
-    jsr ETH_BUILD_TCPIP_PACKET
-    bcs _not_connected
-    jsr ETH_PACKET_SEND
-    bcs _not_connected
-
-    ; CALC_LOCAL_ISN must run while still in CLOSE_WAIT so the passive-close
-    ; FIN advances LOCAL_ISN before LAST_ACK starts validating the peer ACK.
-    jsr CALC_LOCAL_ISN
-    jsr TCP_FIN_RETRY_INIT
-
-    lda #TCP_STATE_LAST_ACK
-    sta TCP_STATE
 
 _not_connected:
     rts
@@ -1015,20 +995,18 @@ _not_connected:
 ; Send the FIN for a pending close once all queued and unacknowledged data
 ; has been sent and ACKed.  Called by ETH_TCP_DISCONNECT and on every
 ; ETH_STATUS_POLL.  A busy transmitter leaves the close pending for the next
-; poll.  If the peer closed first (CLOSE_WAIT), hand over to the passive close.
+; poll.  ESTABLISHED goes to FIN_WAIT_1 (active close), CLOSE_WAIT to
+; LAST_ACK (passive close).
 ;=============================================================================
 TCP_TRY_PENDING_FIN:
     lda TCP_CLOSE_PENDING
     beq _done
 
-    lda TCP_STATE
-    cmp #TCP_STATE_ESTABLISHED
+    jsr TCP_TX_CAN_SEND
     beq _check_tx_idle
-    ldx #$00
-    stx TCP_CLOSE_PENDING
-    cmp #TCP_STATE_CLOSE_WAIT
-    bne _done
-    jmp ETH_TCP_DISCONNECT            ; sends FIN, enters LAST_ACK
+    lda #$00                          ; the connection went away meanwhile
+    sta TCP_CLOSE_PENDING
+    rts
 
 _check_tx_idle:
     lda TXQ_COUNT
@@ -1045,11 +1023,17 @@ _check_tx_idle:
     jsr ETH_PACKET_SEND
     bcs _done
 
+    ; CALC_LOCAL_ISN runs before the state changes, so the FIN's +1 counts
+    ; before FIN_WAIT_1 / LAST_ACK start checking the peer's ACK of it.
     jsr CALC_LOCAL_ISN
     jsr TCP_FIN_RETRY_INIT
 
-    lda #TCP_STATE_FIN_WAIT_1
-    sta TCP_STATE
+    ldx #TCP_STATE_FIN_WAIT_1
+    lda TCP_STATE
+    cmp #TCP_STATE_CLOSE_WAIT
+    bne +
+    ldx #TCP_STATE_LAST_ACK
++   stx TCP_STATE
     lda #$00
     sta TCP_CLOSE_PENDING
 
@@ -1061,8 +1045,7 @@ _done:
 ;=============================================================================
 ETH_TCP_SEND:
 
-    lda TCP_STATE
-    cmp #TCP_STATE_ESTABLISHED
+    jsr TCP_TX_CAN_SEND
     bne _not_connected
 
     jsr TCP_TX_ENQUEUE_CURRENT
@@ -1899,7 +1882,12 @@ _check_CLOSE_WAIT:
     jmp _done
 
 _close_wait_seq_ok:
-    ; build & send FIN+ACK
+    ; Our side still sends: the ACK frees data and brings the window.  Once
+    ; everything is sent and ACKed, any segment from the peer closes our side
+    ; too (FIN+ACK, LAST_ACK), as before.
+    jsr TCP_TX_ACK_CHECK
+    jsr ETH_TCP_TX_IDLE
+    beq _done
     lda #TCP_FLAG_FIN|TCP_FLAG_ACK
     jsr ETH_BUILD_TCPIP_PACKET
     bcs _done
@@ -3415,13 +3403,8 @@ CALC_LOCAL_ISN:
     cmp #TCP_STATE_ESTABLISHED          ; dont change seq # if not established
     beq _check_established_flags
 
-    cmp #TCP_STATE_CLOSE_WAIT
+    cmp #TCP_STATE_CLOSE_WAIT           ; our side still sends data, then the FIN
     bne _done
-
-    lda TCP_HDR_FLGS_OFFS+1
-    and #TCP_FLAG_FIN
-    bne _add_one                        ; passive-close FIN consumes 1
-    rts
 
 _check_established_flags:
     lda TCP_HDR_FLGS_OFFS+1
@@ -3692,8 +3675,7 @@ _rx_burst_done:
 
     jsr ARP_CACHE_PURGE
 
-    lda TCP_STATE
-    cmp #TCP_STATE_ESTABLISHED
+    jsr TCP_TX_CAN_SEND
     bne _check_synack_tick
     jsr TCP_TX_TICK
     jmp _after_tcp_ticks
