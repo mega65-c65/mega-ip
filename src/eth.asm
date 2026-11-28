@@ -267,12 +267,15 @@ TCP_RX_DATA_PAYLOAD_SIZE:
 
 ; Ring indexes (0..TX_RING_SIZE-1) and byte counts, all 16-bit little endian.
 ; SND.UNA is TX_UNACK_SEQ (the sequence number of ring[TXQ_UNA]); SND.NXT is
-; LOCAL_ISN (the sequence number of ring[TXQ_NXT]).
+; LOCAL_ISN (the sequence number of ring[TXQ_NXT]).  SND.MAX, the highest
+; byte ever sent, is SND.UNA + TXQ_SENT: after a timeout SND.NXT goes back to
+; SND.UNA, but an ACK for anything sent before it is still good.
 TXQ_HEAD:               .word 0                     ; where the application writes next
 TXQ_UNA:                .word 0                     ; the oldest unacknowledged byte
 TXQ_NXT:                .word 0                     ; the next byte to send
 TXQ_COUNT:              .word 0                     ; bytes held: queued + in flight
-TXQ_INFLIGHT:           .word 0                     ; bytes sent, not yet acknowledged
+TXQ_INFLIGHT:           .word 0                     ; bytes sent since SND.UNA (or the last rewind)
+TXQ_SENT:               .word 0                     ; SND.MAX - SND.UNA
 TXQ_SCAN:               .word 0
 TXQ_TMP:                .word 0
 TXQ_ENQ_LEN:            .byte 0

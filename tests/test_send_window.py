@@ -269,6 +269,121 @@ class PeerWindowUpdates(unittest.TestCase):
         self.assertGreater(len(data(s.sent())), 1)
 
 
+def until_timeout_rewind(s):
+    """Run until the retransmit timer has fired once (SND.NXT back at SND.UNA)."""
+    for _ in range(3000):
+        tick(s)
+        if s.word_le('TXQ_INFLIGHT') == 0:           # the window is closed: none resent
+            return
+    raise AssertionError('the retransmit timer never fired')
+
+
+class AcksAfterATimeout(unittest.TestCase):
+    """After a timeout SND.NXT goes back to SND.UNA, but the bytes sent
+    before it may already be on their way to being ACKed: an ACK up to the
+    highest byte ever sent (SND.MAX) is good."""
+
+    def burst(self, window=4096):
+        s, p = connected(window)
+        queue(s, bytes(940))
+        s.poll()
+        segs = data(s.sent())
+        start = segs[0].tcp['seq']
+        end = segs[-1].tcp['seq'] + len(segs[-1].tcp['payload'])
+        return s, p, start, end
+
+    def test_ack_after_a_zero_window_timeout_frees_the_data(self):
+        s, p, start, end = self.burst()
+        p.ack = start
+        p.send(ACK, window=0)                            # the window closes
+        s.poll()
+        until_timeout_rewind(s)
+        s.sent()
+        p.ack = end
+        p.send(ACK, window=4096)                         # everything arrived after all
+        s.poll()
+        self.assertEqual(s.word_le('TXQ_COUNT'), 0)
+        self.assertEqual(s.call('ETH_TCP_TX_IDLE').a, 1)
+        self.assertEqual(data(s.sent()), [])
+        s.send_data(b'more')                             # and the connection goes on
+        s.poll()
+        sent = data(s.sent())
+        self.assertEqual([(f.tcp['seq'], f.tcp['payload']) for f in sent], [(end, b'more')])
+
+    def test_window_update_with_that_ack_is_taken(self):
+        s, p, start, end = self.burst()
+        p.ack = start
+        p.send(ACK, window=0)
+        s.poll()
+        until_timeout_rewind(s)
+        p.ack = end
+        p.send(ACK, window=1234)
+        s.poll()
+        self.assertEqual(s.word_le('TX_PEER_WINDOW'), 1234)
+
+    def test_ack_past_a_partial_resend_sends_nothing_again(self):
+        """The timer fires, only the first segment goes again (the
+        transmitter is busy after it), then the ACK for all of it comes."""
+        s, p, start, end = self.burst()
+
+        def busy_after_one(frame):
+            s.eth.tx_busy = True
+        for _ in range(3000):
+            tick_frames = s.m.instructions_per_line * s.m.lines_per_frame // 2
+            s.m.time_offset += tick_frames
+            if s.peek('TX_UNACK_RETRY_TICKS') == 0:
+                s.eth.on_transmit = busy_after_one
+            s.poll()
+            if data(s.sent()):
+                break
+        s.eth.on_transmit = None
+        s.eth.tx_busy = False
+        self.assertEqual(s.word_le('TXQ_INFLIGHT'), 235)    # one segment resent
+        p.ack = end
+        p.send(ACK)
+        s.poll()
+        self.assertEqual(data(s.sent()), [])
+        self.assertEqual(s.call('ETH_TCP_TX_IDLE').a, 1)
+
+    def test_ack_part_way_past_snd_nxt_sends_the_rest_from_there(self):
+        s, p, start, end = self.burst(window=4096)
+        p.ack = start
+        p.send(ACK, window=0)
+        s.poll()
+        until_timeout_rewind(s)
+        s.sent()
+        p.ack = start + 500                              # in the third segment
+        p.send(ACK, window=4096)
+        s.poll()
+        self.assertEqual(s.word_le('TXQ_COUNT'), 440)
+        sent = data(s.sent())
+        self.assertEqual(sent[0].tcp['seq'], start + 500)
+        r = Receiver(s, p)                               # the rest arrives, once
+        r.take(sent)
+        r.run()
+        self.assertEqual(len(r.got), 440)
+        self.assertEqual(s.call('ETH_TCP_TX_IDLE').a, 1)
+
+    def test_ack_beyond_anything_sent_is_ignored(self):
+        s, p, start, end = self.burst()
+        p.ack = end + 1
+        p.send(ACK, window=100)
+        s.poll()
+        self.assertEqual(s.word_le('TXQ_COUNT'), 940)
+        self.assertEqual(s.word_le('TX_PEER_WINDOW'), 4096)
+
+    def test_an_older_ack_does_not_change_the_window(self):
+        s, p, start, end = self.burst()
+        p.ack = start + 235
+        p.send(ACK, window=4096)
+        s.poll()
+        p.ack = start                                    # a stale ACK, reordered
+        p.send(ACK, window=0)
+        s.poll()
+        self.assertEqual(s.word_le('TX_PEER_WINDOW'), 4096)
+        self.assertEqual(s.word_le('TXQ_COUNT'), 940 - 235)
+
+
 class Mss(unittest.TestCase):
     def test_active_syn_announces_the_mss(self):
         s = Stack.ready()

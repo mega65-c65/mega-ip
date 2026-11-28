@@ -17,7 +17,10 @@
 ;
 ;   TXQ_UNA            TXQ_NXT              TXQ_HEAD
 ;      |-- in flight ----|-- queued, unsent --|-- free --|
-;   SND.UNA = TX_UNACK_SEQ, SND.NXT = LOCAL_ISN
+;   SND.UNA = TX_UNACK_SEQ, SND.NXT = LOCAL_ISN, SND.MAX = SND.UNA + TXQ_SENT
+;
+; An ACK is good up to SND.MAX, the highest byte ever sent, not just SND.NXT:
+; a timeout moves SND.NXT back, and the ACK for the first round may follow.
 ;=============================================================================
 .cerror (TX_RING_BASE & (TX_RING_SIZE - 1)) != 0, "the send ring must be aligned to its size"
 .cerror (TX_RING_SIZE & $ff) != 0 || (TCP_TX_WINDOW & $ff) != 0, "the send ring and window must be whole pages"
@@ -34,6 +37,8 @@ TCP_TX_RESET:
     sta TXQ_COUNT+1
     sta TXQ_INFLIGHT
     sta TXQ_INFLIGHT+1
+    sta TXQ_SENT
+    sta TXQ_SENT+1
     sta TX_UNACK_PENDING
     sta TX_UNACK_RETRY_TICKS
     sta TX_UNACK_RETRY_LEFT
@@ -163,20 +168,19 @@ TCP_TX_ACK_CHECK:
     jsr TCP_SEQ_CMP_SEG_SEQ_REMOTE
     bne _ret
 
-    lda TX_UNACK_PENDING
-    beq _window
+    lda TXQ_SENT
+    ora TXQ_SENT+1
+    beq _window                       ; nothing sent (SND.UNA isn't set yet)
 
-    ; SND.UNA < SEG.ACK <= SND.NXT frees bytes; an ACK of nothing new only
-    ; brings the window; an ACK of data never sent is ignored.
+    ; SND.UNA < SEG.ACK <= SND.MAX frees bytes; an ACK of nothing new only
+    ; brings the window; an older ACK, or one of data never sent, is ignored.
+    ; SND.MAX, not SND.NXT: after a timeout SND.NXT is back at SND.UNA, and
+    ; the ACK for what was sent before it must still count.
     jsr TCP_SEQ_CMP_SEG_ACK_TX_UNACK_SEQ
     beq _window
-    bmi _window
-    jsr TCP_SEQ_CMP_SEG_ACK_LOCAL_ISN
-    beq _acked
-    bpl _ret
+    bmi _ret
 
-_acked:
-    ; freed = SEG.ACK - SND.UNA: at most the bytes in flight, so 16 bits
+    ; freed = SEG.ACK - SND.UNA, at most TXQ_SENT
     sec
     lda SEG_ACK+3
     sbc TX_UNACK_SEQ+3
@@ -184,6 +188,17 @@ _acked:
     lda SEG_ACK+2
     sbc TX_UNACK_SEQ+2
     sta TXQ_TMP+1
+    lda SEG_ACK+1
+    sbc TX_UNACK_SEQ+1
+    bne _ret
+    lda SEG_ACK
+    sbc TX_UNACK_SEQ
+    bne _ret
+    lda TXQ_SENT
+    cmp TXQ_TMP
+    lda TXQ_SENT+1
+    sbc TXQ_TMP+1
+    bcc _ret                          ; beyond SND.MAX
 
     ldx #$03
 _new_una:
@@ -210,16 +225,47 @@ _new_una:
     sta TXQ_COUNT+1
 
     sec
+    lda TXQ_SENT
+    sbc TXQ_TMP
+    sta TXQ_SENT
+    lda TXQ_SENT+1
+    sbc TXQ_TMP+1
+    sta TXQ_SENT+1
+
+    ; freed < in flight: SND.NXT stays where it is
+    lda TXQ_TMP
+    cmp TXQ_INFLIGHT
+    lda TXQ_TMP+1
+    sbc TXQ_INFLIGHT+1
+    bcs _past_nxt
+    sec
     lda TXQ_INFLIGHT
     sbc TXQ_TMP
     sta TXQ_INFLIGHT
     lda TXQ_INFLIGHT+1
     sbc TXQ_TMP+1
     sta TXQ_INFLIGHT+1
-    ora TXQ_INFLIGHT
-    bne _progress
+    jmp _progress
 
-    ; everything sent is acknowledged: no timer
+_past_nxt:
+    ; The ACK reaches SND.NXT, or passes it (bytes sent before a timeout):
+    ; SND.NXT moves up to SND.UNA, and anything sent before but not yet
+    ; covered goes out again as new.
+    lda #$00
+    sta TXQ_INFLIGHT
+    sta TXQ_INFLIGHT+1
+    lda TXQ_UNA
+    sta TXQ_NXT
+    lda TXQ_UNA+1
+    sta TXQ_NXT+1
+    ldx #$03
+_new_nxt:
+    lda SEG_ACK,x
+    sta LOCAL_ISN,x
+    dex
+    bpl _new_nxt
+
+    ; nothing in flight: no timer
     lda #$00
     sta TX_UNACK_PENDING
     sta TX_UNACK_RETRY_TICKS
@@ -505,6 +551,16 @@ _timer_running:
     bcc _inflight_ok
     inc TXQ_INFLIGHT+1
 _inflight_ok:
+    lda TXQ_SENT                      ; SND.MAX = max(SND.MAX, SND.NXT)
+    cmp TXQ_INFLIGHT
+    lda TXQ_SENT+1
+    sbc TXQ_INFLIGHT+1
+    bcs _max_ok
+    lda TXQ_INFLIGHT
+    sta TXQ_SENT
+    lda TXQ_INFLIGHT+1
+    sta TXQ_SENT+1
+_max_ok:
     jsr CALC_LOCAL_ISN                ; SND.NXT += the payload (PSH)
     jsr CLEAR_TCP_PAYLOAD
     clc
