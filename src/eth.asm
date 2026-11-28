@@ -2746,6 +2746,27 @@ _pad_min_frame:
     sta ETH_TX_LEN_LSB
 
 _tx_len_ready:
+    ; An odd length goes out one byte longer, with a 0 (link-layer padding again:
+    ; the IP length stays as it is). A member's MEGA65 never got odd-length
+    ; frames through (MegaNet's sign-up, 41 bytes of data, resent until the
+    ; connection timed out) while even ones went fine.
+    lda ETH_TX_LEN_LSB
+    and #$01
+    beq _tx_even
+    clc
+    lda ETH_TX_SRC
+    adc ETH_TX_LEN_LSB
+    sta _pad_odd+1
+    lda ETH_TX_SRC+1
+    adc ETH_TX_LEN_MSB
+    sta _pad_odd+2
+    lda #$00
+_pad_odd:
+    sta $ffff                   ; (self-modified: the byte after the frame)
+    inc ETH_TX_LEN_LSB
+    bne _tx_even
+    inc ETH_TX_LEN_MSB
+_tx_even:
     ; make sure ethernet is not under reset, then wait for the previous frame
     ; to finish (TXIDLE) before touching TXSIZE or the hardware TX buffer.
     lda #$03

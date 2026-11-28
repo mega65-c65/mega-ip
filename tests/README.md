@@ -72,7 +72,7 @@ python tests/mutate.py [--sample N] [--file dns.asm] [--jobs J] [--rerun SURVIVO
 
 flips one conditional branch at a time in `eth.bin` (only branches the suite runs) and runs the whole suite on each mutant, in parallel. A mutant the suite fails on is killed; a surviving one is a branch whose direction no test checks. Some survivors make no observable difference (for example, a loop that copies bytes which are already equal), so read each one before writing a test. It runs the suite once per mutant, so it isn't part of the build: the full set (about 800 branches) takes about 15 minutes on 12 cores. Save the output and use `--rerun` on it to retest only the survivors after adding tests. Last full run: 682 of 807 killed (85%); most of the rest make no observable difference or are checks repeated later in the receive path.
 
-Every test also checks the checksums of everything the stack sends: `Stack.sent()` fails on a bad IPv4, TCP, UDP or ICMP checksum.
+Every test also checks everything the stack sends: `Stack.sent()` fails on a bad IPv4, TCP, UDP or ICMP checksum, and on a frame shorter than 60 bytes or of odd length (a real MEGA65 never got odd-length frames through).
 
 ## Checking a test against older code
 

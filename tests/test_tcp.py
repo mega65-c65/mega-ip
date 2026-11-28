@@ -278,12 +278,44 @@ class ArpAging(unittest.TestCase):
 class TransmitPath(unittest.TestCase):
     """6b35448 and b114607."""
 
-    def fill_tx_frame(self, s, marker):
-        frame = bytes([marker]) * 60
-        s.poke('ETH_TX_FRAME_DEST_MAC', frame)
-        s.poke('ETH_TX_LEN_LSB', 60)
-        s.poke('ETH_TX_LEN_MSB', 0)
+    def fill_tx_frame(self, s, marker, length=60):
+        frame = bytes([marker]) * length
+        s.poke('ETH_TX_FRAME_DEST_MAC', frame + bytes([0xEE]))   # $EE after the frame
+        s.poke('ETH_TX_LEN_LSB', length & 0xFF)
+        s.poke('ETH_TX_LEN_MSB', length >> 8)
         return frame
+
+    def test_odd_length_frame_is_padded_to_even(self):
+        """A real MEGA65 never got odd-length frames through (meganet
+        f2fb01b): an odd frame goes out one byte longer, padded with 0."""
+        for length in (61, 95, 255, 257):
+            with self.subTest(length=length):
+                s = Stack.ready()
+                frame = self.fill_tx_frame(s, 0x22, length)
+                s.call('ETH_PACKET_SEND')
+                self.assertEqual(s.eth.take_sent(), [frame + b'\x00'])
+
+    def test_even_length_frame_is_unchanged(self):
+        for length in (60, 96, 256):
+            with self.subTest(length=length):
+                s = Stack.ready()
+                frame = self.fill_tx_frame(s, 0x22, length)
+                s.call('ETH_PACKET_SEND')
+                self.assertEqual(s.eth.take_sent(), [frame])
+
+    def test_odd_tcp_segment_keeps_its_ip_length(self):
+        """MegaNet's sign-up case: 41 bytes of data make a 95-byte frame.  It
+        goes out as 96 bytes; the IP length stays 81 and checksums hold."""
+        s = Stack.ready()
+        p = Peer(s)
+        p.connect_stack()
+        s.send_data(bytes(range(41)))
+        s.poll()
+        data = [f for f in s.sent() if f.tcp and f.tcp['payload']]   # sent() checks even length
+        self.assertEqual(len(data[0].raw), 96)
+        self.assertEqual(data[0].ip['total'], 20 + 20 + 41)
+        self.assertEqual(data[0].tcp['payload'], bytes(range(41)))
+        self.assertTrue(data[0].tcp['checksum_ok'])
 
     def test_busy_transmitter_is_not_overwritten(self):
         s = Stack.ready()

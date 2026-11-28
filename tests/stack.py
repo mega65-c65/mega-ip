@@ -140,14 +140,18 @@ class Stack:
         return self.eth.receive(frame)
 
     def sent(self):
-        """Frames transmitted since the last call.  Every checksum in them is
-        verified: a frame the stack sends with a bad checksum fails the test."""
+        """Frames transmitted since the last call.  Every frame is checked: a
+        bad checksum, a frame under 60 bytes or an odd length (which a real
+        MEGA65 never got through) fails the test."""
         frames = [net.Parsed(f) for f in self.eth.take_sent()]
         for f in frames:
             bad = f.checksum_errors()
             if bad:
                 raise AssertionError('stack sent %r with bad %s checksum'
                                      % (f, ', '.join(bad)))
+            if len(f.raw) < 60 or len(f.raw) % 2:
+                raise AssertionError('stack sent %r with length %d (must be even, >= 60)'
+                                     % (f, len(f.raw)))
         return frames
 
     @classmethod
