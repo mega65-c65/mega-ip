@@ -1361,8 +1361,15 @@ _phonebook_save_loop:
     bra _phonebook_save_loop
 
 _phonebook_save_close_ok:
+    jsr K_READST                      ; a write that failed on the way
+    pha
     jsr PHONEBOOK_CLOSE
+    pla
+    bne _phonebook_save_failed
     clc
+    rts
+_phonebook_save_failed:
+    sec
     rts
 
 PHONEBOOK_OPEN_READ:
@@ -1398,9 +1405,19 @@ PHONEBOOK_OPEN_WRITE:
     ldy #PHONE_SA
     jsr K_SETLFS
     jsr K_OPEN
+    bcs _phonebook_open_write_fail
+    jsr K_READST
+    bne _phonebook_open_write_fail
     ldx #PHONE_LFN
     jsr K_CHKOUT
+    bcs _phonebook_open_write_fail
+    jsr K_READST
+    bne _phonebook_open_write_fail
     clc
+    rts
+_phonebook_open_write_fail:
+    jsr PHONEBOOK_CLOSE               ; frees the file number for the next try
+    sec
     rts
 
 PHONEBOOK_CLOSE:
